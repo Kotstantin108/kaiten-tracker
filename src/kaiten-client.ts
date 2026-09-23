@@ -21,10 +21,14 @@
  * структура карточки целиком не задокументирована, и жёсткая схема сломала бы
  * импорт на первом же незнакомом поле.
  *
- * Эндпоинты структуры аккаунта (spaces/boards/columns/card-types/
- * custom-properties) вызываются только командой `inspect`, которая пишет сырой
- * JSON в `tmp/` — по нему и настраивается маппинг. Угадывать их формат нельзя:
- * страницы документации по ним недоступны.
+ * Эндпоинты структуры аккаунта проверены по документации 23.09.2026:
+ * `GET /spaces/{id}/boards` (отдаёт заодно `columns` и `lanes`),
+ * `GET /boards/{id}/columns` (у колонки есть `type`: 1 очередь, 2 в работе,
+ * 3 готово, и вложенные `subcolumns`), `GET /card-types` (пагинация, limit до
+ * 100), `GET /company/custom-properties` (с `include_values=true` приходят
+ * значения каталога; значения селектов отдельно — `/custom-property-select-values`).
+ * Формат ответов при этом описан не целиком, поэтому `inspect` сохраняет сырой
+ * JSON в `tmp/`, и маппинг настраивается по нему, а не по догадкам.
  *
  * Токен в логи не попадает ни в каком виде.
  */
@@ -218,9 +222,10 @@ export class KaitenClient {
   }
 
   /**
-   * Связь «эпик → story». Эндпоинт в документации не раскрыт (страница
-   * `/card-children/` отдаёт 404), поэтому вызов помечен как непроверенный:
-   * до ответа `inspect` его использует только план, но не применение.
+   * Связь «эпик → story»: `POST /cards/{card_id}/children` с телом
+   * `{ card_id: <id ребёнка> }` — проверено по документации 23.09.2026. На
+   * живом аккаунте вызов ещё не гонялся, поэтому падение связи не валит
+   * заливку, а пишется в отчёт.
    */
   async addChild(parentCardId: number, childCardId: number): Promise<unknown> {
     return this.request('POST', `/cards/${parentCardId}/children`, {
@@ -230,17 +235,17 @@ export class KaitenClient {
   }
 
   /**
-   * Сырые ответы структуры аккаунта — по ним настраивается маппинг. Часть путей
-   * восстановлена по навигации документации, а не по описанию эндпоинта, и
-   * каждый вызов изолирован: 404 на одном не должен лишать снимка целиком —
-   * наоборот, этот 404 и есть ценный результат.
+   * Сырые ответы структуры аккаунта — по ним настраивается маппинг. Пути взяты
+   * из документации, но состав полей описан не полностью, поэтому сохраняется
+   * весь ответ целиком. Каждый вызов изолирован: отказ одного эндпоинта не
+   * лишает снимка остального, а его статус и тело тоже попадают в снимок.
    */
   async inspectStructure(spaceId?: number, boardId?: number): Promise<Record<string, unknown>> {
     const raw = z.unknown();
     const out: Record<string, unknown> = {};
-    const probe = async (key: string, path: string): Promise<void> => {
+    const probe = async (key: string, path: string, query?: Record<string, string>): Promise<void> => {
       try {
-        out[key] = { path, ok: true, data: await this.request('GET', path, { schema: raw }) };
+        out[key] = { path, ok: true, data: await this.request('GET', path, { query, schema: raw }) };
       } catch (error) {
         out[key] =
           error instanceof KaitenApiError
@@ -249,8 +254,9 @@ export class KaitenClient {
       }
     };
     await probe('spaces', '/spaces');
-    await probe('cardTypes', '/card-types');
-    await probe('customProperties', '/company/custom-properties');
+    await probe('cardTypes', '/card-types', { limit: '100' });
+    await probe('customProperties', '/company/custom-properties', { include_values: 'true' });
+    await probe('selectValues', '/custom-property-select-values');
     if (spaceId !== undefined) await probe('boards', `/spaces/${spaceId}/boards`);
     if (boardId !== undefined) await probe('columns', `/boards/${boardId}/columns`);
     return out;

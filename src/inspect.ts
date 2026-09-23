@@ -2,13 +2,13 @@
  * Снимок структуры аккаунта Kaiten: пространства, доски, колонки, типы карточек
  * и кастомные свойства — сырым JSON в `tmp/kaiten-import/`.
  *
- * ЗАЧЕМ ОТДЕЛЬНАЯ КОМАНДА. Страницы документации по этим эндпоинтам
- * недоступны (404), формат ответа неизвестен. Угадывать его в коде импортёра
- * нельзя — сначала смотрим, что реально отдаёт аккаунт, и по этому снимку
- * заполняем `scripts/tracker/kaiten.config.json`: id доски, id колонок под
- * статусы, id типов карточек, id свойства приоритета.
+ * ЗАЧЕМ ОТДЕЛЬНАЯ КОМАНДА. Пути эндпоинтов известны из документации, а состав
+ * полей описан не полностью, и id в каждом аккаунте свои. Сначала смотрим, что
+ * реально отдаёт аккаунт, и по снимку заполняем блок `kaiten` в
+ * `tracker.config.json`: id доски, id колонок под статусы, id типов карточек,
+ * id свойства приоритета.
  *
- * Запуск: `npm run tracker:inspect -- --space <id> --board <id>`
+ * Запуск: `npm run inspect -- --space <id> --board <id>`
  * ENV: `KAITEN_DOMAIN`, `KAITEN_TOKEN`. Ничего не изменяет, только читает.
  *
  * Коды выхода: 0 — ок; 2 — нет токена; 6 — ошибка запроса.
@@ -45,8 +45,7 @@ async function main(): Promise<void> {
   writeFileSync(path, JSON.stringify(structure, null, 2), 'utf8');
 
   console.log(`Снимок структуры: ${path} (запросов: ${client.requestCount})`);
-  console.log('Дальше: перенести id доски, колонок, типов и свойства приоритета в scripts/tracker/kaiten.config.json');
-  console.log('Образец полей — scripts/tracker/kaiten.config.example.json');
+  console.log('Дальше: перенести id доски, колонок, типов и свойства приоритета в блок kaiten файла tracker.config.json');
 }
 
 main().catch((error: unknown) => {
