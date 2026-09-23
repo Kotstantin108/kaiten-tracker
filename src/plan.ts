@@ -1,0 +1,250 @@
+/**
+ * Построение плана заливки: чистая функция от «задачи в репозитории» и
+ * «карточки, которые уже есть в Kaiten» к списку действий.
+ *
+ * ИДЕМПОТЕНТНОСТЬ. Второй прогон подряд не должен делать ни одной записи. До
+ * появления формата v2 с `content_hash` во frontmatter (story `export-csv`)
+ * хеш живёт в самом описании карточки — строкой-маркером в конце. Она
+ * невидима при рендере markdown, читается обратно из `description` и сравнивается
+ * с хешем текущего тела задачи. Если описание карточки прочитать не удалось,
+ * план честно говорит «не знаю» и ставит обновление, а не притворяется, что всё
+ * совпало.
+ *
+ * ПОРЯДОК. Сначала эпики, потом остальные: связь «родитель → ребёнок» требует
+ * уже существующей карточки родителя. Задача без известного родителя не
+ * блокируется — уезжает без связи, а факт попадает в отчёт.
+ */
+
+import { createHash } from 'node:crypto';
+
+import type { CardPayload } from './kaiten-client.js';
+import type { FolderStatus, Priority, TaskFile, TaskType } from './task-source.js';
+import { rewriteRelativeLinks } from './task-source.js';
+
+/** Маркер в конце описания карточки: скрыт при рендере, читается обратно. */
+const FINGERPRINT_RE = /<!--\s*kaiten-sync:([a-f0-9]{16})\s*-->/;
+
+export interface BoardMapping {
+  boardId: number;
+  laneId?: number;
+  /** Статус → id колонки. Заполняется по выводу `inspect`. */
+  columns: Partial<Record<FolderStatus, number>>;
+  /** Тип задачи → id типа карточки. */
+  types?: Partial<Record<TaskType, number>>;
+  /** Кастомное свойство приоритета: id свойства и значения селекта. */
+  priorityProperty?: { id: number; values: Partial<Record<Priority, string | number>> };
+  /** Кастомное свойство «репозиторий»: значение берётся из задачи (Q22). */
+  repoProperty?: { id: number };
+}
+
+export interface ExistingCard {
+  id: number;
+  externalId: string;
+  title?: string;
+  columnId?: number;
+  /** `undefined` — описание не читали (список карточек его не отдаёт). */
+  description?: string;
+}
+
+export interface RenderOptions {
+  /** Переписывать относительные ссылки в постоянные URL репозитория. */
+  rewriteLinks: boolean;
+}
+
+export type PlanAction =
+  | { kind: 'create'; externalId: string; title: string; payload: CardPayload; task: TaskFile }
+  | {
+      kind: 'update';
+      externalId: string;
+      cardId: number;
+      payload: Partial<CardPayload>;
+      reasons: string[];
+      task: TaskFile;
+    }
+  | { kind: 'unchanged'; externalId: string; cardId: number }
+  | {
+      kind: 'link';
+      childExternalId: string;
+      parentExternalId: string;
+      childCardId: number | null;
+      parentCardId: number | null;
+    };
+
+export interface PlanWarning {
+  externalId: string;
+  detail: string;
+}
+
+export interface ImportPlan {
+  actions: PlanAction[];
+  warnings: PlanWarning[];
+  stats: { create: number; update: number; unchanged: number; link: number };
+}
+
+/** Короткий хеш тела карточки: заголовок + статус + описание без маркера. */
+export function fingerprint(parts: { title: string; status: string; description: string }): string {
+  const body = parts.description.replace(FINGERPRINT_RE, '').trimEnd();
+  return createHash('sha256').update(`${parts.title}\n${parts.status}\n${body}`).digest('hex').slice(0, 16);
+}
+
+export function readFingerprint(description: string | undefined): string | null {
+  if (!description) return null;
+  const m = FINGERPRINT_RE.exec(description);
+  return m ? m[1] : null;
+}
+
+/**
+ * Описание карточки: тело задачи как есть (markdown уезжает в Kaiten без
+ * конвертации — `text_format_type_id: 1`), затем служебный хвост со ссылкой на
+ * папку задачи в git и маркером идемпотентности.
+ */
+export function renderDescription(task: TaskFile, options: RenderOptions): string {
+  const hasUrl = task.repoUrl.length > 0;
+  const body =
+    options.rewriteLinks && hasUrl
+      ? rewriteRelativeLinks(task.body, { taskDir: task.dir, repoUrl: task.repoUrl, branch: task.branch })
+      : task.body;
+
+  const source = hasUrl
+    ? `[\`${task.dir}\`](${task.repoUrl.replace(/\/+$/, '')}/tree/${task.branch}/${task.dir})`
+    : `\`${task.dir}\``;
+  const tail = [
+    '',
+    '---',
+    '',
+    `Источник: ${task.repoName} · ${source}`,
+    task.hasLog ? `Журнал работы: \`${task.dir}/LOG.md\` (в карточку не переносится)` : null,
+    task.attachments.length > 0 ? `Вложения в git (${task.attachments.length}): ${task.attachments.join(', ')}` : null,
+  ]
+    .filter((l): l is string => l !== null)
+    .join('\n');
+
+  const withoutMarker = `${body.trimEnd()}\n${tail}\n`;
+  const hash = fingerprint({ title: task.title, status: task.status, description: withoutMarker });
+  return `${withoutMarker}\n<!-- kaiten-sync:${hash} -->\n`;
+}
+
+function buildPayload(task: TaskFile, mapping: BoardMapping, description: string): CardPayload {
+  const payload: CardPayload = {
+    title: task.title,
+    board_id: mapping.boardId,
+    external_id: task.externalId,
+    description,
+    text_format_type_id: 1,
+  };
+  const columnId = mapping.columns[task.status];
+  if (columnId !== undefined) payload.column_id = columnId;
+  if (mapping.laneId !== undefined) payload.lane_id = mapping.laneId;
+  const typeId = mapping.types?.[task.meta.type];
+  if (typeId !== undefined) payload.type_id = typeId;
+
+  const properties: Record<string, unknown> = {};
+  if (mapping.priorityProperty) {
+    const value = mapping.priorityProperty.values[task.meta.priority];
+    if (value !== undefined) properties[`id_${mapping.priorityProperty.id}`] = value;
+  }
+  if (mapping.repoProperty) {
+    properties[`id_${mapping.repoProperty.id}`] = task.repoName;
+  }
+  if (Object.keys(properties).length > 0) payload.properties = properties;
+
+  return payload;
+}
+
+export interface BuildPlanInput {
+  tasks: TaskFile[];
+  existing: Map<string, ExistingCard>;
+  mapping: BoardMapping;
+  render: RenderOptions;
+  /** Планировать ли связи «эпик → story». */
+  linkEpics: boolean;
+}
+
+export function buildPlan(input: BuildPlanInput): ImportPlan {
+  const { tasks, existing, mapping, render } = input;
+  const actions: PlanAction[] = [];
+  const warnings: PlanWarning[] = [];
+
+  // Эпики первыми: карточка родителя должна существовать раньше связи.
+  const ordered = [...tasks].sort((a, b) => {
+    const rank = (t: TaskFile): number => (t.meta.type === 'epic' ? 0 : 1);
+    return rank(a) - rank(b) || a.externalId.localeCompare(b.externalId);
+  });
+
+  const selected = new Set(ordered.map((t) => t.externalId));
+
+  for (const task of ordered) {
+    const description = renderDescription(task, render);
+    const payload = buildPayload(task, mapping, description);
+    const card = existing.get(task.externalId);
+
+    if (mapping.columns[task.status] === undefined) {
+      warnings.push({ externalId: task.externalId, detail: `нет колонки под статус «${task.status}»` });
+    }
+
+    if (!card) {
+      actions.push({ kind: 'create', externalId: task.externalId, title: task.title, payload, task });
+      continue;
+    }
+
+    const reasons: string[] = [];
+    const patch: Partial<CardPayload> = {};
+
+    if (card.title !== undefined && card.title !== task.title) {
+      reasons.push('заголовок');
+      patch.title = task.title;
+    }
+    if (payload.column_id !== undefined && card.columnId !== undefined && card.columnId !== payload.column_id) {
+      reasons.push(`колонка (статус ${task.status})`);
+      patch.column_id = payload.column_id;
+    }
+
+    const wanted = readFingerprint(description);
+    const actual = readFingerprint(card.description);
+    if (card.description === undefined) {
+      reasons.push('описание карточки не прочитано');
+      patch.description = description;
+      patch.text_format_type_id = 1;
+    } else if (wanted !== actual) {
+      reasons.push('тело задачи');
+      patch.description = description;
+      patch.text_format_type_id = 1;
+    }
+
+    if (reasons.length === 0) {
+      actions.push({ kind: 'unchanged', externalId: task.externalId, cardId: card.id });
+      continue;
+    }
+    actions.push({ kind: 'update', externalId: task.externalId, cardId: card.id, payload: patch, reasons, task });
+  }
+
+  if (input.linkEpics) {
+    for (const task of ordered) {
+      const parent = task.parentExternalId;
+      if (!parent) continue;
+      if (!selected.has(parent)) {
+        warnings.push({
+          externalId: task.externalId,
+          detail: `родитель ${parent} вне выборки — карточка уедет без связи`,
+        });
+        continue;
+      }
+      actions.push({
+        kind: 'link',
+        childExternalId: task.externalId,
+        parentExternalId: parent,
+        childCardId: existing.get(task.externalId)?.id ?? null,
+        parentCardId: existing.get(parent)?.id ?? null,
+      });
+    }
+  }
+
+  const stats = {
+    create: actions.filter((a) => a.kind === 'create').length,
+    update: actions.filter((a) => a.kind === 'update').length,
+    unchanged: actions.filter((a) => a.kind === 'unchanged').length,
+    link: actions.filter((a) => a.kind === 'link').length,
+  };
+
+  return { actions, warnings, stats };
+}
