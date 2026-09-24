@@ -1,6 +1,6 @@
 /**
  * Снимок структуры аккаунта Kaiten: пространства, доски, колонки, типы карточек
- * и кастомные свойства — сырым JSON в `tmp/kaiten-import/`.
+ * и кастомные свойства — сырым JSON в `tmp/import/`.
  *
  * ЗАЧЕМ ОТДЕЛЬНАЯ КОМАНДА. Пути эндпоинтов известны из документации, а состав
  * полей описан не полностью, и id в каждом аккаунте свои. Сначала смотрим, что
@@ -19,7 +19,7 @@ import { join } from 'node:path';
 
 import { KaitenClient } from './kaiten-client.js';
 
-const OUT_DIR = 'tmp/kaiten-import';
+const OUT_DIR = 'tmp/import';
 
 function argValue(argv: string[], name: string): number | undefined {
   const index = argv.indexOf(name);

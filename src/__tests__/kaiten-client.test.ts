@@ -127,3 +127,27 @@ describe('KaitenClient.createCard', () => {
     expect(calls[0].body).toMatchObject({ text_format_type_id: 1, external_id: '20260916_x' });
   });
 });
+
+describe('KaitenClient: сетевой обрыв', () => {
+  const flaky = (failures: number) => {
+    let n = 0;
+    const impl = vi.fn(async (): Promise<Response> => {
+      if (n++ < failures) throw new TypeError('fetch failed', { cause: { code: 'ECONNRESET' } });
+      return new Response(JSON.stringify([]), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    });
+    const client = new KaitenClient({ domain: 'x.kaiten.ru', token: 't', fetchImpl: impl as unknown as typeof fetch, sleep: async () => {} });
+    return { client, impl };
+  };
+
+  it('чтение повторяет', async () => {
+    const { client, impl } = flaky(2);
+    expect(await client.listCards({ boardId: 1 })).toEqual([]);
+    expect(impl).toHaveBeenCalledTimes(3);
+  });
+
+  it('запись не повторяет: запрос мог дойти, повтор дал бы дубль', async () => {
+    const { client, impl } = flaky(1);
+    await expect(client.createChecklist(1, 'Критерии', 1)).rejects.toThrow(/сеть.*ECONNRESET/);
+    expect(impl).toHaveBeenCalledTimes(1);
+  });
+});

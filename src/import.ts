@@ -44,7 +44,14 @@ import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { z } from 'zod';
 
 import { KaitenClient, type Card } from './kaiten-client.js';
-import { buildPlan, readFingerprint, type BoardMapping, type ExistingCard, type ImportPlan } from './plan.js';
+import {
+  buildPlan,
+  readFingerprint,
+  type BoardMapping,
+  type ChecklistPatch,
+  type ExistingCard,
+  type ImportPlan,
+} from './plan.js';
 import {
   collectTasks,
   normalizeRemoteUrl,
@@ -219,6 +226,11 @@ function toExisting(card: Card): ExistingCard | null {
     title: card.title,
     columnId: card.column_id,
     description: typeof card.description === 'string' ? card.description : undefined,
+    parentIds: Array.isArray(card.parents_ids) ? card.parents_ids : card.parents_ids === null ? [] : undefined,
+    childIds: Array.isArray(card.children_ids) ? card.children_ids : card.children_ids === null ? [] : undefined,
+    checklists: Array.isArray(card.checklists)
+      ? card.checklists.map((c) => ({ id: c.id, name: c.name ?? '', itemTexts: (c.items ?? []).map((i) => i.text ?? '') }))
+      : undefined,
   };
 }
 
@@ -240,9 +252,13 @@ async function loadExisting(
   }
   for (const [externalId, existing] of map) {
     if (!wanted.has(externalId)) continue;
-    if (readFingerprint(existing.description) !== null) continue;
+    // Описание и чек-листы список не отдаёт — дочитываем карточку поштучно.
+    if (readFingerprint(existing.description) !== null && existing.checklists !== undefined) continue;
     const refreshed = toExisting(await client.getCard(existing.id));
-    if (refreshed) map.set(externalId, refreshed);
+    // Полная карточка без ключа `checklists` — чек-листов нет (живьём 23.09.2026
+    // ключ отсутствует у карточки без чек-листов). В ответе списка это значит
+    // «неизвестно», поэтому правило только здесь.
+    if (refreshed) map.set(externalId, { ...refreshed, checklists: refreshed.checklists ?? [] });
   }
   return map;
 }
@@ -260,7 +276,33 @@ function summarize(tasks: TaskFile[]): string {
 
 async function apply(client: KaitenClient, plan: ImportPlan, linkEpics: boolean): Promise<Record<string, number>> {
   const ids = new Map<string, number>();
-  const result = { created: 0, updated: 0, linked: 0, linkFailed: 0 };
+  const result = { created: 0, updated: 0, linked: 0, linkFailed: 0, checklists: 0, checklistItems: 0, checklistFailed: 0 };
+
+  /**
+   * Чек-листы карточки: создаются по одному с пунктами. Отказ не валит
+   * заливку — карточка уже есть, факт уходит в отчёт, повторный прогон
+   * досоздаст недостающее по имени.
+   */
+  const addChecklists = async (externalId: string, cardId: number, lists: ChecklistPatch[]): Promise<void> => {
+    for (const [index, list] of lists.entries()) {
+      try {
+        let checklistId = list.checklistId;
+        if (checklistId === undefined) {
+          checklistId = (await client.createChecklist(cardId, list.name, index + 1)).id;
+          result.checklists++;
+        }
+        // Досоздаваемые пункты идут в конец: sort_order после имеющихся.
+        const base = list.checklistId === undefined ? 0 : 1000;
+        for (const [i, item] of list.items.entries()) {
+          await client.addChecklistItem(checklistId, item, base + i + 1);
+          result.checklistItems++;
+        }
+      } catch (error) {
+        result.checklistFailed++;
+        console.warn(`  ! чек-лист «${list.name}» у ${externalId}: ${(error as Error).message}`);
+      }
+    }
+  };
 
   for (const action of plan.actions) {
     if (action.kind === 'create') {
@@ -278,6 +320,7 @@ async function apply(client: KaitenClient, plan: ImportPlan, linkEpics: boolean)
       ids.set(action.externalId, card.id);
       result.created++;
       console.log(`  + ${action.externalId} → карточка ${card.id}`);
+      await addChecklists(action.externalId, card.id, action.checklists);
     } else if (action.kind === 'update') {
       await client.updateCard(action.cardId, action.payload);
       ids.set(action.externalId, action.cardId);
@@ -285,6 +328,8 @@ async function apply(client: KaitenClient, plan: ImportPlan, linkEpics: boolean)
       console.log(`  ~ ${action.externalId} (${action.reasons.join(', ')})`);
     } else if (action.kind === 'unchanged') {
       ids.set(action.externalId, action.cardId);
+    } else if (action.kind === 'checklists') {
+      await addChecklists(action.externalId, action.cardId, action.checklists);
     }
   }
 
@@ -339,7 +384,8 @@ async function main(): Promise<void> {
   const limited = args.limit !== null && selected.length > args.limit;
   if (limited) selected = selected.slice(0, args.limit ?? undefined);
 
-  const client = hasCreds ? new KaitenClient({ domain, token }) : null;
+  // Пауза между запросами: живьём всплеск записей обрывался сетевой ошибкой.
+  const client = hasCreds ? new KaitenClient({ domain, token, minIntervalMs: 150 }) : null;
   const existing =
     client && !unmapped
       ? await loadExisting(client, mapping.boardId, new Set(selected.map((t) => t.externalId)))
@@ -362,8 +408,13 @@ async function main(): Promise<void> {
   console.log(`Репозитории: ${repos.map((r) => `${r.name}${r.url ? '' : ' (без origin)'}`).join(', ')}`);
   console.log(`Задач найдено: ${allTasks.length}, отобрано: ${selected.length}${limited ? ' (обрезано --limit)' : ''}`);
   console.log(
-    `План: создать ${plan.stats.create}, обновить ${plan.stats.update}, без изменений ${plan.stats.unchanged}, связей ${plan.stats.link}`,
+    `План: создать ${plan.stats.create}, обновить ${plan.stats.update}, без изменений ${plan.stats.unchanged}, связей ${plan.stats.link}, ` +
+      `досоздать чек-листы у ${plan.stats.checklists}`,
   );
+  const listed = plan.actions.flatMap((a) => (a.kind === 'create' || a.kind === 'checklists' ? a.checklists : []));
+  if (listed.length > 0) {
+    console.log(`Чек-листов в плане: ${listed.length}, пунктов: ${listed.reduce((n, c) => n + c.items.length, 0)}`);
+  }
   console.log(`Срез: ${summarize(selected)}`);
 
   if (issues.length > 0) {
@@ -384,7 +435,8 @@ async function main(): Promise<void> {
       console.log('\nПрименение:');
       applied = await apply(client, plan, args.linkEpics);
       console.log(
-        `Итог: создано ${applied.created}, обновлено ${applied.updated}, связей ${applied.linked}, связей не вышло ${applied.linkFailed}`,
+        `Итог: создано ${applied.created}, обновлено ${applied.updated}, связей ${applied.linked}, связей не вышло ${applied.linkFailed}, ` +
+          `чек-листов ${applied.checklists} (пунктов ${applied.checklistItems}), чек-листов не вышло ${applied.checklistFailed}`,
       );
     } else {
       console.log('\nЗаписей не сделано. Для реальной заливки добавьте --apply.');
@@ -418,7 +470,15 @@ async function main(): Promise<void> {
               ? { kind: a.kind, externalId: a.externalId, cardId: a.cardId }
               : a.kind === 'update'
                 ? { kind: a.kind, externalId: a.externalId, cardId: a.cardId, reasons: a.reasons }
-                : { kind: a.kind, externalId: a.externalId, title: a.title, dir: a.task.dir },
+                : a.kind === 'checklists'
+                  ? { kind: a.kind, externalId: a.externalId, cardId: a.cardId, checklists: a.checklists.map((c) => `${c.name} (${c.items.length})`) }
+                  : {
+                      kind: a.kind,
+                      externalId: a.externalId,
+                      title: a.title,
+                      dir: a.task.dir,
+                      checklists: a.checklists.map((c) => `${c.name} (${c.items.length})`),
+                    },
         ),
       },
       null,

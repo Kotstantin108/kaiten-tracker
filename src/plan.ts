@@ -17,6 +17,7 @@
 
 import { createHash } from 'node:crypto';
 
+import { extractChecklists, type Checklist } from './checklists.js';
 import type { CardPayload } from './kaiten-client.js';
 import type { FolderStatus, Priority, TaskFile, TaskType } from './task-source.js';
 import { rewriteRelativeLinks } from './task-source.js';
@@ -44,6 +45,30 @@ export interface ExistingCard {
   columnId?: number;
   /** `undefined` — описание не читали (список карточек его не отдаёт). */
   description?: string;
+  /**
+   * Родители карточки из `parents_ids` (список карточек его отдаёт; `null` —
+   * родителей нет). `undefined` — неизвестно, тогда связь планируется как раньше.
+   */
+  parentIds?: number[];
+  /**
+   * Дети карточки из `children_ids`. Нужны отдельно: живьём после архивации
+   * эпика у story пропал родитель (`parents_ids = null`), а у эпика ребёнок
+   * остался — связь видна только с одной стороны.
+   */
+  childIds?: number[];
+  /** Чек-листы карточки: id, имя, тексты пунктов; `undefined` — не читали. */
+  checklists?: ExistingChecklist[];
+}
+
+export interface ExistingChecklist {
+  id: number;
+  name: string;
+  itemTexts: string[];
+}
+
+/** Что досоздать: весь чек-лист (`checklistId` нет) или недостающие пункты существующего. */
+export interface ChecklistPatch extends Checklist {
+  checklistId?: number;
 }
 
 export interface RenderOptions {
@@ -52,7 +77,14 @@ export interface RenderOptions {
 }
 
 export type PlanAction =
-  | { kind: 'create'; externalId: string; title: string; payload: CardPayload; task: TaskFile }
+  | { kind: 'create'; externalId: string; title: string; payload: CardPayload; task: TaskFile; checklists: Checklist[] }
+  /**
+   * Недостающее у существующей карточки: чек-лист целиком, если нет такого
+   * имени, иначе — только пункты, которых нет по тексту. Имеющееся не меняется
+   * и не удаляется (отметки ставят в Kaiten). Добивает и частично созданное
+   * при оборванном прогоне.
+   */
+  | { kind: 'checklists'; externalId: string; cardId: number; checklists: ChecklistPatch[] }
   | {
       kind: 'update';
       externalId: string;
@@ -78,13 +110,16 @@ export interface PlanWarning {
 export interface ImportPlan {
   actions: PlanAction[];
   warnings: PlanWarning[];
-  stats: { create: number; update: number; unchanged: number; link: number };
+  stats: { create: number; update: number; unchanged: number; link: number; checklists: number };
 }
 
-/** Короткий хеш тела карточки: заголовок + статус + описание без маркера. */
-export function fingerprint(parts: { title: string; status: string; description: string }): string {
+/** Короткий хеш тела карточки: заголовок + статус + описание без маркера + пункты чек-листов. */
+export function fingerprint(parts: { title: string; status: string; description: string; checklists?: Checklist[] }): string {
   const body = parts.description.replace(FINGERPRINT_RE, '').trimEnd();
-  return createHash('sha256').update(`${parts.title}\n${parts.status}\n${body}`).digest('hex').slice(0, 16);
+  // Пункты в описание не попадают, поэтому входят в хеш отдельно — иначе правка
+  // пункта в файле не считалась бы изменением. Без пунктов хеш прежний.
+  const lists = parts.checklists && parts.checklists.length > 0 ? `\n${JSON.stringify(parts.checklists)}` : '';
+  return createHash('sha256').update(`${parts.title}\n${parts.status}\n${body}${lists}`).digest('hex').slice(0, 16);
 }
 
 export function readFingerprint(description: string | undefined): string | null {
@@ -99,11 +134,20 @@ export function readFingerprint(description: string | undefined): string | null 
  * папку задачи в git и маркером идемпотентности.
  */
 export function renderDescription(task: TaskFile, options: RenderOptions): string {
+  return renderCard(task, options).description;
+}
+
+/**
+ * Описание и чек-листы карточки. Пункты `- [ ]` уезжают из описания в
+ * чек-листы: Kaiten не отображает markdown-чекбоксы (проверено живьём 23.09.2026).
+ */
+export function renderCard(task: TaskFile, options: RenderOptions): { description: string; checklists: Checklist[] } {
   const hasUrl = task.repoUrl.length > 0;
-  const body =
+  const linked =
     options.rewriteLinks && hasUrl
       ? rewriteRelativeLinks(task.body, { taskDir: task.dir, repoUrl: task.repoUrl, branch: task.branch })
       : task.body;
+  const { body, checklists } = extractChecklists(linked);
 
   const source = hasUrl
     ? `[\`${task.dir}\`](${task.repoUrl.replace(/\/+$/, '')}/tree/${task.branch}/${task.dir})`
@@ -120,8 +164,23 @@ export function renderDescription(task: TaskFile, options: RenderOptions): strin
     .join('\n');
 
   const withoutMarker = `${body.trimEnd()}\n${tail}\n`;
-  const hash = fingerprint({ title: task.title, status: task.status, description: withoutMarker });
-  return `${withoutMarker}\n<!-- kaiten-sync:${hash} -->\n`;
+  const hash = fingerprint({ title: task.title, status: task.status, description: withoutMarker, checklists });
+  return { description: `${withoutMarker}\n<!-- kaiten-sync:${hash} -->\n`, checklists };
+}
+
+export function missingChecklists(wanted: Checklist[], existing: ExistingChecklist[]): ChecklistPatch[] {
+  const out: ChecklistPatch[] = [];
+  for (const list of wanted) {
+    const found = existing.find((e) => e.name === list.name);
+    if (!found) {
+      out.push(list);
+      continue;
+    }
+    const have = new Set(found.itemTexts);
+    const items = list.items.filter((i) => !have.has(i.text));
+    if (items.length > 0) out.push({ name: list.name, items, checklistId: found.id });
+  }
+  return out;
 }
 
 function buildPayload(task: TaskFile, mapping: BoardMapping, description: string): CardPayload {
@@ -141,7 +200,8 @@ function buildPayload(task: TaskFile, mapping: BoardMapping, description: string
   const properties: Record<string, unknown> = {};
   if (mapping.priorityProperty) {
     const value = mapping.priorityProperty.values[task.meta.priority];
-    if (value !== undefined) properties[`id_${mapping.priorityProperty.id}`] = value;
+    // Селект: API ждёт массив id вариантов — `id_6: [12]` (документация cards/create-new-card).
+    if (value !== undefined) properties[`id_${mapping.priorityProperty.id}`] = [value];
   }
   if (mapping.repoProperty) {
     properties[`id_${mapping.repoProperty.id}`] = task.repoName;
@@ -174,7 +234,7 @@ export function buildPlan(input: BuildPlanInput): ImportPlan {
   const selected = new Set(ordered.map((t) => t.externalId));
 
   for (const task of ordered) {
-    const description = renderDescription(task, render);
+    const { description, checklists } = renderCard(task, render);
     const payload = buildPayload(task, mapping, description);
     const card = existing.get(task.externalId);
 
@@ -183,8 +243,18 @@ export function buildPlan(input: BuildPlanInput): ImportPlan {
     }
 
     if (!card) {
-      actions.push({ kind: 'create', externalId: task.externalId, title: task.title, payload, task });
+      actions.push({ kind: 'create', externalId: task.externalId, title: task.title, payload, task, checklists });
       continue;
+    }
+
+    // Недостающие чек-листы существующей карточки — по имени; имеющиеся не трогаем.
+    if (checklists.length > 0) {
+      if (card.checklists === undefined) {
+        warnings.push({ externalId: task.externalId, detail: 'чек-листы карточки не прочитаны — пункты не перенесены' });
+      } else {
+        const missing = missingChecklists(checklists, card.checklists);
+        if (missing.length > 0) actions.push({ kind: 'checklists', externalId: task.externalId, cardId: card.id, checklists: missing });
+      }
     }
 
     const reasons: string[] = [];
@@ -194,10 +264,10 @@ export function buildPlan(input: BuildPlanInput): ImportPlan {
       reasons.push('заголовок');
       patch.title = task.title;
     }
-    if (payload.column_id !== undefined && card.columnId !== undefined && card.columnId !== payload.column_id) {
-      reasons.push(`колонка (статус ${task.status})`);
-      patch.column_id = payload.column_id;
-    }
+    // Колонку ставим только при создании. Дальше статусом владеет Kaiten
+    // (inbox/backlog/ready/cancelled — Q30) или интеграция с GitHub
+    // (in-progress/review/done): проверено живьём, что карточку двигают в
+    // интерфейсе, и повторная заливка тащила бы её обратно.
 
     const wanted = readFingerprint(description);
     const actual = readFingerprint(card.description);
@@ -229,12 +299,17 @@ export function buildPlan(input: BuildPlanInput): ImportPlan {
         });
         continue;
       }
+      const childCard = existing.get(task.externalId);
+      const parentCard = existing.get(parent);
+      // Связь уже есть — второй POST /children не нужен (проверено живьём:
+      // без этой проверки каждый повтор планировал связь заново).
+      if (childCard && parentCard && (childCard.parentIds?.includes(parentCard.id) || parentCard.childIds?.includes(childCard.id))) continue;
       actions.push({
         kind: 'link',
         childExternalId: task.externalId,
         parentExternalId: parent,
-        childCardId: existing.get(task.externalId)?.id ?? null,
-        parentCardId: existing.get(parent)?.id ?? null,
+        childCardId: childCard?.id ?? null,
+        parentCardId: parentCard?.id ?? null,
       });
     }
   }
@@ -244,6 +319,7 @@ export function buildPlan(input: BuildPlanInput): ImportPlan {
     update: actions.filter((a) => a.kind === 'update').length,
     unchanged: actions.filter((a) => a.kind === 'unchanged').length,
     link: actions.filter((a) => a.kind === 'link').length,
+    checklists: actions.filter((a) => a.kind === 'checklists').length,
   };
 
   return { actions, warnings, stats };

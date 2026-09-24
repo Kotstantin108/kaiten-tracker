@@ -73,7 +73,7 @@ describe('buildPlan', () => {
       expect(action.payload.text_format_type_id).toBe(1);
       expect(action.payload.column_id).toBe(11);
       expect(action.payload.type_id).toBe(2);
-      expect(action.payload.properties).toEqual({ id_42: 'p1', id_43: 'acme-app' });
+      expect(action.payload.properties).toEqual({ id_42: ['p1'], id_43: 'acme-app' });
     }
   });
 
@@ -97,17 +97,53 @@ describe('buildPlan', () => {
     }
   });
 
-  it('переезд задачи между папками двигает карточку по колонкам', () => {
+  it('колонку существующей карточки не трогает: статусом после создания владеет Kaiten (Q30)', () => {
     const before = task({ externalId: '20260916_x', title: 'Задача' });
     const existing = new Map([[before.externalId, asExisting(100, before)]]);
     const moved = { ...before, status: 'in-progress' as const, dir: 'tasks/in-progress/20260916_x' };
     const plan = buildPlan({ tasks: [moved], existing, mapping, render, linkEpics: false });
     const action = plan.actions[0];
-    expect(action.kind).toBe('update');
+    // Обновление тела возможно (путь папки входит в описание), колонки — нет.
     if (action.kind === 'update') {
-      expect(action.payload.column_id).toBe(12);
-      expect(action.reasons.some((r) => r.startsWith('колонка'))).toBe(true);
+      expect(action.payload.column_id).toBeUndefined();
+      expect(action.reasons.some((r) => r.startsWith('колонка'))).toBe(false);
     }
+  });
+
+  it('чек-листы: новая карточка везёт их с собой, у существующей досоздаются только недостающие по имени', () => {
+    const t = task({ externalId: '20260916_c', title: 'С пунктами', body: '## Критерии\n\n- [ ] один\n\n## Шаги\n\n- [x] два\n' });
+    const created = buildPlan({ tasks: [t], existing: new Map(), mapping, render, linkEpics: false }).actions[0];
+    expect(created.kind === 'create' && created.checklists.map((c) => c.name)).toEqual(['Критерии', 'Шаги']);
+    expect(created.kind === 'create' && created.payload.description).not.toContain('- [ ]');
+
+    const existing = new Map([[t.externalId, { ...asExisting(100, t), checklists: [{ id: 7, name: 'Критерии', itemTexts: ['один'] }] }]]);
+    const plan = buildPlan({ tasks: [t], existing, mapping, render, linkEpics: false });
+    const lists = plan.actions.find((a) => a.kind === 'checklists');
+    expect(lists?.kind === 'checklists' && lists.checklists).toEqual([{ name: 'Шаги', items: [{ text: 'два', checked: true }] }]);
+  });
+
+  it('частично созданный чек-лист (оборванный прогон) добивается недостающими пунктами', () => {
+    const t = task({ externalId: '20260916_p', title: 'П', body: '## Критерии\n\n- [ ] один\n- [ ] два\n- [x] три\n' });
+    const existing = new Map([[t.externalId, { ...asExisting(100, t), checklists: [{ id: 7, name: 'Критерии', itemTexts: ['один'] }] }]]);
+    const lists = buildPlan({ tasks: [t], existing, mapping, render, linkEpics: false }).actions.find((a) => a.kind === 'checklists');
+    expect(lists?.kind === 'checklists' && lists.checklists).toEqual([
+      { name: 'Критерии', checklistId: 7, items: [{ text: 'два', checked: false }, { text: 'три', checked: true }] },
+    ]);
+  });
+
+  it('связь, видная только со стороны эпика, тоже считается существующей', () => {
+    const epic = task({
+      externalId: '20260916_epic',
+      title: 'Эпик',
+      meta: { date: '20260916', type: 'epic', priority: 'p1', slug: 'epic' },
+    });
+    const story = task({ externalId: '20260916_story', title: 'Стори', parentExternalId: '20260916_epic' });
+    // Живой случай: эпик в архиве, у story parents_ids = null, у эпика children_ids = [story].
+    const existing = new Map([
+      ['20260916_epic', { id: 1, externalId: '20260916_epic', childIds: [2] }],
+      ['20260916_story', { id: 2, externalId: '20260916_story', parentIds: [] }],
+    ]);
+    expect(buildPlan({ tasks: [story, epic], existing, mapping, render, linkEpics: true }).stats.link).toBe(0);
   });
 
   it('непрочитанное описание не выдаётся за совпадение', () => {
@@ -130,6 +166,26 @@ describe('buildPlan', () => {
     const creates = plan.actions.filter((a) => a.kind === 'create').map((a) => a.externalId);
     expect(creates).toEqual(['20260916_epic', '20260916_story']);
     expect(plan.stats.link).toBe(1);
+  });
+
+  it('уже существующая связь не планируется повторно, неизвестная — планируется', () => {
+    const epic = task({
+      externalId: '20260916_epic',
+      title: 'Эпик',
+      meta: { date: '20260916', type: 'epic', priority: 'p1', slug: 'epic' },
+    });
+    const story = task({ externalId: '20260916_story', title: 'Стори', parentExternalId: '20260916_epic' });
+    const linked = new Map([
+      ['20260916_epic', { id: 1, externalId: '20260916_epic', parentIds: [] }],
+      ['20260916_story', { id: 2, externalId: '20260916_story', parentIds: [1] }],
+    ]);
+    expect(buildPlan({ tasks: [story, epic], existing: linked, mapping, render, linkEpics: true }).stats.link).toBe(0);
+
+    const unknown = new Map([
+      ['20260916_epic', { id: 1, externalId: '20260916_epic' }],
+      ['20260916_story', { id: 2, externalId: '20260916_story' }],
+    ]);
+    expect(buildPlan({ tasks: [story, epic], existing: unknown, mapping, render, linkEpics: true }).stats.link).toBe(1);
   });
 
   it('родитель вне выборки не ломает заливку, а попадает в предупреждения', () => {

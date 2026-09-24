@@ -26,7 +26,8 @@
  * `GET /boards/{id}/columns` (у колонки есть `type`: 1 очередь, 2 в работе,
  * 3 готово, и вложенные `subcolumns`), `GET /card-types` (пагинация, limit до
  * 100), `GET /company/custom-properties` (с `include_values=true` приходят
- * значения каталога; значения селектов отдельно — `/custom-property-select-values`).
+ * значения каталога; значения селектов — `/company/custom-properties/{id}/select-values`;
+ * общий путь `/custom-property-select-values` живьём 23.09.2026 ответил 404).
  * Формат ответов при этом описан не целиком, поэтому `inspect` сохраняет сырой
  * JSON в `tmp/`, и маппинг настраивается по нему, а не по догадкам.
  *
@@ -45,12 +46,63 @@ export const CardSchema = z
     lane_id: z.number().optional(),
     type_id: z.number().optional(),
     archived: z.boolean().optional(),
+    /** Родители карточки; `null` — родителей нет (снято с живого аккаунта 23.09.2026). */
+    parents_ids: z.array(z.number()).nullable().optional(),
+    children_ids: z.array(z.number()).nullable().optional(),
+    /** Чек-листы приходят в карточке целиком (`GET /cards/{id}`); читаем только имена. */
+    checklists: z
+      .array(
+        z
+          .object({
+            id: z.number(),
+            name: z.string().nullable().optional(),
+            items: z.array(z.object({ text: z.string().nullable().optional() }).passthrough()).nullable().optional(),
+          })
+          .passthrough(),
+      )
+      .nullable()
+      .optional(),
   })
   .passthrough();
 
 export type Card = z.infer<typeof CardSchema>;
 
 const CardListSchema = z.array(CardSchema);
+
+const ColumnSchema = z
+  .object({ id: z.number(), title: z.string().default(''), type: z.number().optional(), sort_order: z.number().optional() })
+  .passthrough();
+const LaneSchema = z.object({ id: z.number(), title: z.string().nullable().optional() }).passthrough();
+
+export const SpaceSchema = z
+  .object({ id: z.number(), uid: z.string().optional(), title: z.string().default(''), archived: z.boolean().optional() })
+  .passthrough();
+export type Space = z.infer<typeof SpaceSchema>;
+
+export const BoardSchema = z
+  .object({
+    id: z.number(),
+    title: z.string().default(''),
+    columns: z.array(ColumnSchema).default([]),
+    lanes: z.array(LaneSchema).default([]),
+  })
+  .passthrough();
+export type Board = z.infer<typeof BoardSchema>;
+
+export const CardTypeSchema = z
+  .object({ id: z.number(), name: z.string().default(''), letter: z.string().optional(), archived: z.boolean().optional() })
+  .passthrough();
+export type CardType = z.infer<typeof CardTypeSchema>;
+
+export const CustomPropertySchema = z
+  .object({ id: z.number(), name: z.string().default(''), type: z.string().optional(), condition: z.string().optional() })
+  .passthrough();
+export type CustomProperty = z.infer<typeof CustomPropertySchema>;
+
+export const SelectValueSchema = z
+  .object({ id: z.number(), value: z.string().default(''), condition: z.string().optional() })
+  .passthrough();
+export type SelectValue = z.infer<typeof SelectValueSchema>;
 
 export interface CardPayload {
   title: string;
@@ -78,6 +130,12 @@ export interface KaitenClientOptions {
   maxRetries?: number;
   /** Порог остатка лимита, ниже которого клиент ждёт окна. */
   rateLimitFloor?: number;
+  /**
+   * Минимальная пауза между запросами. Живьём 23.09.2026 всплеск записей
+   * (~40 запросов за секунды, ниже заявленных 50 rps) оборвался сетевой ошибкой
+   * `fetch failed` — поэтому массовые команды идут с паузой. 0 — без паузы.
+   */
+  minIntervalMs?: number;
 }
 
 export class KaitenApiError extends Error {
@@ -100,6 +158,8 @@ export class KaitenClient {
   private readonly sleep: (ms: number) => Promise<void>;
   private readonly maxRetries: number;
   private readonly rateLimitFloor: number;
+  private readonly minIntervalMs: number;
+  private lastRequestAt = 0;
 
   /** Счётчик запросов — уходит в отчёт, чтобы видеть цену прогона. */
   requestCount = 0;
@@ -112,6 +172,29 @@ export class KaitenClient {
     this.sleep = options.sleep ?? defaultSleep;
     this.maxRetries = options.maxRetries ?? 5;
     this.rateLimitFloor = options.rateLimitFloor ?? 2;
+    this.minIntervalMs = options.minIntervalMs ?? 0;
+  }
+
+  /**
+   * Сетевой обрыв (fetch бросил, ответа нет). Чтение повторяем — оно без
+   * последствий. Запись — нет: запрос мог дойти до сервера, и повтор создал бы
+   * дубль карточки или пункта; такие прогоны перезапускаются целиком, заливка
+   * идемпотентна.
+   */
+  private async send(method: string, path: string, url: string, init: RequestInit, attempt: number): Promise<Response | null> {
+    if (this.minIntervalMs > 0) {
+      const wait = this.lastRequestAt + this.minIntervalMs - Date.now();
+      if (wait > 0) await this.sleep(wait);
+    }
+    this.lastRequestAt = Date.now();
+    try {
+      return await this.fetchImpl(url, init);
+    } catch (error) {
+      const cause = (error as { cause?: { code?: string } }).cause?.code;
+      const detail = `${method} ${path}: сеть — ${(error as Error).message}${cause ? ` (${cause})` : ''}`;
+      if (method !== 'GET' || attempt >= this.maxRetries) throw new KaitenApiError(detail, 0, '');
+      return null;
+    }
   }
 
   private async request<T>(
@@ -126,7 +209,7 @@ export class KaitenClient {
 
     for (let attempt = 0; ; attempt++) {
       this.requestCount++;
-      const response = await this.fetchImpl(url.toString(), {
+      const response = await this.send(method, path, url.toString(), {
         method,
         headers: {
           Authorization: `Bearer ${this.token}`,
@@ -134,7 +217,11 @@ export class KaitenClient {
           'X-kaiten-Client': 'kaiten-tracker-import',
         },
         body: opts.body === undefined ? undefined : JSON.stringify(opts.body),
-      });
+      }, attempt);
+      if (response === null) {
+        await this.sleep(Math.min(2 ** attempt * 500, 30_000));
+        continue;
+      }
 
       if (response.status === 429 || response.status >= 500) {
         if (attempt >= this.maxRetries) {
@@ -235,6 +322,85 @@ export class KaitenClient {
   }
 
   /**
+   * Чек-лист карточки и его пункты — по документации 23.09.2026:
+   * `POST /cards/{card_id}/checklists {name}`, `POST /checklists/{id}/items
+   * {text, checked, sort_order}`.
+   */
+  async createChecklist(cardId: number, name: string, sortOrder: number): Promise<{ id: number }> {
+    return this.request('POST', `/cards/${cardId}/checklists`, {
+      body: { name, sort_order: sortOrder },
+      schema: z.object({ id: z.number() }).passthrough(),
+    });
+  }
+
+  async addChecklistItem(checklistId: number, item: { text: string; checked: boolean }, sortOrder: number): Promise<unknown> {
+    return this.request('POST', `/checklists/${checklistId}/items`, {
+      body: { text: item.text, checked: item.checked, sort_order: sortOrder },
+      schema: z.unknown(),
+    });
+  }
+
+  // ── Структура аккаунта: чтение и создание для `setup` ─────────────────────
+  // Пути и обязательные поля проверены по документации 23.09.2026:
+  // POST /spaces {title}; POST /spaces/{id}/boards {title, columns[{title,type}]}
+  // (без columns/lanes создаются колонка и дорожка по умолчанию, пустой массив —
+  // ошибка); POST /boards/{id}/columns {title, type}; POST /card-types
+  // {name, letter, color 2–25}; POST /company/custom-properties {name, type};
+  // POST /company/custom-properties/{id}/select-values {value}.
+
+  async listSpaces(): Promise<Space[]> {
+    return this.request('GET', '/spaces', { schema: z.array(SpaceSchema) });
+  }
+
+  async createSpace(title: string): Promise<unknown> {
+    return this.request('POST', '/spaces', { body: { title }, schema: z.unknown() });
+  }
+
+  /** Доски пространства — сразу с колонками и дорожками. */
+  async listBoards(spaceId: number): Promise<Board[]> {
+    return this.request('GET', `/spaces/${spaceId}/boards`, { schema: z.array(BoardSchema) });
+  }
+
+  async createBoard(spaceId: number, title: string, columns: Array<{ title: string; type: 1 | 2 | 3 }>): Promise<unknown> {
+    const body = { title, columns: columns.map((c, i) => ({ ...c, sort_order: i + 1 })) };
+    return this.request('POST', `/spaces/${spaceId}/boards`, { body, schema: z.unknown() });
+  }
+
+  async createColumn(boardId: number, column: { title: string; type: 1 | 2 | 3; sort_order: number }): Promise<unknown> {
+    return this.request('POST', `/boards/${boardId}/columns`, { body: column, schema: z.unknown() });
+  }
+
+  async listCardTypes(): Promise<CardType[]> {
+    return this.request('GET', '/card-types', { query: { limit: 100 }, schema: z.array(CardTypeSchema) });
+  }
+
+  async createCardType(type: { name: string; letter: string; color: number }): Promise<CardType> {
+    return this.request('POST', '/card-types', { body: type, schema: CardTypeSchema });
+  }
+
+  async listCustomProperties(): Promise<CustomProperty[]> {
+    return this.request('GET', '/company/custom-properties', { schema: z.array(CustomPropertySchema) });
+  }
+
+  async createCustomProperty(property: { name: string; type: 'select' | 'string' }): Promise<CustomProperty> {
+    const body = property.type === 'select' ? { ...property, multi_select: false, show_on_facade: true } : property;
+    return this.request('POST', '/company/custom-properties', { body, schema: CustomPropertySchema });
+  }
+
+  async listSelectValues(propertyId: number): Promise<SelectValue[]> {
+    return this.request('GET', `/company/custom-properties/${propertyId}/select-values`, {
+      schema: z.array(SelectValueSchema),
+    });
+  }
+
+  async createSelectValue(propertyId: number, value: string): Promise<SelectValue> {
+    return this.request('POST', `/company/custom-properties/${propertyId}/select-values`, {
+      body: { value },
+      schema: SelectValueSchema,
+    });
+  }
+
+  /**
    * Сырые ответы структуры аккаунта — по ним настраивается маппинг. Пути взяты
    * из документации, но состав полей описан не полностью, поэтому сохраняется
    * весь ответ целиком. Каждый вызов изолирован: отказ одного эндпоинта не
@@ -256,7 +422,15 @@ export class KaitenClient {
     await probe('spaces', '/spaces');
     await probe('cardTypes', '/card-types', { limit: '100' });
     await probe('customProperties', '/company/custom-properties', { include_values: 'true' });
-    await probe('selectValues', '/custom-property-select-values');
+    // Варианты селекта — у каждого свойства свои: /company/custom-properties/{id}/select-values.
+    // Общий путь /custom-property-select-values живьём отвечает 404.
+    const props = out.customProperties as { ok: boolean; data?: unknown } | undefined;
+    const selects = z
+      .array(z.object({ id: z.number(), type: z.string().optional() }).passthrough())
+      .safeParse(props?.ok ? props.data : []);
+    for (const p of selects.success ? selects.data.filter((x) => x.type === 'select') : []) {
+      await probe(`selectValues_${p.id}`, `/company/custom-properties/${p.id}/select-values`);
+    }
     if (spaceId !== undefined) await probe('boards', `/spaces/${spaceId}/boards`);
     if (boardId !== undefined) await probe('columns', `/boards/${boardId}/columns`);
     return out;
