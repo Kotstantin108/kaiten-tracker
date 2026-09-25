@@ -175,11 +175,19 @@ describe('скелет и раздел критериев по типу', () => 
     expect(sectionText(body, 'Нет такого')).toBeNull();
   });
 
-  it('спайк закрыт без ответа — ошибка', () => {
+  it('спайк закрыт без ответа — предупреждение линтера (ошибкой его делает закрытие)', () => {
     const fm = frontmatter({ type: 'spike', status: 'done' });
-    expect(messages(lintTask(serializeTaskDocument(fm, `\n${renderSkeleton('spike')}`)).issues, 'error')).toEqual(['спайк закрыт, а раздел «Ответ» пуст']);
+    expect(messages(lintTask(serializeTaskDocument(fm, `\n${renderSkeleton('spike')}`)).issues, 'warning')).toContain('спайк закрыт, а раздел «Ответ» пуст');
     const answered = renderSkeleton('spike').replace('## Ответ\n\n', '## Ответ\n\nДа, работает.\n');
-    expect(messages(lintTask(serializeTaskDocument(fm, `\n${answered}`)).issues, 'error')).toEqual([]);
+    expect(messages(lintTask(serializeTaskDocument(fm, `\n${answered}`)).issues, 'warning')).not.toContain('спайк закрыт, а раздел «Ответ» пуст');
+  });
+
+  it('старые заголовки критериев засчитываются, у закрытой задачи нехватка критериев — предупреждение', () => {
+    const legacy = '\n## Критерии готовности (эпик)\n\n- [x] Готово\n';
+    expect(messages(lintTask(serializeTaskDocument(frontmatter({ type: 'bug' }), legacy)).issues, 'error')).toEqual([]);
+    const empty = '\n## Что сделали\n\nВсё.\n';
+    expect(messages(lintTask(serializeTaskDocument(frontmatter({ status: 'done' }), empty)).issues, 'error')).toEqual([]);
+    expect(messages(lintTask(serializeTaskDocument(frontmatter(), empty)).issues, 'error')).toEqual(['нет раздела «Критерии готовности»']);
   });
 
   it('«Шаги» чекбоксами у эпика — предупреждение', () => {

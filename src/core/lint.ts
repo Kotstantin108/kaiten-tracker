@@ -14,7 +14,7 @@ import { z } from 'zod';
 
 import { parseTaskDocument, serializeTaskDocument, TaskParseError, type RawTaskDocument } from './document.js';
 import { CLOSED_STATUSES, FrontmatterSchema, type Frontmatter } from './schema.js';
-import { countChecklistItems, sectionText, SKELETONS, SPIKE_ANSWER_SECTION } from './skeleton.js';
+import { countChecklistItems, criteriaText, sectionText, SKELETONS, SPIKE_ANSWER_SECTION } from './skeleton.js';
 
 export interface LintIssue {
   level: 'error' | 'warning';
@@ -126,16 +126,19 @@ export function lintTask(text: string, context: LintContext = {}): LintResult {
   }
 
   const skeleton = SKELETONS[fm.type];
+  // Требования к телу — к живым задачам. Закрытая задача — история: её тело
+  // писали до формата v2, и переписывать архив ради линтера незачем.
+  const bodyLevel: LintIssue['level'] = CLOSED_STATUSES.includes(fm.status) ? 'warning' : 'error';
   if (skeleton.criteria) {
-    const criteria = sectionText(body, skeleton.criteria);
+    const criteria = sectionText(body, skeleton.criteria) ?? criteriaText(body);
     if (criteria === null) {
-      issues.push({ level: 'error', message: `нет раздела «${skeleton.criteria}»` });
+      issues.push({ level: bodyLevel, message: `нет раздела «${skeleton.criteria}»` });
     } else if (countChecklistItems(criteria) === 0) {
-      issues.push({ level: 'error', message: `в разделе «${skeleton.criteria}» нет ни одного пункта \`- [ ]\`` });
+      issues.push({ level: bodyLevel, message: `в разделе «${skeleton.criteria}» нет ни одного пункта \`- [ ]\`` });
     }
   }
   if (fm.type === 'spike' && fm.status === 'done' && !sectionText(body, SPIKE_ANSWER_SECTION)?.trim()) {
-    issues.push({ level: 'error', message: `спайк закрыт, а раздел «${SPIKE_ANSWER_SECTION}» пуст` });
+    issues.push({ level: 'warning', message: `спайк закрыт, а раздел «${SPIKE_ANSWER_SECTION}» пуст` });
   }
   if (fm.type === 'epic') {
     const steps = sectionText(body, 'Шаги');

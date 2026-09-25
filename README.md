@@ -51,6 +51,7 @@ npm run import -- --only acme-app:20260916_export-csv --apply
 | `src/core/document.ts` | Парсер и сериализатор файла задачи с фиксированным порядком ключей, `content_hash`, проверка правки чужих полей |
 | `src/core/skeleton.ts` | Скелет тела по типу и раздел критериев, который обязан быть непустым |
 | `src/core/lint.ts`, `src/tasks-lint.ts` | Линтер файла и всего репозитория задач (`npm run tasks:lint -- <dir> [--project p]`, выход 0/1) |
+| `src/convert/convert-plan.ts`, `src/convert/git-history.ts`, `src/convert.ts` | Разовый конвертер старых школ в репозиторий задач v2: чистая часть, история git одним проходом, CLI `npm run convert` (без `--write` только отчёт) |
 | `src/core/ulid.ts` | ULID для поля `id` без зависимостей |
 | `tracker.config.json` | Репозитории-источники и маппинг доски Kaiten |
 

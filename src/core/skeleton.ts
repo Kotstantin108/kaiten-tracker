@@ -5,7 +5,9 @@
  * У спайка раздела критериев нет: его результат — ответ на вопрос, а не
  * отмеченные пункты. Поэтому для спайка линтер требует непустой «Ответ» при
  * закрытии (`done`), а не критерии при создании. Подтверждено владельцем
- * 25.09.2026.
+ * 25.09.2026. Линтер отмечает пустой «Ответ» у закрытого спайка только
+ * предупреждением: он не отличает закрытие сейчас от архива до v2. Ошибкой
+ * это должна делать команда, которая закрывает задачу.
  */
 
 import type { TaskType } from './schema.js';
@@ -39,7 +41,8 @@ const FENCE_RE = /^\s*(```|~~~)/;
  * высокого уровня; `null`, если раздела нет. Заголовки внутри блоков кода не
  * считаются.
  */
-export function sectionText(body: string, name: string): string | null {
+export function sectionText(body: string, name: string | ((heading: string) => boolean)): string | null {
+  const matches = typeof name === 'string' ? (heading: string) => heading === name : name;
   const lines = body.split('\n');
   let inFence = false;
   let start = -1;
@@ -50,12 +53,22 @@ export function sectionText(body: string, name: string): string | null {
     const m = HEADING_RE.exec(lines[i]);
     if (!m) continue;
     if (start >= 0 && m[1].length <= level) return lines.slice(start, i).join('\n');
-    if (start < 0 && m[2].trim() === name) {
+    if (start < 0 && matches(m[2].replace(/[*_`]/g, '').trim())) {
       start = i + 1;
       level = m[1].length;
     }
   }
   return start >= 0 ? lines.slice(start).join('\n') : null;
+}
+
+/**
+ * Раздел критериев в том виде, как их писали до v2: «Критерии готовности
+ * (эпик)», «Критерий приёмки»… Засчитывается любой заголовок на «Критери».
+ * Заголовки при конвертации не переименовываются: по ним сопоставлены
+ * чек-листы «Агент · …» живых карточек.
+ */
+export function criteriaText(body: string): string | null {
+  return sectionText(body, (heading) => /^Критери/i.test(heading));
 }
 
 const ITEM_RE = /^\s*(?:[-*+]|\d+[.)])[ \t]+\[[ xX]\][ \t]+\S/;

@@ -93,7 +93,7 @@ export interface TaskFile {
 
 export interface SourceIssue {
   dir: string;
-  problem: 'no-task-md' | 'bad-folder-name' | 'status-mismatch';
+  problem: 'no-task-md' | 'bad-folder-name' | 'status-mismatch' | 'lenient-folder-name';
   detail: string;
 }
 
@@ -215,7 +215,8 @@ export function parseTaskFile(text: string): { header: TaskHeader; body: string 
  */
 export function parentExternalIdFromHeader(parent: string | null, repoName: string): string | null {
   if (!parent) return null;
-  const clean = parent.replace(/[\\/]+$/, '').trim();
+  // `Parent: tasks/…/20260513_… (обнаружен при snapshot)` — комментарий после пути.
+  const clean = parent.replace(/\s+\(.*\)\s*$/, '').replace(/[\\/]+$/, '').trim();
   if (!clean) return null;
   return externalIdFromFolder(basename(clean), repoName);
 }
@@ -245,8 +246,26 @@ export interface RepoSource {
   layout?: 'folders' | 'numbered';
 }
 
-/** Обход `tasks/`: каждая папка с `TASK.md` — задача, включая вложенные в эпик. */
-export function collectTasks(repo: RepoSource): SourceScan {
+/**
+ * Имя папки без валидного приоритета: `20260909_bug_dave_visual-check`.
+ * Импорт такие пропускает (приоритет нужен карточке), конвертер берёт с
+ * пустым приоритетом и пишет в отчёт: задача не должна потеряться.
+ */
+const LENIENT_FOLDER_RE = /^(\d{8})_([a-z]+)_([^_]+)_(.+)$/;
+
+export function parseFolderNameLenient(name: string): FolderMeta | null {
+  const strict = parseFolderName(name);
+  if (strict) return strict;
+  const m = LENIENT_FOLDER_RE.exec(name);
+  if (!m || !(TASK_TYPES as readonly string[]).includes(m[2])) return null;
+  return { date: m[1], type: m[2] as TaskType, priority: null, slug: m[4] };
+}
+
+/**
+ * Обход `tasks/`: каждая папка с `TASK.md` — задача, включая вложенные в эпик.
+ * `lenient` — принять имя папки без валидного приоритета (нужно конвертеру).
+ */
+export function collectTasks(repo: RepoSource, options: { lenient?: boolean } = {}): SourceScan {
   const repoRoot = repo.path;
   const tasksDirName = repo.tasksDirName ?? 'tasks';
   const tasks: TaskFile[] = [];
@@ -258,7 +277,8 @@ export function collectTasks(repo: RepoSource): SourceScan {
       const relDir = relative(repoRoot, full).split(sep).join(posix.sep);
       const files = listFiles(full);
       const hasTask = files.includes('TASK.md');
-      const meta = parseFolderName(name);
+      const strictMeta = parseFolderName(name);
+      const meta = strictMeta ?? (options.lenient ? parseFolderNameLenient(name) : null);
 
       if (!hasTask) {
         // Не всякая папка — задача: `backlog/`, `done/2026-05/` — это бакеты.
@@ -284,6 +304,10 @@ export function collectTasks(repo: RepoSource): SourceScan {
         issues.push({ dir: relDir, problem: 'bad-folder-name', detail: 'папка вне известных бакетов tasks/' });
         walk(full, parentExternalId);
         continue;
+      }
+
+      if (!strictMeta) {
+        issues.push({ dir: relDir, problem: 'lenient-folder-name', detail: 'имя не по шаблону, приоритета нет — взята без приоритета' });
       }
 
       const externalId = `${repo.name}:${meta.date}_${meta.slug}`;
@@ -408,7 +432,8 @@ export function rewriteRelativeLinks(
   const { taskDir, repoUrl, branch } = opts;
   const base = repoUrl.replace(/\/+$/, '');
   return body.replace(/\]\(([^)\s]+)(\s+"[^"]*")?\)/g, (match: string, target: string, title?: string) => {
-    if (/^(https?:|mailto:|#|\/\/)/i.test(target)) return match;
+    // `/…` — путь от корня репозитория задач (вложения после конвертации), не переписываем.
+    if (/^(https?:|mailto:|#|\/)/i.test(target)) return match;
     const [pathPart, anchor] = target.split('#');
     if (!pathPart) return match;
     const resolved = posix.normalize(posix.join(taskDir, pathPart));
