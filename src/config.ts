@@ -40,6 +40,8 @@ export const RepoSchema = z.object({
   url: z.string().optional(),
   branch: z.string().default('main'),
   tasksDirName: z.string().optional(),
+  /** `numbered` — школа globex (NNNN-slug.md), читается временным ридером пилота. */
+  layout: z.enum(['folders', 'numbered']).default('folders'),
 });
 export type RepoConfig = z.infer<typeof RepoSchema>;
 

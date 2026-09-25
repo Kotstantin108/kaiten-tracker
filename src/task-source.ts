@@ -49,7 +49,8 @@ export interface TaskHeader {
 export interface FolderMeta {
   date: string;
   type: TaskType;
-  priority: Priority;
+  /** `null` — приоритета нет (задачи globex); его ставят при разборе в Kaiten. */
+  priority: Priority | null;
   slug: string;
 }
 
@@ -84,6 +85,12 @@ export interface TaskFile {
   hasLog: boolean;
   /** Не-markdown файлы рядом (скриншоты, аудио) — в Kaiten не переносятся. */
   attachments: string[];
+  /** Путь к файлу задачи, если задача — отдельный файл, а не папка (формат globex). */
+  sourceFile?: string;
+  /** «Суть» для людей (формат v2); пока приходит из оверлея пилота. */
+  summary?: string;
+  /** Команда, если она не «по умолчанию»; пока приходит из оверлея пилота. */
+  team?: string;
 }
 
 export interface SourceIssue {
@@ -236,6 +243,8 @@ export interface RepoSource {
   url: string;
   branch: string;
   tasksDirName?: string;
+  /** Раскладка задач: папки-статусы (по умолчанию) или нумерованные файлы globex. */
+  layout?: 'folders' | 'numbered';
 }
 
 /** Обход `tasks/`: каждая папка с `TASK.md` — задача, включая вложенные в эпик. */

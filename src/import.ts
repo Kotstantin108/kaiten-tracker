@@ -19,6 +19,7 @@
  *
  * ФЛАГИ
  *   --project <key>                        проект из конфига (обязателен, если их несколько)
+ *   --overlay <path>                       «Суть» и команда задач, которых ещё нет в файлах (пилот)
  *   --scope pilot|active|active+done|all   что заливать (по умолч. active)
  *   --repo <name>[,<name>]                 какие репозитории из конфига
  *   --epic <slug>[,<slug>]                 для scope=pilot: эпики и их дерево
@@ -42,7 +43,10 @@ import { execFileSync } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, isAbsolute, join, resolve } from 'node:path';
 
+import { z } from 'zod';
+
 import { loadProject } from './config.js';
+import { collectNumberedTasks } from './numbered-source.js';
 import { KaitenClient, type Card } from './kaiten-client.js';
 import {
   buildPlan,
@@ -67,6 +71,7 @@ const DEFAULT_CONFIG = 'tracker.config.json';
 
 interface Args {
   project: string | null;
+  overlay: string | null;
   scope: ScopeName;
   repos: string[];
   epics: string[];
@@ -88,6 +93,7 @@ function fail(message: string, code: number): never {
 function parseArgs(argv: string[]): Args {
   const args: Args = {
     project: null,
+    overlay: null,
     scope: 'active',
     repos: [],
     epics: [],
@@ -111,6 +117,8 @@ function parseArgs(argv: string[]): Args {
     else if (a === '--no-rewrite-links') args.rewriteLinks = false;
     else if (a === '--scope') args.scope = val() as ScopeName;
     else if (a.startsWith('--scope=')) args.scope = tail('--scope=') as ScopeName;
+    else if (a === '--overlay') args.overlay = val();
+    else if (a.startsWith('--overlay=')) args.overlay = tail('--overlay=');
     else if (a === '--project') args.project = val();
     else if (a.startsWith('--project=')) args.project = tail('--project=');
     else if (a === '--repo') args.repos.push(...val().split(','));
@@ -190,6 +198,7 @@ function loadConfig(path: string, projectKey: string | null, wanted: string[]): 
       url: resolveRepoUrl(repoPath, repo.url),
       branch: repo.branch,
       tasksDirName: repo.tasksDirName,
+      layout: repo.layout,
     };
   });
 
@@ -207,6 +216,31 @@ function loadConfig(path: string, projectKey: string | null, wanted: string[]): 
   };
   const unmapped = k.boardId === 0 || Object.values(k.columns).every((id) => id === 0);
   return { repos, mapping, unmapped };
+}
+
+/**
+ * Оверлей пилота: поля формата v2, которых в старых файлах нет («Суть»,
+ * команда). Лежит в этом репозитории, потому что файлы задач чужих
+ * репозиториев синхронизатор не правит (AGENTS.md). После конвертера v2
+ * эти поля переедут во frontmatter, а оверлей удаляется.
+ */
+const OverlaySchema = z.record(
+  z.string(),
+  z.object({ summary: z.string().min(1).max(400).optional(), team: z.string().optional() }),
+);
+
+function applyOverlay(tasks: TaskFile[], path: string): { applied: number; missing: string[] } {
+  const overlay = OverlaySchema.parse(JSON.parse(readFileSync(path, 'utf8')));
+  let applied = 0;
+  const missing: string[] = [];
+  for (const task of tasks) {
+    const extra = overlay[task.externalId];
+    if (extra?.summary) task.summary = extra.summary;
+    if (extra?.team) task.team = extra.team;
+    if (extra) applied++;
+    if (!task.summary) missing.push(task.externalId);
+  }
+  return { applied, missing };
 }
 
 function toExisting(card: Card): ExistingCard | null {
@@ -363,7 +397,7 @@ async function main(): Promise<void> {
   const allTasks: TaskFile[] = [];
   const issues: SourceIssue[] = [];
   for (const repo of repos) {
-    const scan = collectTasks(repo);
+    const scan = repo.layout === 'numbered' ? collectNumberedTasks(repo) : collectTasks(repo);
     allTasks.push(...scan.tasks);
     issues.push(...scan.issues);
   }
@@ -376,6 +410,12 @@ async function main(): Promise<void> {
   });
   const limited = args.limit !== null && selected.length > args.limit;
   if (limited) selected = selected.slice(0, args.limit ?? undefined);
+
+  if (args.overlay) {
+    const { applied, missing } = applyOverlay(selected, args.overlay);
+    console.log(`Оверлей: полей добавлено у ${applied} задач; без «Сути»: ${missing.length}`);
+    for (const id of missing.slice(0, 10)) console.log(`  ! без «Сути»: ${id}`);
+  }
 
   // Пауза между запросами: живьём всплеск записей обрывался сетевой ошибкой.
   const client = hasCreds ? new KaitenClient({ domain, token, minIntervalMs: 150 }) : null;

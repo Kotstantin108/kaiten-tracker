@@ -162,11 +162,22 @@ export function renderCard(task: TaskFile, options: RenderOptions): { descriptio
     options.rewriteLinks && hasUrl
       ? rewriteRelativeLinks(task.body, { taskDir: task.dir, repoUrl: task.repoUrl, branch: task.branch })
       : task.body;
-  const { body, checklists } = extractChecklists(linked);
+  const extracted = extractChecklists(linked);
+  const checklists = extracted.checklists;
+  // Шапка описания: строка Q41 (описание — зеркало файла) и «Суть» для людей
+  // первым блоком — фаундер и менеджер читают её, не разбирая остальное.
+  const head = [
+    '_Текст обновляется автоматически из репозитория. Правки — комментарием._',
+    '',
+    ...(task.summary ? [`**Суть.** ${task.summary}`, '', '---', ''] : []),
+  ].join('\n');
+  const body = `${head}${extracted.body.replace(/^\s+/, '')}`;
 
+  const sourcePath = task.sourceFile ?? task.dir;
+  const sourceKind = task.sourceFile ? 'blob' : 'tree';
   const source = hasUrl
-    ? `[\`${task.dir}\`](${task.repoUrl.replace(/\/+$/, '')}/tree/${task.branch}/${task.dir})`
-    : `\`${task.dir}\``;
+    ? `[\`${sourcePath}\`](${task.repoUrl.replace(/\/+$/, '')}/${sourceKind}/${task.branch}/${sourcePath})`
+    : `\`${sourcePath}\``;
   const tail = [
     '',
     '---',
@@ -210,6 +221,12 @@ export function repoValue(task: TaskFile, mapping: BoardMapping): unknown {
   return id === undefined ? undefined : [id];
 }
 
+/** id варианта «Команды» для задачи: своя команда задачи, иначе команда по умолчанию. */
+export function teamValueId(task: TaskFile, mapping: BoardMapping): number | undefined {
+  const name = task.team ?? mapping.defaultTeam;
+  return name && mapping.teamProperty ? mapping.teamProperty.values[name] : undefined;
+}
+
 function buildPayload(task: TaskFile, mapping: BoardMapping, description: string): CardPayload {
   const payload: CardPayload = {
     title: task.title,
@@ -225,17 +242,15 @@ function buildPayload(task: TaskFile, mapping: BoardMapping, description: string
   if (typeId !== undefined) payload.type_id = typeId;
 
   const properties: Record<string, unknown> = {};
-  if (mapping.priorityProperty) {
+  if (mapping.priorityProperty && task.meta.priority !== null) {
     const value = mapping.priorityProperty.values[task.meta.priority];
     // Селект: API ждёт массив id вариантов — `id_6: [12]` (документация cards/create-new-card).
     if (value !== undefined) properties[`id_${mapping.priorityProperty.id}`] = [value];
   }
   const repo = repoValue(task, mapping);
   if (mapping.repoProperty && repo !== undefined) properties[`id_${mapping.repoProperty.id}`] = repo;
-  if (mapping.teamProperty && mapping.defaultTeam) {
-    const team = mapping.teamProperty.values[mapping.defaultTeam];
-    if (team !== undefined) properties[`id_${mapping.teamProperty.id}`] = [team];
-  }
+  const team = teamValueId(task, mapping);
+  if (mapping.teamProperty && team !== undefined) properties[`id_${mapping.teamProperty.id}`] = [team];
   if (Object.keys(properties).length > 0) payload.properties = properties;
 
   return payload;
@@ -308,9 +323,9 @@ export function buildPlan(input: BuildPlanInput): ImportPlan {
       }
     }
     // «Команда» — поле Kaiten: только заполняем пустое, выбор человека не трогаем.
-    if (mapping.teamProperty && mapping.defaultTeam && card.properties !== undefined) {
+    if (mapping.teamProperty && card.properties !== undefined) {
       const key = `id_${mapping.teamProperty.id}`;
-      const team = mapping.teamProperty.values[mapping.defaultTeam];
+      const team = teamValueId(task, mapping);
       const current = card.properties[key];
       if (team !== undefined && (current === undefined || current === null || (Array.isArray(current) && current.length === 0))) {
         reasons.push('команда не заполнена');
