@@ -25,11 +25,9 @@
 import { readFileSync, readdirSync } from 'node:fs';
 import { basename, join, posix, relative, sep } from 'node:path';
 
-export const TASK_TYPES = ['epic', 'story', 'tech', 'bug', 'spike'] as const;
-export type TaskType = (typeof TASK_TYPES)[number];
+import { PRIORITIES, TASK_TYPES, type Priority, type TaskType } from './core/schema.js';
 
-export const PRIORITIES = ['p0', 'p1', 'p2', 'p3', 'pn'] as const;
-export type Priority = (typeof PRIORITIES)[number];
+export { PRIORITIES, TASK_TYPES, type Priority, type TaskType };
 
 /** Статусы, выводимые из раскладки папок. */
 export const FOLDER_STATUSES = ['inbox', 'backlog', 'in-progress', 'blocked', 'done', 'cancelled'] as const;

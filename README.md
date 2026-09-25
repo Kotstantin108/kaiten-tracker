@@ -47,6 +47,11 @@ npm run import -- --only acme-app:20260916_export-csv --apply
 | `src/yonote-client.ts` | Клиент yonote только на чтение (Outline-совместимый RPC) |
 | `src/yonote-export.ts` | Чистая часть выгрузки yonote: ссылки, пути, таблицы баз данных |
 | `src/yonote.ts` | CLI разовой выгрузки yonote |
+| `src/core/schema.ts` | Формат задачи v2: таблица полей (порядок, обязательность, владелец `file`/`cli`/`kaiten`) и строгая zod-схема |
+| `src/core/document.ts` | Парсер и сериализатор файла задачи с фиксированным порядком ключей, `content_hash`, проверка правки чужих полей |
+| `src/core/skeleton.ts` | Скелет тела по типу и раздел критериев, который обязан быть непустым |
+| `src/core/lint.ts`, `src/tasks-lint.ts` | Линтер файла и всего репозитория задач (`npm run tasks:lint -- <dir> [--project p]`, выход 0/1) |
+| `src/core/ulid.ts` | ULID для поля `id` без зависимостей |
 | `tracker.config.json` | Репозитории-источники и маппинг доски Kaiten |
 
 ## Что установлено живьём в Kaiten (23–24.09.2026)
