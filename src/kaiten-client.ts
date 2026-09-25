@@ -216,7 +216,7 @@ export class KaitenClient {
         headers: {
           Authorization: `Bearer ${this.token}`,
           'Content-Type': 'application/json',
-          'X-kaiten-Client': 'kaiten-import',
+          'X-kaiten-Client': 'kaiten-tracker-import',
         },
         body: opts.body === undefined ? undefined : JSON.stringify(opts.body),
       }, attempt);

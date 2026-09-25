@@ -193,8 +193,10 @@ describe('линтер', () => {
   const lint = (fm: Frontmatter, path?: string, repos?: string[]): LintIssue[] =>
     lintTask(serializeTaskDocument(fm, `\n${filled(fm.type)}`), { path, repos }).issues;
 
-  it('«Суть» длиннее 300 знаков — ошибка, термины кода и заголовок не с глагола — предупреждения', () => {
-    expect(messages(lint(frontmatter({ summary: 'а'.repeat(301) })), 'error')).toEqual(['summary: 301 знаков, «Суть» — до 300']);
+  it('длинная «Суть», термины кода и заголовок не с глагола — предупреждения, не ошибки', () => {
+    const long = lint(frontmatter({ summary: 'а'.repeat(301) }));
+    expect(messages(long, 'error')).toEqual([]);
+    expect(messages(long, 'warning')).toEqual(['summary: 301 знаков, «Суть» — до 300']);
     const warnings = messages(lint(frontmatter({ title: 'Формат задач v2', summary: 'Правим `parseTask` в src/core.ts.' })), 'warning');
     expect(warnings).toHaveLength(2);
     expect(warnings[0]).toContain('обратные кавычки, имя файла, путь, camelCase');
