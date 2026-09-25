@@ -27,13 +27,24 @@ import { posix } from 'node:path';
 
 import { contentHash, serializeTaskDocument } from '../core/document.js';
 import { SLUG_RE } from '../core/lint.js';
-import { CLOSED_STATUSES, FrontmatterSchema, type Frontmatter, type TaskStatus } from '../core/schema.js';
+import { CLOSED_STATUSES, FrontmatterSchema, type Frontmatter, type Priority, type TaskStatus, type TaskType } from '../core/schema.js';
 import { ulid } from '../core/ulid.js';
 import type { TaskFile } from '../task-source.js';
 import type { TaskHistory } from './git-history.js';
 
 export interface OverlayEntry {
   summary?: string;
+  team?: string;
+  /** `false` — черновик «Сути», ещё не проверен человеком или агентом. */
+  reviewed?: boolean;
+}
+
+/** Карточка Kaiten задачи: поля, которыми владеет Kaiten (решения 5 и 9). */
+export interface CardFields {
+  id: number;
+  status?: TaskStatus;
+  type?: TaskType;
+  priority?: Priority;
   team?: string;
 }
 
@@ -48,7 +59,7 @@ export interface ConvertInput {
    * Карточки Kaiten по `external_id`: id и статус по колонке. Статусом
    * владеет Kaiten, поэтому у задачи с карточкой он сильнее папки.
    */
-  cards: ReadonlyMap<string, { id: number; status?: TaskStatus }>;
+  cards: ReadonlyMap<string, CardFields>;
   /**
    * Есть ли файл в репозитории кода (путь от корня). Нужен, чтобы выбрать
    * верную базу относительной ссылки: задачи переезжали между папками разной
@@ -90,6 +101,8 @@ export interface ConvertReport {
   statusMismatch: Array<{ externalId: string; header: string; folder: TaskStatus }>;
   /** Карточка в Kaiten стоит не там, где папка: взят статус Kaiten. */
   kaitenStatus: Array<{ externalId: string; folder: TaskStatus; kaiten: TaskStatus }>;
+  /** Поля карточки, отличные от файла (тип, приоритет, команда): взяты из Kaiten. */
+  kaitenFields: Array<{ externalId: string; field: string; file: string; kaiten: string }>;
   slugRenames: Array<{ externalId: string; from: string; to: string }>;
   summaryDrafts: string[];
   trackers: number;
@@ -102,6 +115,8 @@ export interface ConvertReport {
 }
 
 export interface ConvertResult {
+  /** Новые механические черновики «Сути» по `external_id` — для файла черновиков. */
+  drafts: Record<string, string>;
   files: OutputFile[];
   attachments: AttachmentCopy[];
   tasks: ConvertedTask[];
@@ -239,6 +254,7 @@ export function convertProject(input: ConvertInput): ConvertResult {
     byStatus: {},
     statusMismatch: [],
     kaitenStatus: [],
+    kaitenFields: [],
     slugRenames: [],
     summaryDrafts: [],
     trackers: 0,
@@ -311,6 +327,7 @@ export function convertProject(input: ConvertInput): ConvertResult {
     return extrasOf(task).some((f) => f === clean || f.startsWith(`${clean}/`));
   };
   const files: OutputFile[] = [];
+  const drafts: Record<string, string> = {};
   const attachments: AttachmentCopy[] = [];
   const converted: ConvertedTask[] = [];
 
@@ -391,14 +408,24 @@ export function convertProject(input: ConvertInput): ConvertResult {
     }
 
     const overlay = input.overlay[task.externalId];
+    // «Суть»: проверенная из оверлея; непроверенный черновик оттуда же; иначе
+    // новый механический черновик. Непроверенное — в отчёт на проверку.
     let summary = overlay?.summary;
     if (!summary) {
       summary = draftSummary(task.body, task.title);
-      report.summaryDrafts.push(task.externalId);
+      drafts[task.externalId] = summary;
     }
+    if (!overlay?.summary || overlay.reviewed === false) report.summaryDrafts.push(task.externalId);
 
-    const cardId = input.cards.get(task.externalId)?.id;
+    const card = input.cards.get(task.externalId);
+    const cardId = card?.id;
     if (cardId !== undefined) report.trackers += 1;
+    const type = card?.type ?? task.meta.type;
+    const priority = card?.priority ?? task.meta.priority ?? undefined;
+    const team = card?.team ?? overlay?.team;
+    for (const [field, file, kaiten] of [['type', task.meta.type, card?.type], ['priority', task.meta.priority, card?.priority], ['team', overlay?.team, card?.team]] as const) {
+      if (kaiten !== undefined && kaiten !== file) report.kaitenFields.push({ externalId: task.externalId, field, file: file ?? '—', kaiten });
+    }
 
     const author = history?.first.author ?? 'неизвестно';
     report.authors[author] = (report.authors[author] ?? 0) + 1;
@@ -410,13 +437,13 @@ export function convertProject(input: ConvertInput): ConvertResult {
       tracker: cardId !== undefined ? String(cardId) : undefined,
       title: task.title,
       summary,
-      type: task.meta.type,
+      type,
       status: p.status,
       repo: task.repoName,
       epic,
       related: related.length > 0 ? [...new Set(related)] : undefined,
-      priority: task.meta.priority ?? undefined,
-      team: overlay?.team,
+      priority,
+      team,
       created,
       created_by: author,
       created_via: history?.first.agent ? 'agent' : 'human',
@@ -442,5 +469,5 @@ export function convertProject(input: ConvertInput): ConvertResult {
   }
 
   files.sort((a, b) => a.path.localeCompare(b.path));
-  return { files, attachments, tasks: converted, report };
+  return { drafts, files, attachments, tasks: converted, report };
 }

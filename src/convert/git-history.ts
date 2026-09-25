@@ -116,12 +116,23 @@ export function buildHistory(commitsNewestFirst: RawCommit[], layout: 'folders' 
   return result;
 }
 
-/** Прочитать историю `tasks/` репозитория. Только чтение. */
+/**
+ * Прочитать историю `tasks/` репозитория. Только чтение.
+ *
+ * Второй проход — по главной линии с диффами слияний: файл, появившийся
+ * прямо в коммите слияния (так завели globex `0051`), обычный `git log` не
+ * показывает. Из второго прохода берутся только задачи, которых нет в первом.
+ */
 export function readHistory(repoPath: string, layout: 'folders' | 'numbered', tasksDirName = 'tasks'): Map<string, TaskHistory> {
-  const output = execFileSync(
-    'git',
-    ['-c', 'core.quotePath=false', 'log', '-M', '--name-status', `--format=${RECORD}%an${FIELD}%aI${FIELD}%B${FIELD}`, '--', tasksDirName],
-    { cwd: repoPath, encoding: 'utf8', maxBuffer: 256 * 1024 * 1024 },
-  );
-  return buildHistory(parseGitLog(output), layout);
+  const run = (extra: string[]): string =>
+    execFileSync(
+      'git',
+      ['-c', 'core.quotePath=false', 'log', '-M', ...extra, '--name-status', `--format=${RECORD}%an${FIELD}%aI${FIELD}%B${FIELD}`, '--', tasksDirName],
+      { cwd: repoPath, encoding: 'utf8', maxBuffer: 256 * 1024 * 1024 },
+    );
+  const history = buildHistory(parseGitLog(run([])), layout);
+  for (const [key, value] of buildHistory(parseGitLog(run(['-m', '--first-parent'])), layout)) {
+    if (!history.has(key)) history.set(key, value);
+  }
+  return history;
 }

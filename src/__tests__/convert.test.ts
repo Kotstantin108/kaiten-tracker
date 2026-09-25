@@ -101,6 +101,26 @@ describe('конвертер', () => {
     expect(result.files.some((f) => f.path.endsWith('.log.md'))).toBe(false);
   });
 
+  it('тип, приоритет и команда карточки сильнее файла — ими владеет Kaiten', () => {
+    const t = task({ slug: 'owned' });
+    const result = convertProject(input([t], { cards: new Map([[t.externalId, { id: 1, type: 'tech', priority: 'p0', team: 'DevOps' }]]) }));
+    expect(result.tasks[0].frontmatter).toMatchObject({ type: 'tech', priority: 'p0', team: 'DevOps' });
+    expect(result.report.kaitenFields).toEqual([
+      { externalId: t.externalId, field: 'type', file: 'story', kaiten: 'tech' },
+      { externalId: t.externalId, field: 'priority', file: 'p1', kaiten: 'p0' },
+      { externalId: t.externalId, field: 'team', file: '—', kaiten: 'DevOps' },
+    ]);
+  });
+
+  it('черновик «Сути»: новый уходит в drafts, непроверенный из оверлея остаётся «проверить»', () => {
+    const fresh = task({ slug: 'fresh' });
+    const drafted = task({ slug: 'drafted' });
+    const result = convertProject(input([fresh, drafted], { overlay: { [drafted.externalId]: { summary: 'Черновик.', reviewed: false } } }));
+    expect(Object.keys(result.drafts)).toEqual([fresh.externalId]);
+    expect(result.report.summaryDrafts.sort()).toEqual([drafted.externalId, fresh.externalId].sort());
+    expect(result.tasks.find((x) => x.slug === 'drafted')?.frontmatter.summary).toBe('Черновик.');
+  });
+
   it('коллизия slug между репозиториями решается детерминированно, с записью в отчёт', () => {
     const app = task({ slug: 'hero' });
     const landing = task({ slug: 'hero', repoName: 'acme-site', date: '20260901' });
