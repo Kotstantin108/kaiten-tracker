@@ -14,17 +14,19 @@ import { dirname, isAbsolute, resolve } from 'node:path';
 
 import { describe, expect, it } from 'vitest';
 
+import { ConfigSchema } from '../config.js';
 import { collectTasks, type RepoSource, type SourceScan } from '../task-source.js';
 
 const CONFIG = resolve(import.meta.dirname, '..', '..', 'tracker.config.json');
 
 function loadRepos(): RepoSource[] {
   if (!existsSync(CONFIG)) return [];
-  const parsed = JSON.parse(readFileSync(CONFIG, 'utf8')) as {
-    repos?: Array<{ name: string; path: string; branch?: string; tasksDirName?: string }>;
-  };
+  // Конфиг — таблица проектов; задачи читаются только из репозиториев с path.
+  const config = ConfigSchema.parse(JSON.parse(readFileSync(CONFIG, 'utf8')));
   const base = dirname(CONFIG);
-  return (parsed.repos ?? [])
+  return Object.values(config.projects)
+    .flatMap((project) => project.repos)
+    .flatMap((repo) => (repo.path === undefined ? [] : [{ ...repo, path: repo.path }]))
     .map((repo) => ({
       name: repo.name,
       path: isAbsolute(repo.path) ? repo.path : resolve(base, repo.path),

@@ -36,16 +36,29 @@ const HEADING_RE = /^#{1,6}[ \t]+(.+?)[ \t]*#*[ \t]*$/;
 const FENCE_RE = /^\s*(```|~~~)/;
 const DEFAULT_NAME = 'Чек-лист';
 
-/** Заголовок без markdown-украшений: `**Шаги** (HOW)` → `Шаги (HOW)`. */
+/**
+ * Префикс чек-листов из файла (решение владельца 25.09.2026, раздельные
+ * чек-листы). «Агент · …» — пункты задачи из репозитория: их отмечает агент
+ * в файле, Kaiten только показывает. Чек-листы без префикса заводят и
+ * отмечают люди в Kaiten, импорт их не трогает. У каждого чек-листа один
+ * владелец — Q1 без исключений.
+ */
+export const AGENT_PREFIX = 'Агент · ';
+
+export function withoutAgentPrefix(name: string): string {
+  return name.startsWith(AGENT_PREFIX) ? name.slice(AGENT_PREFIX.length) : name;
+}
+
+/** Заголовок без markdown-украшений: `**Шаги** (HOW)` → `Агент · Шаги (HOW)`. */
 function headingName(raw: string): string {
-  return raw.replace(/[*_`]/g, '').trim() || DEFAULT_NAME;
+  return AGENT_PREFIX + (raw.replace(/[*_`]/g, '').trim() || DEFAULT_NAME);
 }
 
 export function extractChecklists(markdown: string): ExtractResult {
   const lines = markdown.split('\n');
   const out: string[] = [];
   const byName = new Map<string, Checklist>();
-  let heading = DEFAULT_NAME;
+  let heading = AGENT_PREFIX + DEFAULT_NAME;
   let inFence = false;
 
   for (let i = 0; i < lines.length; i++) {

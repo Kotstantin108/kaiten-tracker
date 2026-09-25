@@ -18,6 +18,7 @@
  * не трогает то, что не изменилось.
  *
  * ФЛАГИ
+ *   --project <key>                        проект из конфига (обязателен, если их несколько)
  *   --scope pilot|active|active+done|all   что заливать (по умолч. active)
  *   --repo <name>[,<name>]                 какие репозитории из конфига
  *   --epic <slug>[,<slug>]                 для scope=pilot: эпики и их дерево
@@ -41,8 +42,7 @@ import { execFileSync } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, isAbsolute, join, resolve } from 'node:path';
 
-import { z } from 'zod';
-
+import { loadProject } from './config.js';
 import { KaitenClient, type Card } from './kaiten-client.js';
 import {
   buildPlan,
@@ -65,31 +65,8 @@ import {
 const OUT_DIR = 'tmp/import';
 const DEFAULT_CONFIG = 'tracker.config.json';
 
-const ConfigSchema = z.object({
-  repos: z
-    .array(
-      z.object({
-        name: z.string().min(1),
-        path: z.string().min(1),
-        url: z.string().optional(),
-        branch: z.string().default('main'),
-        tasksDirName: z.string().optional(),
-      }),
-    )
-    .min(1),
-  kaiten: z.object({
-    boardId: z.number(),
-    laneId: z.number().optional(),
-    columns: z.record(z.string(), z.number()),
-    types: z.record(z.string(), z.number()).optional(),
-    priorityProperty: z
-      .object({ id: z.number(), values: z.record(z.string(), z.union([z.string(), z.number()])) })
-      .optional(),
-    repoProperty: z.object({ id: z.number() }).optional(),
-  }),
-});
-
 interface Args {
+  project: string | null;
   scope: ScopeName;
   repos: string[];
   epics: string[];
@@ -110,6 +87,7 @@ function fail(message: string, code: number): never {
 
 function parseArgs(argv: string[]): Args {
   const args: Args = {
+    project: null,
     scope: 'active',
     repos: [],
     epics: [],
@@ -133,6 +111,8 @@ function parseArgs(argv: string[]): Args {
     else if (a === '--no-rewrite-links') args.rewriteLinks = false;
     else if (a === '--scope') args.scope = val() as ScopeName;
     else if (a.startsWith('--scope=')) args.scope = tail('--scope=') as ScopeName;
+    else if (a === '--project') args.project = val();
+    else if (a.startsWith('--project=')) args.project = tail('--project=');
     else if (a === '--repo') args.repos.push(...val().split(','));
     else if (a.startsWith('--repo=')) args.repos.push(...tail('--repo=').split(','));
     else if (a === '--epic') args.epics.push(...val().split(','));
@@ -185,16 +165,24 @@ interface LoadedConfig {
   unmapped: boolean;
 }
 
-function loadConfig(path: string, wanted: string[]): LoadedConfig {
-  if (!existsSync(path)) fail(`Не найден конфиг ${path} — возьмите tracker.config.json из репозитория и заполните`, 2);
-  const parsed = ConfigSchema.parse(JSON.parse(readFileSync(path, 'utf8')));
+function loadConfig(path: string, projectKey: string | null, wanted: string[]): LoadedConfig {
+  let loaded;
+  try {
+    loaded = loadProject(path, projectKey);
+  } catch (error) {
+    fail((error as Error).message, 2);
+  }
+  const { project, config } = loaded;
   const base = dirname(resolve(path));
 
-  const selected = wanted.length > 0 ? parsed.repos.filter((r) => wanted.includes(r.name)) : parsed.repos;
-  if (selected.length === 0) fail(`В конфиге нет репозиториев ${wanted.join(', ')}`, 2);
+  // Задачи читаются только из репозиториев с рабочей копией; остальные в
+  // конфиге — варианты поля «Репозиторий <Проект>».
+  const readable = project.repos.filter((r) => r.path !== undefined);
+  const selected = wanted.length > 0 ? readable.filter((r) => wanted.includes(r.name)) : readable;
+  if (selected.length === 0) fail(`В проекте ${loaded.key} нет репозиториев с path${wanted.length ? ` из списка ${wanted.join(', ')}` : ''}`, 2);
 
   const repos: RepoSource[] = selected.map((repo) => {
-    const repoPath = isAbsolute(repo.path) ? repo.path : resolve(base, repo.path);
+    const repoPath = isAbsolute(repo.path as string) ? (repo.path as string) : resolve(base, repo.path as string);
     if (!existsSync(repoPath)) fail(`Репозиторий ${repo.name}: путь ${repoPath} не существует`, 2);
     return {
       name: repo.name,
@@ -205,7 +193,8 @@ function loadConfig(path: string, wanted: string[]): LoadedConfig {
     };
   });
 
-  const k = parsed.kaiten;
+  const k = project.mapping;
+  if (!k) return { repos, mapping: { boardId: 0, columns: {} }, unmapped: true };
   const mapping: BoardMapping = {
     boardId: k.boardId,
     laneId: k.laneId,
@@ -213,6 +202,8 @@ function loadConfig(path: string, wanted: string[]): LoadedConfig {
     types: k.types as BoardMapping['types'],
     priorityProperty: k.priorityProperty as BoardMapping['priorityProperty'],
     repoProperty: k.repoProperty,
+    teamProperty: k.teamProperty,
+    defaultTeam: config.defaultTeam,
   };
   const unmapped = k.boardId === 0 || Object.values(k.columns).every((id) => id === 0);
   return { repos, mapping, unmapped };
@@ -231,6 +222,7 @@ function toExisting(card: Card): ExistingCard | null {
     checklists: Array.isArray(card.checklists)
       ? card.checklists.map((c) => ({ id: c.id, name: c.name ?? '', itemTexts: (c.items ?? []).map((i) => i.text ?? '') }))
       : undefined,
+    properties: card.properties ?? undefined,
   };
 }
 
@@ -287,6 +279,7 @@ async function apply(client: KaitenClient, plan: ImportPlan, linkEpics: boolean)
     for (const [index, list] of lists.entries()) {
       try {
         let checklistId = list.checklistId;
+        if (checklistId !== undefined && list.rename) await client.renameChecklist(cardId, checklistId, list.name);
         if (checklistId === undefined) {
           checklistId = (await client.createChecklist(cardId, list.name, index + 1)).id;
           result.checklists++;
@@ -362,7 +355,7 @@ async function main(): Promise<void> {
 
   if (args.apply && !hasCreds) fail('--apply требует KAITEN_DOMAIN и KAITEN_TOKEN в окружении (.env)', 2);
 
-  const { repos, mapping, unmapped } = loadConfig(args.config, args.repos);
+  const { repos, mapping, unmapped } = loadConfig(args.config, args.project, args.repos);
   if (args.apply && unmapped) {
     fail('--apply требует заполненный блок kaiten в конфиге: сначала `npm run inspect`, затем id доски и колонок', 3);
   }

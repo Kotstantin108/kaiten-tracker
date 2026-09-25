@@ -113,22 +113,64 @@ describe('buildPlan', () => {
   it('чек-листы: новая карточка везёт их с собой, у существующей досоздаются только недостающие по имени', () => {
     const t = task({ externalId: '20260916_c', title: 'С пунктами', body: '## Критерии\n\n- [ ] один\n\n## Шаги\n\n- [x] два\n' });
     const created = buildPlan({ tasks: [t], existing: new Map(), mapping, render, linkEpics: false }).actions[0];
-    expect(created.kind === 'create' && created.checklists.map((c) => c.name)).toEqual(['Критерии', 'Шаги']);
+    expect(created.kind === 'create' && created.checklists.map((c) => c.name)).toEqual(['Агент · Критерии', 'Агент · Шаги']);
     expect(created.kind === 'create' && created.payload.description).not.toContain('- [ ]');
 
-    const existing = new Map([[t.externalId, { ...asExisting(100, t), checklists: [{ id: 7, name: 'Критерии', itemTexts: ['один'] }] }]]);
+    const existing = new Map([[t.externalId, { ...asExisting(100, t), checklists: [{ id: 7, name: 'Агент · Критерии', itemTexts: ['один'] }] }]]);
     const plan = buildPlan({ tasks: [t], existing, mapping, render, linkEpics: false });
     const lists = plan.actions.find((a) => a.kind === 'checklists');
-    expect(lists?.kind === 'checklists' && lists.checklists).toEqual([{ name: 'Шаги', items: [{ text: 'два', checked: true }] }]);
+    expect(lists?.kind === 'checklists' && lists.checklists).toEqual([{ name: 'Агент · Шаги', items: [{ text: 'два', checked: true }] }]);
   });
 
   it('частично созданный чек-лист (оборванный прогон) добивается недостающими пунктами', () => {
     const t = task({ externalId: '20260916_p', title: 'П', body: '## Критерии\n\n- [ ] один\n- [ ] два\n- [x] три\n' });
-    const existing = new Map([[t.externalId, { ...asExisting(100, t), checklists: [{ id: 7, name: 'Критерии', itemTexts: ['один'] }] }]]);
+    const existing = new Map([[t.externalId, { ...asExisting(100, t), checklists: [{ id: 7, name: 'Агент · Критерии', itemTexts: ['один'] }] }]]);
     const lists = buildPlan({ tasks: [t], existing, mapping, render, linkEpics: false }).actions.find((a) => a.kind === 'checklists');
     expect(lists?.kind === 'checklists' && lists.checklists).toEqual([
-      { name: 'Критерии', checklistId: 7, items: [{ text: 'два', checked: false }, { text: 'три', checked: true }] },
+      { name: 'Агент · Критерии', checklistId: 7, items: [{ text: 'два', checked: false }, { text: 'три', checked: true }] },
     ]);
+  });
+
+  it('чек-лист пилота без префикса «Агент · » переименовывается, а не создаётся второй раз', () => {
+    const t = task({ externalId: '20260916_l', title: 'Л', body: '## Критерии\n\n- [ ] один\n' });
+    const existing = new Map([[t.externalId, { ...asExisting(100, t), checklists: [{ id: 9, name: 'Критерии', itemTexts: ['один'] }] }]]);
+    const lists = buildPlan({ tasks: [t], existing, mapping, render, linkEpics: false }).actions.find((a) => a.kind === 'checklists');
+    expect(lists?.kind === 'checklists' && lists.checklists).toEqual([{ name: 'Агент · Критерии', items: [], checklistId: 9, rename: true }]);
+  });
+
+  it('человеческий чек-лист (без префикса, другое имя) не трогается', () => {
+    const t = task({ externalId: '20260916_h', title: 'Х', body: '## Критерии\n\n- [ ] один\n' });
+    const existing = new Map([
+      [t.externalId, { ...asExisting(100, t), checklists: [{ id: 5, name: 'Агент · Критерии', itemTexts: ['один'] }, { id: 6, name: 'Приёмка', itemTexts: ['x'] }] }],
+    ]);
+    expect(buildPlan({ tasks: [t], existing, mapping, render, linkEpics: false }).actions.some((a) => a.kind === 'checklists')).toBe(false);
+  });
+
+  it('«Репозиторий»-выбор: вариант при создании, обновление у существующей, предупреждение для неизвестного', () => {
+    const selectMapping: BoardMapping = {
+      ...mapping,
+      repoProperty: { id: 43, values: { 'acme-app': 501 } },
+      teamProperty: { id: 44, values: { Разработка: 601 } },
+      defaultTeam: 'Разработка',
+    };
+    const t = task({ externalId: '20260916_r', title: 'Р' });
+    const created = buildPlan({ tasks: [t], existing: new Map(), mapping: selectMapping, render, linkEpics: false }).actions[0];
+    expect(created.kind === 'create' && created.payload.properties).toEqual({ id_42: ['p1'], id_43: [501], id_44: [601] });
+
+    const stale = new Map([[t.externalId, { ...asExisting(100, t), properties: { id_43: 'acme-app', id_44: [601] } }]]);
+    const update = buildPlan({ tasks: [t], existing: stale, mapping: selectMapping, render, linkEpics: false }).actions[0];
+    expect(update.kind === 'update' && update.payload.properties).toEqual({ id_43: [501] });
+    expect(update.kind === 'update' && update.reasons).toEqual(['репозиторий']);
+
+    const empty = new Map([[t.externalId, { ...asExisting(100, t), properties: { id_43: [501] } }]]);
+    const filled = buildPlan({ tasks: [t], existing: empty, mapping: selectMapping, render, linkEpics: false }).actions[0];
+    expect(filled.kind === 'update' && filled.payload.properties).toEqual({ id_44: [601] });
+    const chosen = new Map([[t.externalId, { ...asExisting(100, t), properties: { id_43: [501], id_44: [777] } }]]);
+    expect(buildPlan({ tasks: [t], existing: chosen, mapping: selectMapping, render, linkEpics: false }).actions[0].kind).toBe('unchanged');
+
+    const other = { ...t, repoName: 'acme-mobile' };
+    const warned = buildPlan({ tasks: [other], existing: new Map(), mapping: selectMapping, render, linkEpics: false });
+    expect(warned.warnings[0].detail).toContain('acme-mobile');
   });
 
   it('связь, видная только со стороны эпика, тоже считается существующей', () => {

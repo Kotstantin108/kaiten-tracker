@@ -2,15 +2,21 @@
  * Структура аккаунта Kaiten под схему эпика — чистая часть команды `setup`.
  *
  * ЧТО ЗАВОДИМ (Q22, Q23): пространство на продукт, в нём доска задач с
- * колонкой на каждый статус единой схемы, типы `epic/story/tech/bug/spike`,
- * селект приоритета `p0–p3/pn` и поле репозитория (Q22: репозиторий — поле
- * внутри задачи, а не проект).
+ * колонкой на каждый статус единой схемы, типы `epic/story/tech/bug/spike` и
+ * поля-выборы: приоритет `p0–p3/pn`, репозиторий (Q22: репозиторий — поле
+ * внутри задачи, а не проект) и команда — чтобы на одной доске различать
+ * задачи разработки, менеджмента, маркетинга и так далее.
  *
  * ПРАВИЛА ПЛАНА. Существующее находится по имени и не создаётся второй раз —
  * повторный прогон после `--apply` даёт пустой план. Лишнее (стандартные
  * колонки, чужие типы) не удаляется и не переименовывается: в живом аккаунте
  * мы только добавляем. Архивное считается отсутствующим — иначе маппинг
  * указал бы на то, чего в интерфейсе не видно.
+ *
+ * ОДНОИМЁННОЕ ПОЛЕ ДРУГОГО ТИПА. Тип поля Kaiten менять не даёт (в `PATCH`
+ * его нет), а «Репозиторий» сначала завели строкой. Такое поле план не
+ * удаляет, а отключает и переименовывает («… (строка, отключено)»): значения
+ * на карточках сохраняются, имя освобождается под поле-выбор.
  */
 
 import { PRIORITIES, type Priority, type TaskType } from './task-source.js';
@@ -20,14 +26,25 @@ import type { Board, CardType, CustomProperty, SelectValue, Space } from './kait
 export const SCHEMA_STATUSES = ['inbox', 'backlog', 'ready', 'in-progress', 'blocked', 'review', 'done', 'cancelled'] as const;
 export type SchemaStatus = (typeof SCHEMA_STATUSES)[number];
 
+/** Поле-выбор: имя и варианты в порядке показа. */
+export interface SelectSpec {
+  name: string;
+  values: readonly string[];
+}
+
+/** Поля-выборы схемы по ролям — роль остаётся ключом в маппинге конфига. */
+export const SELECT_ROLES = ['priority', 'repo', 'team'] as const;
+export type SelectRole = (typeof SELECT_ROLES)[number];
+
 export interface DesiredStructure {
   space: string;
   board: string;
   /** Порядок массива — порядок колонок на доске. type: 1 очередь, 2 в работе, 3 готово. */
   columns: Array<{ status: SchemaStatus; title: string; type: 1 | 2 | 3 }>;
   types: Array<{ key: TaskType; name: string; letter: string; color: number }>;
-  priority: { name: string; values: readonly Priority[] };
-  repo: { name: string };
+  selects: Record<SelectRole, SelectSpec>;
+  /** Поля, которые надо отключить и переименовать (данные на карточках остаются). */
+  retire: readonly string[];
 }
 
 export const DESIRED: DesiredStructure = {
@@ -50,9 +67,51 @@ export const DESIRED: DesiredStructure = {
     { key: 'bug', name: 'Bug', letter: 'B', color: 2 },
     { key: 'spike', name: 'Spike', letter: 'K', color: 14 },
   ],
-  priority: { name: 'Приоритет', values: PRIORITIES },
-  repo: { name: 'Репозиторий' },
+  selects: {
+    priority: { name: 'Приоритет', values: PRIORITIES },
+    // Варианты репозиториев и команд задаёт конфиг (`setup` в tracker.config.json):
+    // список меняется чаще кода и решается владельцем.
+    repo: { name: 'Репозиторий', values: [] },
+    team: { name: 'Команда', values: [] },
+  },
+  retire: [],
 };
+
+/**
+ * Схема для проекта из конфига: своё пространство и доска, своё поле
+ * репозитория с подписями вариантов (`Acme-android`), общие приоритет и
+ * команда.
+ */
+export function desiredForProject(input: {
+  space: string;
+  board: string;
+  repoField: string;
+  repoLabels: readonly string[];
+  teams: readonly string[];
+  retire?: readonly string[];
+}): DesiredStructure {
+  return {
+    ...DESIRED,
+    space: input.space,
+    board: input.board,
+    selects: {
+      priority: DESIRED.selects.priority,
+      repo: { name: input.repoField, values: input.repoLabels },
+      team: { name: DESIRED.selects.team.name, values: input.teams },
+    },
+    retire: input.retire ?? [],
+  };
+}
+
+/** Схема с вариантами из конфига: пустой список в конфиге — поле без вариантов не заводим. */
+export function withSelectValues(values: Partial<Record<SelectRole, readonly string[]>>, base: DesiredStructure = DESIRED): DesiredStructure {
+  const selects = { ...base.selects };
+  for (const role of SELECT_ROLES) {
+    const override = values[role];
+    if (override) selects[role] = { ...selects[role], values: override };
+  }
+  return { ...base, selects };
+}
 
 /** Текущее состояние аккаунта в том объёме, который нужен плану. */
 export interface CurrentStructure {
@@ -61,8 +120,8 @@ export interface CurrentStructure {
   boards: Board[];
   cardTypes: CardType[];
   properties: CustomProperty[];
-  /** Варианты селекта приоритета, если свойство уже есть. */
-  priorityValues: SelectValue[];
+  /** Варианты полей-выборов, ключ — id поля. */
+  selectValues: Record<number, SelectValue[]>;
 }
 
 export type SetupAction =
@@ -70,7 +129,8 @@ export type SetupAction =
   | { kind: 'create-board'; title: string; columns: Array<{ title: string; type: 1 | 2 | 3 }> }
   | { kind: 'create-column'; title: string; type: 1 | 2 | 3; sortOrder: number }
   | { kind: 'create-card-type'; name: string; letter: string; color: number }
-  | { kind: 'create-property'; name: string; type: 'select' | 'string' }
+  | { kind: 'retire-property'; id: number; name: string; newName: string }
+  | { kind: 'create-property'; name: string; type: 'select' }
   | { kind: 'create-select-value'; property: string; value: string };
 
 export interface SetupPlan {
@@ -96,8 +156,18 @@ export function findCardType(current: CurrentStructure, name: string): CardType 
   return current.cardTypes.filter(alive).find((t) => same(t.name, name));
 }
 
-export function findProperty(current: CurrentStructure, name: string): CustomProperty | undefined {
-  return current.properties.filter(alive).find((p) => same(p.name, name));
+/** Действующее поле-выбор с таким именем; одноимённое поле другого типа сюда не попадает. */
+export function findSelect(current: CurrentStructure, name: string): CustomProperty | undefined {
+  return current.properties.filter(alive).find((p) => same(p.name, name) && p.type === 'select');
+}
+
+/** Действующее одноимённое поле другого типа — его надо отключить, чтобы освободить имя. */
+function findClash(current: CurrentStructure, name: string): CustomProperty | undefined {
+  return current.properties.filter(alive).find((p) => same(p.name, name) && p.type !== 'select');
+}
+
+function aliveValues(current: CurrentStructure, propertyId: number): SelectValue[] {
+  return (current.selectValues[propertyId] ?? []).filter(alive);
 }
 
 export function planSetup(current: CurrentStructure, desired: DesiredStructure = DESIRED): SetupPlan {
@@ -135,19 +205,36 @@ export function planSetup(current: CurrentStructure, desired: DesiredStructure =
     if (!desired.types.some((d) => same(d.name, t.name))) extra.push(`тип «${t.name}» (${t.id})`);
   }
 
-  const priority = findProperty(current, desired.priority.name);
-  if (!priority) actions.push({ kind: 'create-property', name: desired.priority.name, type: 'select' });
-  else reused.push(`свойство «${priority.name}» (${priority.id})`);
-  for (const value of desired.priority.values) {
-    const found = priority ? current.priorityValues.filter(alive).find((v) => same(v.value, value)) : undefined;
-    if (!found) actions.push({ kind: 'create-select-value', property: desired.priority.name, value });
+  // Отключаем устаревшие поля по явному списку — но не те, что нужны схеме.
+  const wantedNames = SELECT_ROLES.map((r) => desired.selects[r].name);
+  for (const name of desired.retire) {
+    const old = current.properties.filter(alive).find((p) => same(p.name, name) && !wantedNames.some((w) => same(w, name)));
+    if (old) actions.push({ kind: 'retire-property', id: old.id, name: old.name, newName: `${old.name} (${old.type ?? 'поле'}, отключено)` });
   }
 
-  const repo = findProperty(current, desired.repo.name);
-  if (!repo) actions.push({ kind: 'create-property', name: desired.repo.name, type: 'string' });
-  else reused.push(`свойство «${repo.name}» (${repo.id})`);
+  for (const role of SELECT_ROLES) {
+    const spec = desired.selects[role];
+    if (spec.values.length === 0) continue;
+    const clash = findClash(current, spec.name);
+    if (clash) {
+      actions.push({ kind: 'retire-property', id: clash.id, name: clash.name, newName: `${clash.name} (${clash.type ?? 'другой тип'}, отключено)` });
+    }
+    const property = findSelect(current, spec.name);
+    if (!property) actions.push({ kind: 'create-property', name: spec.name, type: 'select' });
+    else reused.push(`поле «${property.name}» (${property.id})`);
+    const have = property ? aliveValues(current, property.id) : [];
+    for (const value of spec.values) {
+      if (!have.some((v) => same(v.value, value))) actions.push({ kind: 'create-select-value', property: spec.name, value });
+    }
+  }
 
   return { actions, reused, extra };
+}
+
+/** Поле-выбор в маппинге: id поля и id вариантов по значению. */
+export interface SelectMapping {
+  id: number;
+  values: Record<string, number>;
 }
 
 /** Блок `kaiten` конфига. Для селекта в значениях — id вариантов: API ждёт `id_<prop>: [<id варианта>]`. */
@@ -156,8 +243,9 @@ export interface KaitenMapping {
   laneId?: number;
   columns: Record<string, number>;
   types: Record<string, number>;
-  priorityProperty: { id: number; values: Record<string, number> };
-  repoProperty: { id: number };
+  priorityProperty: SelectMapping;
+  repoProperty?: SelectMapping;
+  teamProperty?: SelectMapping;
 }
 
 /**
@@ -183,20 +271,26 @@ export function buildMapping(current: CurrentStructure, desired: DesiredStructur
     else missing.push(`тип «${type.name}»`);
   }
 
-  const priority = findProperty(current, desired.priority.name);
-  if (!priority) missing.push(`свойство «${desired.priority.name}»`);
-  const values: Record<string, number> = {};
-  for (const value of desired.priority.values) {
-    const found = current.priorityValues.filter(alive).find((v) => same(v.value, value));
-    if (found) values[value] = found.id;
-    else missing.push(`вариант приоритета «${value}»`);
+  const selects: Partial<Record<SelectRole, SelectMapping>> = {};
+  for (const role of SELECT_ROLES) {
+    const spec = desired.selects[role];
+    if (spec.values.length === 0) continue;
+    const property = findSelect(current, spec.name);
+    if (!property) {
+      missing.push(`поле-выбор «${spec.name}»`);
+      continue;
+    }
+    const values: Record<string, number> = {};
+    for (const value of spec.values) {
+      const found = aliveValues(current, property.id).find((v) => same(v.value, value));
+      if (found) values[value] = found.id;
+      else missing.push(`вариант «${value}» поля «${spec.name}»`);
+    }
+    selects[role] = { id: property.id, values };
   }
 
-  const repo = findProperty(current, desired.repo.name);
-  if (!repo) missing.push(`свойство «${desired.repo.name}»`);
-
-  if (missing.length > 0 || !board || !priority || !repo) {
-    throw new Error(`В аккаунте не хватает: ${missing.join(', ')}`);
+  if (missing.length > 0 || !board || !selects.priority) {
+    throw new Error(`В аккаунте не хватает: ${missing.join(', ') || 'поля приоритета'}`);
   }
 
   // Одна дорожка на доске — её и берём; несколько — выбирать владельцу, не угадываем.
@@ -207,7 +301,8 @@ export function buildMapping(current: CurrentStructure, desired: DesiredStructur
     ...(laneId === undefined ? {} : { laneId }),
     columns,
     types,
-    priorityProperty: { id: priority.id, values },
-    repoProperty: { id: repo.id },
+    priorityProperty: selects.priority,
+    ...(selects.repo ? { repoProperty: selects.repo } : {}),
+    ...(selects.team ? { teamProperty: selects.team } : {}),
   };
 }

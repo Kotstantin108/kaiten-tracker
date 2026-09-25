@@ -17,7 +17,7 @@
 
 import { createHash } from 'node:crypto';
 
-import { extractChecklists, type Checklist } from './checklists.js';
+import { extractChecklists, withoutAgentPrefix, type Checklist } from './checklists.js';
 import type { CardPayload } from './kaiten-client.js';
 import type { FolderStatus, Priority, TaskFile, TaskType } from './task-source.js';
 import { rewriteRelativeLinks } from './task-source.js';
@@ -34,8 +34,16 @@ export interface BoardMapping {
   types?: Partial<Record<TaskType, number>>;
   /** Кастомное свойство приоритета: id свойства и значения селекта. */
   priorityProperty?: { id: number; values: Partial<Record<Priority, string | number>> };
-  /** Кастомное свойство «репозиторий»: значение берётся из задачи (Q22). */
-  repoProperty?: { id: number };
+  /**
+   * Поле «Репозиторий» (Q22): значение берётся из задачи. С `values` это
+   * поле-выбор (имя репозитория → id варианта), без — старое строковое поле.
+   * Владелец — файл, поэтому поле обновляется и у существующих карточек.
+   */
+  repoProperty?: { id: number; values?: Record<string, number> };
+  /** Поле-выбор «Команда»: ставится при создании, дальше владеет Kaiten. */
+  teamProperty?: { id: number; values: Record<string, number> };
+  /** Команда для задач из репозиториев кода — это задачи разработки. */
+  defaultTeam?: string;
 }
 
 export interface ExistingCard {
@@ -58,6 +66,8 @@ export interface ExistingCard {
   childIds?: number[];
   /** Чек-листы карточки: id, имя, тексты пунктов; `undefined` — не читали. */
   checklists?: ExistingChecklist[];
+  /** Значения полей карточки (`id_<поле>` → значение); `undefined` — не читали. */
+  properties?: Record<string, unknown>;
 }
 
 export interface ExistingChecklist {
@@ -66,9 +76,14 @@ export interface ExistingChecklist {
   itemTexts: string[];
 }
 
-/** Что досоздать: весь чек-лист (`checklistId` нет) или недостающие пункты существующего. */
+/**
+ * Что досоздать: весь чек-лист (`checklistId` нет) или недостающие пункты
+ * существующего. `rename` — чек-лист пилота создан без префикса «Агент · »
+ * и переименовывается, а не создаётся второй раз.
+ */
 export interface ChecklistPatch extends Checklist {
   checklistId?: number;
+  rename?: boolean;
 }
 
 export interface RenderOptions {
@@ -172,15 +187,27 @@ export function missingChecklists(wanted: Checklist[], existing: ExistingCheckli
   const out: ChecklistPatch[] = [];
   for (const list of wanted) {
     const found = existing.find((e) => e.name === list.name);
-    if (!found) {
+    // Пилот 24.09.2026 создал чек-листы без префикса — их переименовываем.
+    const legacy = found ? undefined : existing.find((e) => e.name === withoutAgentPrefix(list.name));
+    const target = found ?? legacy;
+    if (!target) {
       out.push(list);
       continue;
     }
-    const have = new Set(found.itemTexts);
+    const have = new Set(target.itemTexts);
     const items = list.items.filter((i) => !have.has(i.text));
-    if (items.length > 0) out.push({ name: list.name, items, checklistId: found.id });
+    if (items.length > 0 || legacy) out.push({ name: list.name, items, checklistId: target.id, ...(legacy ? { rename: true } : {}) });
   }
   return out;
+}
+
+/** Значение поля «Репозиторий» для задачи; `undefined` — репозитория нет среди вариантов. */
+export function repoValue(task: TaskFile, mapping: BoardMapping): unknown {
+  const prop = mapping.repoProperty;
+  if (!prop) return undefined;
+  if (!prop.values) return task.repoName;
+  const id = prop.values[task.repoName];
+  return id === undefined ? undefined : [id];
 }
 
 function buildPayload(task: TaskFile, mapping: BoardMapping, description: string): CardPayload {
@@ -203,8 +230,11 @@ function buildPayload(task: TaskFile, mapping: BoardMapping, description: string
     // Селект: API ждёт массив id вариантов — `id_6: [12]` (документация cards/create-new-card).
     if (value !== undefined) properties[`id_${mapping.priorityProperty.id}`] = [value];
   }
-  if (mapping.repoProperty) {
-    properties[`id_${mapping.repoProperty.id}`] = task.repoName;
+  const repo = repoValue(task, mapping);
+  if (mapping.repoProperty && repo !== undefined) properties[`id_${mapping.repoProperty.id}`] = repo;
+  if (mapping.teamProperty && mapping.defaultTeam) {
+    const team = mapping.teamProperty.values[mapping.defaultTeam];
+    if (team !== undefined) properties[`id_${mapping.teamProperty.id}`] = [team];
   }
   if (Object.keys(properties).length > 0) payload.properties = properties;
 
@@ -241,6 +271,10 @@ export function buildPlan(input: BuildPlanInput): ImportPlan {
     if (mapping.columns[task.status] === undefined) {
       warnings.push({ externalId: task.externalId, detail: `нет колонки под статус «${task.status}»` });
     }
+    const repo = repoValue(task, mapping);
+    if (mapping.repoProperty && repo === undefined) {
+      warnings.push({ externalId: task.externalId, detail: `репозитория «${task.repoName}» нет среди вариантов поля — добавьте в setup.repos` });
+    }
 
     if (!card) {
       actions.push({ kind: 'create', externalId: task.externalId, title: task.title, payload, task, checklists });
@@ -263,6 +297,25 @@ export function buildPlan(input: BuildPlanInput): ImportPlan {
     if (card.title !== undefined && card.title !== task.title) {
       reasons.push('заголовок');
       patch.title = task.title;
+    }
+    // «Репозиторий» — поле файла, обновляется и у существующих карточек.
+    // Приоритет, тип и команда — поля Kaiten: только при создании.
+    if (mapping.repoProperty && repo !== undefined && card.properties !== undefined) {
+      const key = `id_${mapping.repoProperty.id}`;
+      if (JSON.stringify(card.properties[key] ?? null) !== JSON.stringify(repo)) {
+        reasons.push('репозиторий');
+        patch.properties = { ...patch.properties, [key]: repo };
+      }
+    }
+    // «Команда» — поле Kaiten: только заполняем пустое, выбор человека не трогаем.
+    if (mapping.teamProperty && mapping.defaultTeam && card.properties !== undefined) {
+      const key = `id_${mapping.teamProperty.id}`;
+      const team = mapping.teamProperty.values[mapping.defaultTeam];
+      const current = card.properties[key];
+      if (team !== undefined && (current === undefined || current === null || (Array.isArray(current) && current.length === 0))) {
+        reasons.push('команда не заполнена');
+        patch.properties = { ...patch.properties, [key]: [team] };
+      }
     }
     // Колонку ставим только при создании. Дальше статусом владеет Kaiten
     // (inbox/backlog/ready/cancelled — Q30) или интеграция с GitHub

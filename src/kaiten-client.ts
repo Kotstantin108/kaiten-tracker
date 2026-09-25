@@ -49,6 +49,8 @@ export const CardSchema = z
     /** Родители карточки; `null` — родителей нет (снято с живого аккаунта 23.09.2026). */
     parents_ids: z.array(z.number()).nullable().optional(),
     children_ids: z.array(z.number()).nullable().optional(),
+    /** Значения полей: `id_<поле>` → значение (селект — массив id вариантов). */
+    properties: z.record(z.string(), z.unknown()).nullable().optional(),
     /** Чек-листы приходят в карточке целиком (`GET /cards/{id}`); читаем только имена. */
     checklists: z
       .array(
@@ -385,6 +387,16 @@ export class KaitenClient {
   async createCustomProperty(property: { name: string; type: 'select' | 'string' }): Promise<CustomProperty> {
     const body = property.type === 'select' ? { ...property, multi_select: false, show_on_facade: true } : property;
     return this.request('POST', '/company/custom-properties', { body, schema: CustomPropertySchema });
+  }
+
+  /** Имя и состояние поля (`active`/`inactive`); тип через `PATCH` не меняется. */
+  async updateCustomProperty(id: number, patch: { name?: string; condition?: 'active' | 'inactive' }): Promise<unknown> {
+    return this.request('PATCH', `/company/custom-properties/${id}`, { body: patch, schema: z.unknown() });
+  }
+
+  /** Переименование чек-листа карточки: `PATCH /cards/{card_id}/checklists/{id}`. */
+  async renameChecklist(cardId: number, checklistId: number, name: string): Promise<unknown> {
+    return this.request('PATCH', `/cards/${cardId}/checklists/${checklistId}`, { body: { name }, schema: z.unknown() });
   }
 
   async listSelectValues(propertyId: number): Promise<SelectValue[]> {
