@@ -51,7 +51,19 @@ const TRACKER_REF_RE = /^(?:[A-Z][A-Z0-9]*-\d+|\d+)$/;
 
 const date = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'дата в формате YYYY-MM-DD');
 const nonEmpty = z.string().trim().min(1, 'пустое значение');
-const trackerRef = z.string().regex(TRACKER_REF_RE, 'ключ карточки (PRJ-123) или её числовой id');
+
+/**
+ * `epic: 71007999` без кавычек YAML читает как число, а руками его так и
+ * напишут. Принимаем и приводим к строке; сериализатор запишет в кавычках.
+ */
+const cardIdAsString = (value: unknown): unknown => (typeof value === 'number' && Number.isSafeInteger(value) && value > 0 ? String(value) : value);
+
+const trackerRef = z.preprocess(cardIdAsString, z.string().regex(TRACKER_REF_RE, 'ключ карточки (PRJ-123) или её числовой id'));
+/** Родитель: карточка в Kaiten или ещё не выгруженный эпик по его `id`. */
+const epicRef = z.preprocess(
+  cardIdAsString,
+  z.string().refine((v) => TRACKER_REF_RE.test(v) || ULID_RE.test(v), 'ключ карточки эпика, её числовой id или id эпика (ULID)'),
+);
 
 /**
  * Блок планирования — зеркало полей Kaiten. Физически отделён, чтобы правило
@@ -89,7 +101,7 @@ export const FIELDS = {
   type: { owner: 'kaiten', required: true, schema: z.enum(TASK_TYPES) },
   status: { owner: 'kaiten', required: true, schema: z.enum(STATUSES) },
   repo: { owner: 'file', required: false, schema: nonEmpty },
-  epic: { owner: 'file', required: false, schema: z.union([trackerRef, z.string().regex(ULID_RE)]) },
+  epic: { owner: 'file', required: false, schema: epicRef },
   related: { owner: 'file', required: false, schema: z.array(nonEmpty) },
   priority: { owner: 'kaiten', required: false, schema: z.enum(PRIORITIES) },
   team: { owner: 'kaiten', required: false, schema: nonEmpty },
@@ -114,7 +126,8 @@ function buildShape(): Shape {
   const shape: Record<string, z.ZodType> = {};
   for (const name of FIELD_ORDER) {
     const spec: FieldSpec = FIELDS[name];
-    shape[name] = spec.required ? spec.schema : spec.schema.optional();
+    // Пустое необязательное поле (`epic:`) YAML отдаёт как null — это «нет значения».
+    shape[name] = spec.required ? spec.schema : z.preprocess((v) => (v === null ? undefined : v), spec.schema.optional());
   }
   return shape as Shape;
 }

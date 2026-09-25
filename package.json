@@ -12,7 +12,7 @@
     "inspect": "tsx --env-file-if-exists=.env src/inspect.ts",
     "yonote": "tsx --env-file-if-exists=.env src/yonote.ts",
     "setup": "tsx --env-file-if-exists=.env src/setup.ts",
-    "tasks:lint": "tsx src/tasks-lint.ts"
+    "tasks:lint": "tsx --env-file-if-exists=.env src/tasks-lint.ts"
   },
   "dependencies": {
     "yaml": "^2.9.1",

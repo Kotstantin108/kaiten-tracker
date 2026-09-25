@@ -11,7 +11,7 @@
 
 import { z } from 'zod';
 
-import { parseTaskDocument, serializeTaskDocument, TaskParseError } from './document.js';
+import { parseTaskDocument, serializeTaskDocument, TaskParseError, type RawTaskDocument } from './document.js';
 import { CLOSED_STATUSES, FrontmatterSchema, type Frontmatter } from './schema.js';
 import { countChecklistItems, sectionText, SKELETONS, SPIKE_ANSWER_SECTION } from './skeleton.js';
 
@@ -84,7 +84,7 @@ export function lintTask(text: string, context: LintContext = {}): LintResult {
   const issues: LintIssue[] = [];
   if (context.path) checkFileName(context.path, issues);
 
-  let raw;
+  let raw: RawTaskDocument;
   try {
     raw = parseTaskDocument(text);
   } catch (error) {

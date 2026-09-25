@@ -117,6 +117,20 @@ describe('схема', () => {
     expect(FrontmatterSchema.safeParse({ ...base, id: 'task-1' }).success).toBe(false);
   });
 
+  it('числовой id карточки без кавычек и пустое необязательное поле читаются', () => {
+    const text = CANONICAL.replace('tracker: PRJ-123', 'tracker: 10000002').replace('epic: PRJ-100', 'epic: 71007999').replace(/^related:\n.*\n/m, 'related:\n');
+    const { issues, frontmatter: fm } = lintTask(text);
+    expect(fm?.tracker).toBe('10000002');
+    expect(fm?.epic).toBe('71007999');
+    expect(fm?.related).toBeUndefined();
+    expect(messages(issues, 'error')).toEqual([]);
+    expect(messages(issues, 'warning')).toEqual(['файл не в каноническом виде (порядок ключей, кавычки) — перепишет любая команда записи']);
+    const out = serializeTaskDocument(fm as Frontmatter, parseTaskDocument(text).body);
+    expect(out).toContain('tracker: "10000002"\n');
+    expect(out).toContain('epic: "71007999"\n');
+    expect(out).not.toContain('related');
+  });
+
   it('repo необязателен только у эпика, родителя у эпика нет', () => {
     const { data } = parseTaskDocument(CANONICAL);
     const { repo: _repo, epic: _epic, ...rest } = data as Record<string, unknown>;
