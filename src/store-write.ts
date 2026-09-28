@@ -57,6 +57,8 @@ export interface Journal {
   failed: FailedEntry[];
   /** Отправляемое сейчас: push этого коммита несёт операции до `lastSeq` включительно. */
   inflight?: { head: string; lastSeq: number };
+  /** Ошибки последнего шага Kaiten: заменяются каждым шагом, показываются один раз. */
+  kaiten?: { errors: FailedEntry[]; shown: boolean };
   /** Последняя неудачная отправка: вид ошибки и когда. Успешная — стирает. */
   sendProblem?: { kind: StoreErrorKind; at: string };
 }
@@ -132,6 +134,46 @@ export function withLock<T>(store: string, name: string, fn: () => T, options: {
     rmSync(path, { force: true });
   }
 }
+
+/**
+ * Замок для асинхронного кода (шаг Kaiten): ждёт через таймер, не блокируя
+ * цикл событий, и снимается в `finally` — после всех `await`, а не на
+ * возврате промиса, как было бы с `withLock`.
+ */
+export async function withLockAsync<T>(store: string, name: string, fn: () => Promise<T>, options: { waitMs?: number; staleMs?: number } = {}): Promise<T> {
+  const path = join(store, name);
+  const waitMs = options.waitMs ?? 120_000;
+  const staleMs = options.staleMs ?? 10 * 60_000;
+  const started = Date.now();
+  for (;;) {
+    try {
+      const fd = openSync(path, 'wx');
+      writeFileSync(fd, `${process.pid} ${new Date().toISOString()}`);
+      closeSync(fd);
+      break;
+    } catch (error) {
+      if (!(typeof error === 'object' && error !== null && 'code' in error && error.code === 'EEXIST')) throw new StoreError('not-store');
+      let stale = true;
+      try {
+        const [pid] = readFileSync(path, 'utf8').split(' ');
+        stale = !alive(Number(pid)) || Date.now() - statSync(path).mtimeMs > staleMs;
+      } catch {
+        stale = false;
+      }
+      if (stale) rmSync(path, { force: true });
+      else if (Date.now() - started > waitMs) throw new StoreError('busy');
+      else await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+  }
+  try {
+    return await fn();
+  } finally {
+    rmSync(path, { force: true });
+  }
+}
+
+/** Шаг Kaiten: один на хранилище — иначе два отправителя создали бы по карточке на задачу. */
+export const KAITEN_LOCK = 'kaiten-sync.lock';
 
 const JOURNAL_LOCK = 'kaiten.lock';
 const SEND_LOCK = 'kaiten-send.lock';
@@ -390,11 +432,29 @@ export function sendInBackground(store: string): void {
 
 export interface Notices {
   failed: FailedEntry[];
+  /** Что не дошло до Kaiten на последнем шаге (файлы при этом записаны). */
+  kaiten: FailedEntry[];
   pending: number;
   problem: StoreErrorKind | null;
 }
 
-/** Сообщить следующей команде о том, что не удалось (например, в Kaiten). */
+/**
+ * Итог шага Kaiten: ошибки заменяют прошлые (постоянная ошибка не копится и
+ * не повторяется после каждой команды), пустой итог стирает их.
+ */
+export function setKaitenErrors(store: string, errors: readonly Omit<FailedEntry, 'at'>[], at = new Date()): void {
+  withLock(store, JOURNAL_LOCK, () => {
+    const journal = readJournal(store);
+    const next = errors.map((e) => ({ ...e, at: at.toISOString() }));
+    const same = JSON.stringify(journal.kaiten?.errors.map(({ what, reason }) => [what, reason]) ?? []) === JSON.stringify(next.map(({ what, reason }) => [what, reason]));
+    if (same && journal.kaiten) return;
+    journal.kaiten = next.length > 0 ? { errors: next, shown: false } : undefined;
+    if (!journal.kaiten) delete journal.kaiten;
+    writeJournal(store, journal);
+  });
+}
+
+/** Сообщить следующей команде о том, что не удалось. */
 export function noteFailures(store: string, failures: readonly Omit<FailedEntry, 'at'>[], at = new Date()): void {
   if (failures.length === 0) return;
   withLock(store, JOURNAL_LOCK, () => {
@@ -406,12 +466,14 @@ export function noteFailures(store: string, failures: readonly Omit<FailedEntry,
 
 /** Не применённые операции (показываются один раз) и неотправленное. */
 export function takeNotices(store: string): Notices {
-  if (!existsSync(join(store, JOURNAL))) return { failed: [], pending: 0, problem: null };
+  if (!existsSync(join(store, JOURNAL))) return { failed: [], kaiten: [], pending: 0, problem: null };
   return withLock(store, JOURNAL_LOCK, () => {
     const journal = readJournal(store);
-    const notices: Notices = { failed: journal.failed, pending: journal.pending.length, problem: journal.sendProblem?.kind ?? null };
-    if (journal.failed.length > 0) {
+    const kaiten = journal.kaiten && !journal.kaiten.shown ? journal.kaiten.errors : [];
+    const notices: Notices = { failed: journal.failed, kaiten, pending: journal.pending.length, problem: journal.sendProblem?.kind ?? null };
+    if (journal.failed.length > 0 || kaiten.length > 0) {
       journal.failed = [];
+      if (journal.kaiten) journal.kaiten.shown = true;
       writeJournal(store, journal);
     }
     return notices;

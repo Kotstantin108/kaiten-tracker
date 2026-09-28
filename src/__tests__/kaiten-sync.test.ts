@@ -53,7 +53,7 @@ function world(entries: Array<[string, string]>) {
   const input = (): RunInput => ({ tasks: tasksOf(texts), mapping: MAPPING, ignore: [10000002], repoWebBase: 'https://github.com/org/acme-tasks', defaultTeam: 'Разработка', boardId: BOARD });
   /** Прогон с записью; операции `synced` применяются к файлам, как это сделал бы журнал. */
   async function sync(extra: Partial<RunInput> = {}) {
-    const run = await runKaitenSync(fake.client, { ...input(), ...extra }, true);
+    const run = await runKaitenSync(fake.client, { ...input(), ...extra }, 'apply');
     for (const { op } of run.ops) {
       const r = applyOp(op, texts, { date: '2026-09-28' });
       if ('error' in r) throw new Error(r.error);
@@ -114,6 +114,83 @@ describe('пилотная карточка', () => {
   });
 });
 
+describe('пилот как он есть', () => {
+  it('появился адрес репозитория задач — карточки перерисовываются, третий прогон пустой', async () => {
+    const [path, text] = task('active/pilot.md', { tracker: '510' }, 'Задача про [соседа](/active/pilot.md).\n\n## Критерии готовности\n\n- [ ] См. [соседа](/active/pilot.md)\n');
+    const w = world([[path, text]]);
+    seedCard(w.fake, { id: 510, title: 'Сделать задачу', board_id: BOARD, properties: { id_4: 'Коротко для фаундера.', id_2: [21] } });
+    await w.sync({ repoWebBase: null });
+    expect(w.fake.cards.get(510)?.checklists[0].items[0].text).toBe('См. соседа');
+    await w.sync();
+    expect(w.fake.cards.get(510)?.description).toContain('[соседа](https://github.com/org/acme-tasks/blob/main/active/pilot.md)');
+    expect(w.fake.cards.get(510)?.checklists[0].items[0].text).toBe('См. [соседа](https://github.com/org/acme-tasks/blob/main/active/pilot.md)');
+    expect(w.fake.cards.get(510)?.checklists[0].items).toHaveLength(1);
+    const writes = w.fake.writes.length;
+    await w.sync();
+    expect(w.fake.writes.length).toBe(writes);
+  });
+
+  it('первая доставка: галочки Kaiten не снимаются, пункт с другой ссылкой не задваивается', async () => {
+    const body = '## Критерии готовности\n\n- [x] Готово\n- [ ] Отмечено людьми в Kaiten\n- [ ] Отчёт в [RESEARCH](/attachments/pilot/R.md)\n- [ ] Новый пункт\n';
+    const [path, text] = task('active/pilot.md', { tracker: '520' }, body);
+    const w = world([[path, text]]);
+    seedCard(w.fake, {
+      id: 520,
+      title: 'Сделать задачу',
+      board_id: BOARD,
+      properties: { id_4: 'Коротко для фаундера.', id_2: [21] },
+      checklists: [
+        {
+          id: 1,
+          name: 'Агент · Критерии готовности',
+          items: [
+            { id: 11, text: 'Готово', checked: false },
+            { id: 12, text: 'Отмечено людьми в Kaiten', checked: true },
+            { id: 13, text: 'Отчёт в [RESEARCH](tasks/.../R.md)', checked: false },
+          ],
+        },
+      ],
+    });
+    const dry = await runKaitenSync(w.fake.client, w.input(), 'details');
+    const line = formatPlan(dry).join('\n');
+    expect(line).toContain('отметить 1');
+    expect(line).toContain('отмечено в Kaiten, но не в файле — оставим 1');
+    expect(line).toContain('добавить пунктов 1');
+    expect(line).toContain('обновить текст пунктов 1');
+    expect(line).not.toContain('СНЯТЬ');
+    expect(w.fake.writes).toEqual([]);
+
+    await w.sync();
+    const items = w.fake.cards.get(520)?.checklists[0].items.map((i) => [i.text, i.checked]);
+    expect(items).toEqual([
+      ['Готово', true],
+      ['Отмечено людьми в Kaiten', true],
+      ['Отчёт в [RESEARCH](https://github.com/org/acme-tasks/blob/main/attachments/pilot/R.md)', false],
+      ['Новый пункт', false],
+    ]);
+  });
+
+  it('после первой доставки владелец пунктов — файл: снятая в файле галочка снимается', async () => {
+    const [path, text] = task('active/pilot.md', { tracker: '530' }, '## Критерии готовности\n\n- [x] Пункт\n');
+    const w = world([[path, text]]);
+    seedCard(w.fake, { id: 530, title: 'Сделать задачу', board_id: BOARD, properties: { id_4: 'Коротко для фаундера.', id_2: [21] } });
+    await w.sync();
+    const current = w.texts.get(path) ?? '';
+    w.texts.set(path, current.replace('- [x] Пункт', '- [ ] Пункт'));
+    await w.sync();
+    expect(w.fake.cards.get(530)?.checklists[0].items[0].checked).toBe(false);
+  });
+
+  it('архивную карточку не трогаем', async () => {
+    const [path, text] = task('active/pilot.md', { tracker: '540' });
+    const w = world([[path, text]]);
+    seedCard(w.fake, { id: 540, title: 'старое', board_id: BOARD, archived: true });
+    const run = await w.sync();
+    expect(w.fake.writes).toEqual([]);
+    expect(run.plan.report.archivedCards).toEqual(['pilot (540)']);
+  });
+});
+
 describe('новые задачи', () => {
   it('задача из CLI получает карточку с «Сутью», колонкой и командой; ключ — в файл', async () => {
     const [path, text] = task('active/new.md', { status: 'inbox', created_via: 'agent' });
@@ -132,7 +209,7 @@ describe('новые задачи', () => {
   it('обрыв после создания: повтор находит карточку по id задачи, а не создаёт вторую', async () => {
     const [path, text] = task('active/new.md', { status: 'inbox', created_via: 'agent' });
     const w = world([[path, text]]);
-    await runKaitenSync(w.fake.client, w.input(), true); // операции `synced` «потерялись»
+    await runKaitenSync(w.fake.client, w.input(), 'apply'); // операции `synced` «потерялись»
     await w.sync();
     expect(w.fake.cards.size).toBe(1);
   });
@@ -163,9 +240,27 @@ describe('новые задачи', () => {
     const auto = await w.sync();
     expect(auto.plan.report.firstLoadCandidates).toBe(1);
     expect(w.fake.writes).toEqual([]);
-    expect(formatPlan(auto.plan).join('\n')).toContain('--first-load');
+    expect(formatPlan(auto).join('\n')).toContain('--first-load');
     await w.sync({ firstLoad: { closedSince: '2026-07' } });
     expect([...w.fake.cards.values()].map((c) => c.title)).toHaveLength(2);
+  });
+
+  it('первая заливка: отменённые — только по отдельному флагу; --only — одна задача', async () => {
+    const [p1, t1] = task('archive/2026-09/done.md', { status: 'done', title: 'Сделанная' });
+    const [p2, t2] = task('archive/2026-09/cancelled.md', { status: 'cancelled', title: 'Отменённая' });
+    const [p3, t3] = task('active/open.md', { title: 'Открытая' });
+    const w = world([
+      [p1, t1],
+      [p2, t2],
+      [p3, t3],
+    ]);
+    const plan = await runKaitenSync(w.fake.client, { ...w.input(), firstLoad: { closedSince: '2026-07' } }, 'plan');
+    expect(plan.plan.actions.map((a) => a.task.slug).sort()).toEqual(['done', 'open']);
+    const withCancelled = await runKaitenSync(w.fake.client, { ...w.input(), firstLoad: { closedSince: '2026-07', withCancelled: true } }, 'plan');
+    expect(withCancelled.plan.actions).toHaveLength(3);
+    const openId = tasksOf(w.texts).find((t) => t.slug === 'open')?.fm.id ?? '';
+    const only = await runKaitenSync(w.fake.client, { ...w.input(), firstLoad: { closedSince: '2026-07' }, only: new Set([openId]) }, 'plan');
+    expect(only.plan.actions.map((a) => a.task.slug)).toEqual(['open']);
   });
 });
 

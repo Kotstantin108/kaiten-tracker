@@ -12,9 +12,14 @@
  *   --config <path>        конфиг (по умолч. tracker.config.json)
  *   --tasks <dir>          читать задачи из папки (дерево конвертера) — только сухой прогон
  *   --first-load           создать карточки и перенесённым задачам: открытым и
- *                          закрытым с месяца --closed-since (по умолч. три месяца назад, Q19)
+ *                          сделанным с месяца --closed-since (Q19: «done за три
+ *                          месяца» — текущий и два предыдущих)
  *   --closed-since YYYY-MM
- *   --apply                выполнить; без него — только план
+ *   --with-cancelled       в первую заливку — и отменённые за тот же срок
+ *   --only <задача>        только одна задача (ключ, id или slug) — пробный
+ *                          прогон на безвредной карточке перед всеми
+ *   --apply                выполнить; без него — план с подробностями по
+ *                          каждой карточке (читаются только обновляемые)
  *
  * Вход в Kaiten: KAITEN_DOMAIN/KAITEN_TOKEN (`.env`), иначе `kaiten` в
  * `kaiten.settings.json`. Чтение доски идёт и в сухом прогоне.
@@ -26,12 +31,12 @@ import { existsSync } from 'node:fs';
 
 import { loadProject } from './config.js';
 import { repoWebBase } from './core/kaiten-sync-plan.js';
-import { buildIndex } from './core/tasks-index.js';
+import { buildIndex, resolveTask } from './core/tasks-index.js';
 import { KaitenClient } from './kaiten-client.js';
 import { SETTINGS_PATH, today } from './kaiten-cli.js';
 import { loadSettings } from './kaiten-context.js';
 import { formatPlan, runKaitenSync } from './kaiten-sync.js';
-import { recordOp, syncStore } from './store-write.js';
+import { KAITEN_LOCK, recordOp, syncStore, withLockAsync } from './store-write.js';
 import { readTasksTree } from './tasks-files.js';
 import { defaultStorePath, isStore, listEntries, readStoreTree } from './task-store.js';
 
@@ -77,24 +82,33 @@ async function main(): Promise<void> {
   if (!domain || !token) fail('Нет входа в Kaiten: KAITEN_DOMAIN/KAITEN_TOKEN в .env или kaiten в настройках');
   const client = new KaitenClient({ domain, token, minIntervalMs: 150 });
 
-  const firstLoad = argv.includes('--first-load') ? { closedSince: argValue(argv, '--closed-since') ?? monthsAgo(3) } : undefined;
-  const run = await runKaitenSync(
-    client,
-    {
-      tasks: index.tasks,
-      mapping,
-      ignore: project.ignoreCards,
-      repoWebBase: repoWebBase(project.tasksRepo?.url),
-      defaultTeam: config.defaultTeam,
-      boardId: mapping.boardId,
-      firstLoad,
-    },
-    apply,
-  );
+  const firstLoad = argv.includes('--first-load')
+    ? { closedSince: argValue(argv, '--closed-since') ?? monthsAgo(2), withCancelled: argv.includes('--with-cancelled') }
+    : undefined;
+  const onlyRef = argValue(argv, '--only');
+  let only: Set<string> | undefined;
+  if (onlyRef) {
+    const found = resolveTask(index.tasks, onlyRef);
+    if ('error' in found) fail(found.error);
+    only = new Set([found.task.fm.id]);
+  }
+  const input = {
+    tasks: index.tasks,
+    mapping,
+    ignore: project.ignoreCards,
+    repoWebBase: repoWebBase(project.tasksRepo?.url),
+    defaultTeam: config.defaultTeam,
+    boardId: mapping.boardId,
+    firstLoad,
+    only,
+  };
+  // Запись — под тем же замком, что фон и pull: иначе две карточки одной задаче.
+  const run = apply ? await withLockAsync(store, KAITEN_LOCK, () => runKaitenSync(client, input, 'apply')) : await runKaitenSync(client, input, 'details');
 
-  console.log(`Проект ${project.title}, задач ${index.tasks.length}${firstLoad ? `, первая заливка (закрытые с ${firstLoad.closedSince})` : ''}`);
+  const loadNote = firstLoad ? `, первая заливка (сделанные${firstLoad.withCancelled ? ' и отменённые' : ''} с ${firstLoad.closedSince})` : '';
+  console.log(`Проект ${project.title}, задач ${index.tasks.length}${loadNote}${onlyRef ? `, только ${onlyRef}` : ''}`);
   if (!project.tasksRepo?.url) console.log('Адреса репозитория задач нет — ссылки в описаниях будут просто текстом.');
-  for (const line of formatPlan(run.plan)) console.log(line);
+  for (const line of formatPlan(run)) console.log(line);
   if (!apply) {
     console.log('\nСухой прогон: в Kaiten ничего не записано (--apply — выполнить).');
     return;

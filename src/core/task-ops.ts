@@ -29,11 +29,18 @@ export type Op =
   | { kind: 'block'; id: string; reason: string }
   | { kind: 'edit'; id: string; text: string; baseHash: string }
   /**
-   * Служебная операция синхронизации: карточка получила содержимое с этим
-   * хешем (и, при создании, — её ключ). Меняет только поля CLI и не трогает
-   * `updated`: иначе учёт синхронизации сам выглядел бы правкой задачи.
+   * Служебная операция синхронизации: карточки получили содержимое с этим
+   * хешем (и, при создании, — свой ключ). Пакетом — один коммит на проход,
+   * а не на задачу (первая заливка — сотни карточек). Меняет только поля CLI
+   * и не трогает `updated`: иначе учёт синхронизации сам выглядел бы правкой.
    */
-  | { kind: 'synced'; id: string; contentHash: string; tracker?: string };
+  | { kind: 'synced'; items: SyncedItem[] };
+
+export interface SyncedItem {
+  id: string;
+  contentHash: string;
+  tracker?: string;
+}
 
 export interface OpContext {
   /** Дата операции `YYYY-MM-DD` — из журнала, не «сегодня». */
@@ -280,6 +287,8 @@ export function applyOp(op: Op, texts: TaskTexts, ctx: OpContext): OpResult {
     return { changes: [{ path, text: op.text }], summary: `новая задача ${slug}${renamed}`, warnings: result.warnings };
   }
 
+  if (op.kind === 'synced') return applySynced(op.items, texts);
+
   const task = byId(texts, op.id);
   if ('error' in task) return task;
   const ref = refOf(task);
@@ -325,11 +334,6 @@ export function applyOp(op: Op, texts: TaskTexts, ctx: OpContext): OpResult {
         warnings: [],
       };
     }
-    case 'synced': {
-      const fm: Frontmatter = { ...task.fm, content_hash: op.contentHash, ...(op.tracker ? { tracker: op.tracker } : {}) };
-      if (fm.content_hash === task.fm.content_hash && fm.tracker === task.fm.tracker) return { changes: [], summary: `${ref} уже в Kaiten`, warnings: [] };
-      return { changes: [{ path: task.path, text: serializeTaskDocument(fm, task.body) }], summary: `${refOf({ ...task, fm })} отправлена в Kaiten`, warnings: [] };
-    }
     case 'edit': {
       if (contentHash(task.fm, task.body) !== op.baseHash) {
         return { error: `задачу ${ref} изменили одновременно с вами — правка не применена` };
@@ -347,11 +351,29 @@ export function applyOp(op: Op, texts: TaskTexts, ctx: OpContext): OpResult {
       if (foreign.length > 0) return { error: `эти поля правятся не в тексте задачи: ${foreign.join(', ')} — верните их как были` };
       // Поля не-файла не тронуты, значит «изменилось ли» решает хеш файловой части.
       if (contentHash(parsed.data, raw.body) === op.baseHash) return { changes: [], summary: `задача ${ref} без изменений`, warnings: [] };
-      const out = write(task, parsed.data, raw.body, ctx);
+      // «Доставлено в Kaiten» правкой не подделать: берётся из задачи, не из текста.
+      const out = write(task, { ...parsed.data, content_hash: task.fm.content_hash }, raw.body, ctx);
       if ('error' in out) return out;
       return { changes: [{ path: task.path, text: out.text }], summary: `задача ${ref} изменена`, warnings: out.warnings };
     }
   }
+}
+
+/**
+ * Отметки синхронизации пакетом. Задача, которой уже нет (отменили и
+ * удалили — не бывает, но и не повод терять остальные), пропускается.
+ */
+function applySynced(items: readonly SyncedItem[], texts: TaskTexts): OpResult {
+  const all = records(texts);
+  const changes: FileChange[] = [];
+  for (const item of items) {
+    const task = all.find((x) => x.fm.id === item.id);
+    if (!task) continue;
+    const fm: Frontmatter = { ...task.fm, content_hash: item.contentHash, ...(item.tracker ? { tracker: item.tracker } : {}) };
+    if (fm.content_hash === task.fm.content_hash && fm.tracker === task.fm.tracker) continue;
+    changes.push({ path: task.path, text: serializeTaskDocument(fm, task.body) });
+  }
+  return { changes, summary: `отметки Kaiten: ${changes.length}`, warnings: [] };
 }
 
 /** Задача по ссылке в текстах — для команд, которым нужно состояние до операции. */

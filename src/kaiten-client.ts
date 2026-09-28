@@ -369,7 +369,7 @@ export class KaitenClient {
    * Первый живой вызов — на безвредной тестовой карточке с перечитыванием
    * (грабли PROMPT: API молча выбрасывает незнакомое).
    */
-  async updateChecklistItem(cardId: number, checklistId: number, itemId: number, patch: { checked: boolean }): Promise<unknown> {
+  async updateChecklistItem(cardId: number, checklistId: number, itemId: number, patch: { checked?: boolean; text?: string }): Promise<unknown> {
     return this.request('PATCH', `/cards/${cardId}/checklists/${checklistId}/items/${itemId}`, { body: patch, schema: z.unknown() });
   }
 

@@ -19,7 +19,7 @@ import { formatProblems } from './kaiten-format.js';
 import { repoWebBase } from './core/kaiten-sync-plan.js';
 import { KaitenClient } from './kaiten-client.js';
 import { apiErrorText, runKaitenSync, type SyncRun } from './kaiten-sync.js';
-import { noteFailures, recordOp, sendInBackground, syncStore, takeNotices } from './store-write.js';
+import { KAITEN_LOCK, recordOp, sendInBackground, setKaitenErrors, syncStore, takeNotices, withLockAsync } from './store-write.js';
 import { defaultStorePath, gitText, isStore, listEntries, readStoreTree, StoreError, syncCopy, type StoreEntry } from './task-store.js';
 
 export class UsageError extends Error {
@@ -216,44 +216,48 @@ export async function syncWithKaiten(ctx: Context, client?: KaitenClient): Promi
   const mapping = ctx.loaded.project.mapping;
   const login = current.kaiten;
   if (!mapping || (!login && !client)) {
-    noteFailures(ctx.store, [{ what: 'синхронизация с Kaiten', reason: mapping ? 'не настроен вход в Kaiten (kaiten.domain и kaiten.token в настройках)' : 'доска проекта не настроена' }]);
+    const reason = mapping ? 'не настроен вход в Kaiten (kaiten.domain и kaiten.token в настройках)' : 'доска проекта не настроена';
+    setKaitenErrors(ctx.store, [{ what: 'синхронизация', reason }]);
     return null;
   }
   const kaiten = client ?? new KaitenClient({ domain: login?.domain ?? '', token: login?.token ?? '', minIntervalMs: 150 });
-  let run: SyncRun;
-  try {
-    run = await runKaitenSync(
-      kaiten,
-      {
-        tasks: loadTasks(ctx).index.tasks,
-        mapping,
-        ignore: ctx.loaded.project.ignoreCards,
-        repoWebBase: repoWebBase(ctx.loaded.project.tasksRepo?.url),
-        defaultTeam: ctx.loaded.config.defaultTeam,
-        boardId: mapping.boardId,
-      },
-      true,
-    );
-  } catch (error) {
-    noteFailures(ctx.store, [{ what: 'синхронизация с Kaiten', reason: apiErrorText(error) }]);
-    return null;
-  }
-  for (const { op, what } of run.ops) {
-    const recorded = recordOp(ctx.store, op, what, today());
-    if ('error' in recorded) run.errors.push({ what, message: recorded.error });
-  }
-  if (run.ops.length > 0) {
+  // Один шаг Kaiten на хранилище: второй параллельный создал бы вторую карточку той же задаче.
+  return withLockAsync(ctx.store, KAITEN_LOCK, async () => {
+    let run: SyncRun;
     try {
-      syncStore(ctx.store);
+      run = await runKaitenSync(
+        kaiten,
+        {
+          tasks: loadTasks(ctx).index.tasks,
+          mapping,
+          ignore: ctx.loaded.project.ignoreCards,
+          repoWebBase: repoWebBase(ctx.loaded.project.tasksRepo?.url),
+          defaultTeam: ctx.loaded.config.defaultTeam,
+          boardId: mapping.boardId,
+        },
+        'apply',
+      );
     } catch (error) {
-      if (!(error instanceof StoreError)) throw error;
+      setKaitenErrors(ctx.store, [{ what: 'синхронизация', reason: apiErrorText(error) }]);
+      return null;
     }
-  }
-  noteFailures(
-    ctx.store,
-    run.errors.map((e) => ({ what: `Kaiten: ${e.what}`, reason: e.message })),
-  );
-  return run;
+    for (const { op, what } of run.ops) {
+      const recorded = recordOp(ctx.store, op, what, today());
+      if ('error' in recorded) run.errors.push({ what, message: recorded.error });
+    }
+    if (run.ops.length > 0) {
+      try {
+        syncStore(ctx.store);
+      } catch (error) {
+        if (!(error instanceof StoreError)) throw error;
+      }
+    }
+    setKaitenErrors(
+      ctx.store,
+      run.errors.map((e) => ({ what: e.what, reason: e.message })),
+    );
+    return run;
+  });
 }
 
 /** Отправить общим и обновить Kaiten. Ошибки записаны в журнал — о них скажет следующая команда. */
@@ -315,8 +319,10 @@ export function printNotices(ctx: Context): void {
   if (!isStore(ctx.store)) return;
   const notices = takeNotices(ctx.store);
   for (const f of notices.failed) console.error(`Не применено: ${f.what} — ${f.reason}.`);
+  // Задачи при этом записаны и отправлены — не дошло только до Kaiten.
+  for (const k of notices.kaiten) console.error(`Kaiten не обновлён: ${k.what} — ${k.reason}.`);
   if (notices.pending > 0 && notices.problem) {
     console.error(`Изменения ещё не отправлены (${notices.pending}). ${storeMessage(notices.problem)}`);
   }
-  if (notices.failed.length > 0 || (notices.pending > 0 && notices.problem)) console.error('');
+  if (notices.failed.length > 0 || notices.kaiten.length > 0 || (notices.pending > 0 && notices.problem)) console.error('');
 }

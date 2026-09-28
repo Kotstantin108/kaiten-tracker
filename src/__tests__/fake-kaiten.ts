@@ -46,8 +46,8 @@ export interface FakeKaiten {
   failOn?: (method: string, path: string) => { status: number; body: unknown } | null;
 }
 
-export function fakeKaiten(options: { requiredSummaryKey?: string | null } = {}): FakeKaiten {
-  let nextId = 900_000;
+export function fakeKaiten(options: { requiredSummaryKey?: string | null; firstId?: number } = {}): FakeKaiten {
+  let nextId = options.firstId ?? 900_000;
   const fake: FakeKaiten = {
     cards: new Map(),
     writes: [],
@@ -77,7 +77,8 @@ export function fakeKaiten(options: { requiredSummaryKey?: string | null } = {})
       const ext = url.searchParams.get('external_id');
       const offset = Number(url.searchParams.get('offset') ?? 0);
       const limit = Number(url.searchParams.get('limit') ?? 100);
-      const all = [...fake.cards.values()].filter((c) => !c.archived && (!board || c.board_id === Number(board)) && (!ext || c.external_id === ext));
+      // Как живьём (23.09): список доски и фильтр по external_id отдают и архивные карточки.
+      const all = [...fake.cards.values()].filter((c) => (!board || c.board_id === Number(board)) && (!ext || c.external_id === ext));
       return json(200, all.slice(offset, offset + limit).map(listView));
     }
     if ((m = /^\/cards\/(\d+)$/.exec(path))) {
@@ -131,7 +132,8 @@ export function fakeKaiten(options: { requiredSummaryKey?: string | null } = {})
       const [, listId, itemId] = m;
       const item = findChecklist(Number(listId))?.items.find((i) => i.id === Number(itemId));
       if (!item) return json(404, {});
-      item.checked = Boolean(body.checked);
+      if (body.checked !== undefined) item.checked = Boolean(body.checked);
+      if (body.text !== undefined) item.text = String(body.text);
       return json(200, item);
     }
     if (method === 'POST' && (m = /^\/cards\/(\d+)\/comments$/.exec(path))) {

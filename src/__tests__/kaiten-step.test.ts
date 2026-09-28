@@ -13,7 +13,7 @@ import type { LoadedProject } from '../config.js';
 import { serializeTaskDocument } from '../core/document.js';
 import { FrontmatterSchema } from '../core/schema.js';
 import type { Context } from '../kaiten-cli.js';
-import { readJournal } from '../store-write.js';
+import { readJournal, takeNotices } from '../store-write.js';
 import { cloneStore } from '../task-store.js';
 import { fakeKaiten } from './fake-kaiten.js';
 
@@ -99,12 +99,54 @@ describe('шаг Kaiten', { timeout: 30_000 }, () => {
     expect(fake.writes.length).toBe(writes);
   });
 
-  it('ошибка Kaiten — в журнал для следующей команды', async () => {
+  it('ошибка Kaiten — следующей команде, один раз; повтор той же ошибки не копится', async () => {
     writeFileSync(settingsPath, JSON.stringify({ sync: { kaiten: true } }));
     const { syncWithKaiten } = await import('../kaiten-cli.js');
     const fake = fakeKaiten();
     fake.failOn = (method, path) => (method === 'GET' && path === '/cards' ? { status: 403, body: { message: 'Нет доступа к доске' } } : null);
     expect(await syncWithKaiten(ctx, fake.client)).toBeNull();
-    expect(readJournal(ctx.store).failed.at(-1)).toMatchObject({ what: 'синхронизация с Kaiten', reason: 'Нет доступа к доске' });
+    await syncWithKaiten(ctx, fake.client);
+    expect(readJournal(ctx.store).kaiten?.errors).toEqual([expect.objectContaining({ what: 'синхронизация', reason: 'Нет доступа к доске' })]);
+    expect(takeNotices(ctx.store).kaiten).toHaveLength(1);
+    expect(takeNotices(ctx.store).kaiten).toHaveLength(0);
+    // Та же ошибка снова — не показывается заново; успешный шаг стирает.
+    await syncWithKaiten(ctx, fake.client);
+    expect(takeNotices(ctx.store).kaiten).toHaveLength(0);
+    fake.failOn = undefined;
+    await syncWithKaiten(ctx, fake.client);
+    expect(readJournal(ctx.store).kaiten).toBeUndefined();
+  });
+});
+
+describe('одновременные шаги', { timeout: 60_000 }, () => {
+  it('два прогона сразу — одна карточка', async () => {
+    writeFileSync(settingsPath, JSON.stringify({ sync: { kaiten: true } }));
+    // Новая задача без карточки в том же хранилище.
+    const seed = join(tmp, 'seed');
+    git(seed, 'pull', '-q');
+    const fm = FrontmatterSchema.parse({
+      id: '01K5ZQ3R8F2K9M4N7P0T5V8W3B',
+      title: 'Проверить гонку',
+      summary: 'Ровно одна карточка.',
+      type: 'tech',
+      status: 'inbox',
+      repo: 'acme-app',
+      created: '2026-09-28',
+      created_by: 'alice',
+      created_via: 'agent',
+      updated: '2026-09-28',
+    });
+    writeFileSync(join(seed, 'active', 'race.md'), serializeTaskDocument(fm, '\nТекст.\n'));
+    git(seed, 'add', '-A');
+    git(seed, 'commit', '-q', '-m', 'race');
+    git(seed, 'push', '-q', 'origin', 'main');
+    const { syncStore } = await import('../store-write.js');
+    syncStore(ctx.store);
+
+    const { syncWithKaiten } = await import('../kaiten-cli.js');
+    // Свои номера карточек: у прошлого поддельного Kaiten они те же.
+    const fake = fakeKaiten({ firstId: 950_000 });
+    await Promise.all([syncWithKaiten(ctx, fake.client), syncWithKaiten(ctx, fake.client)]);
+    expect([...fake.cards.values()].filter((c) => c.title === 'Проверить гонку')).toHaveLength(1);
   });
 });

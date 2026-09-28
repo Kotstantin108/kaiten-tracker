@@ -134,6 +134,12 @@ describe('правка текста', () => {
     expect(ok(applyOp({ kind: 'edit', id: ID, text: current, baseHash: base }, texts(), CTX))).toEqual([]);
   });
 
+  it('отметку «доставлено в Kaiten» правкой не подделать', () => {
+    const forged = current.replace(/^updated: .*$/m, (line) => `${line}\ncontent_hash: sha256:${'b'.repeat(64)}`).replace('Оплата иногда зависает.', 'Новая «Суть».');
+    const [change] = ok(applyOp({ kind: 'edit', id: ID, text: forged, baseHash: base }, texts(), CTX));
+    expect(fmOf(change.text).content_hash).toBeUndefined();
+  });
+
   it('битый файл не пишется', () => {
     const r = applyOp({ kind: 'edit', id: ID, text: current.replace(/^title: .*$/m, 'title: ""'), baseHash: base }, texts(), CTX);
     expect('error' in r).toBe(true);

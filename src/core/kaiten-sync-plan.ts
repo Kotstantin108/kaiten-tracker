@@ -6,10 +6,20 @@
  * (Q43), связь с эпиком. Колонку, тип, приоритет и команду — только при
  * создании карточки: дальше ими владеет Kaiten.
  *
- * КОГДА ОБНОВЛЯТЬ. `content_hash` в файле — «это содержимое карточка уже
- * получила»; его ставит только синхронизация (операция `synced`). Пересчитанный
- * хеш не равен записанному (или его нет, как у перенесённых задач) — описание
- * и чек-листы нужно отправить (Q32). Заголовок, «Суть» и «Репозиторий» видны в
+ * КОГДА ОБНОВЛЯТЬ. `content_hash` в файле — «это карточка уже получила»; его
+ * ставит только синхронизация (операция `synced`). Хеш — не только файла:
+ * описание зависит ещё от версии отрисовки, адреса репозитория задач и
+ * текущих путей задач, на которые ссылается тело (`deliveredHash`). Появился
+ * адрес репозитория или поменялся рендер — пилотные карточки перерисуются.
+ * Не совпало (или хеша нет, как у перенесённых задач) — описание и чек-листы
+ * нужно отправить (Q32).
+ *
+ * ЧЕК-ЛИСТЫ (`diffChecklists`). Пункт карточки сопоставляется с пунктом
+ * файла по тексту без ссылок и разметки — перезапись ссылок не плодит
+ * дублей. Первая доставка (у пилотных карточек галочки ставили в Kaiten, по
+ * старому правилу) галочки Kaiten не снимает: они в отчёте. Текст найденного
+ * пункта, отличающийся от файла, заменяется текстом файла. Дальше владелец
+ * пунктов «Агент · …» — файл (Q43). Заголовок, «Суть» и «Репозиторий» видны в
  * списке карточек и сравниваются напрямую: правка их в интерфейсе Kaiten
  * возвращается к файлу (владелец — файл).
  *
@@ -23,7 +33,9 @@
  * отчёт; не удаляет пункты чек-листов, которых нет в файле.
  */
 
-import { extractChecklists, type Checklist } from '../checklists.js';
+import { createHash } from 'node:crypto';
+
+import { extractChecklists, type Checklist, type ChecklistItem } from '../checklists.js';
 import type { ConfigMapping } from '../config.js';
 import { contentHash } from './document.js';
 import { epicOf, type TaskRecord } from './tasks-index.js';
@@ -38,6 +50,8 @@ export interface CardView {
   externalId: string | null;
   parents: number[];
   properties: Record<string, unknown>;
+  /** Список доски отдаёт и архивные карточки (живьём 23.09). */
+  archived: boolean;
 }
 
 export interface RenderedContent {
@@ -81,6 +95,80 @@ export function renderContent(task: TaskRecord, all: readonly TaskRecord[], base
     description: `${Q41_NOTICE}\n\n${linkify(body, all, base).trim()}\n`,
     checklists: checklists.map((c) => ({ ...c, items: c.items.map((i) => ({ ...i, text: linkify(i.text, all, base) })) })),
   };
+}
+
+/** Версия отрисовки описания: поменяли рендер — поднять, и карточки перерисуются. */
+export const RENDER_VERSION = 1;
+
+/**
+ * «Что получила карточка»: содержимое файла + версия отрисовки + адрес
+ * репозитория задач + текущие пути задач, на которые ссылается тело (задача
+ * уехала в архив — ссылка в карточке должна смениться).
+ */
+export function deliveredHash(task: TaskRecord, all: readonly TaskRecord[], base: string | null): string {
+  const linked = [...task.body.matchAll(/\]\(\/(?:active|archive\/\d{4}-\d{2})\/([a-z0-9-]+)\.md/g)].map((m) => m[1]);
+  const paths = [...new Set(linked)].sort().map((slug) => all.find((x) => x.slug === slug)?.path ?? null);
+  const payload = JSON.stringify([contentHash(task.fm, task.body), RENDER_VERSION, base, paths]);
+  return `sha256:${createHash('sha256').update(payload).digest('hex')}`;
+}
+
+export interface ExistingChecklist {
+  id: number;
+  name: string;
+  items: Array<{ id?: number; text: string; checked: boolean }>;
+}
+
+export interface ChecklistDiff {
+  createLists: Checklist[];
+  addItems: Array<{ listId: number; item: ChecklistItem; sortOrder: number }>;
+  setChecked: Array<{ listId: number; itemId: number; checked: boolean }>;
+  /** Отмечено в Kaiten, не отмечено в файле — при первой доставке остаётся как есть. */
+  keptTicks: string[];
+  /** Пункт найден, но текст другой (ссылки, разметка) — текст в карточке заменяется текстом файла. */
+  setText: Array<{ listId: number; itemId: number; text: string }>;
+}
+
+function itemKey(text: string): string {
+  return text
+    .replace(/\[([^\]]*)\]\([^)]*\)/g, '$1')
+    .replace(/[`*_]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .toLowerCase()
+    .replace(/ё/g, 'е');
+}
+
+export function diffChecklists(wanted: readonly Checklist[], existing: readonly ExistingChecklist[], firstDelivery: boolean): ChecklistDiff {
+  const diff: ChecklistDiff = { createLists: [], addItems: [], setChecked: [], keptTicks: [], setText: [] };
+  for (const list of wanted) {
+    const found = existing.find((l) => l.name === list.name);
+    if (!found) {
+      diff.createLists.push(list);
+      continue;
+    }
+    const used = new Set<number>();
+    let order = found.items.length;
+    for (const item of list.items) {
+      const byText = found.items.findIndex((x, i) => !used.has(i) && x.text.trim() === item.text.trim());
+      const index = byText !== -1 ? byText : found.items.findIndex((x, i) => !used.has(i) && itemKey(x.text) === itemKey(item.text));
+      if (index === -1) {
+        order += 1;
+        diff.addItems.push({ listId: found.id, item, sortOrder: order });
+        continue;
+      }
+      used.add(index);
+      const current = found.items[index];
+      if (current.text.trim() !== item.text.trim() && current.id !== undefined) diff.setText.push({ listId: found.id, itemId: current.id, text: item.text });
+      if (current.checked === item.checked || current.id === undefined) continue;
+      if (!item.checked && firstDelivery) diff.keptTicks.push(current.text);
+      else diff.setChecked.push({ listId: found.id, itemId: current.id, checked: item.checked });
+    }
+  }
+  return diff;
+}
+
+export function emptyDiff(diff: ChecklistDiff): boolean {
+  return diff.createLists.length === 0 && diff.addItems.length === 0 && diff.setChecked.length === 0 && diff.setText.length === 0;
 }
 
 // ── поля карточки ────────────────────────────────────────────────────────
@@ -147,6 +235,8 @@ export type SyncAction =
       /** Описание и чек-листы — если содержимое файла ещё не доставлено. */
       content: RenderedContent | null;
       contentHash: string;
+      /** Карточка ещё ни разу не получала содержимое (`content_hash` нет) — галочки Kaiten не снимаем. */
+      firstDelivery: boolean;
     }
   | { kind: 'link'; task: TaskRecord; parentId: number; childId: number };
 
@@ -156,6 +246,8 @@ export interface SyncReport {
   /** Ключ не числовой (PRJ-123): пока пространства без ключей, сопоставить нечем. */
   unknownTrackers: string[];
   ignored: string[];
+  /** Карточка в архиве Kaiten — не трогаем. */
+  archivedCards: string[];
   /** Перенесённые задачи без карточки — первая заливка, только скриптом владельца. */
   firstLoadCandidates: number;
   /** Закрытые задачи CLI без карточки — не создаём. */
@@ -174,8 +266,14 @@ export interface PlanInput {
   ignore: readonly number[];
   repoWebBase: string | null;
   defaultTeam?: string;
-  /** Первая заливка (скрипт владельца): создать карточки и перенесённым задачам, открытым и закрытым не раньше `closedSince` (YYYY-MM). */
-  firstLoad?: { closedSince: string };
+  /**
+   * Первая заливка (скрипт владельца): карточки и перенесённым задачам —
+   * открытым и сделанным не раньше `closedSince` (YYYY-MM, Q19: «done за три
+   * месяца»); отменённым — только с `withCancelled`.
+   */
+  firstLoad?: { closedSince: string; withCancelled?: boolean };
+  /** Только эти задачи (id) — пробный прогон на одной карточке. */
+  only?: ReadonlySet<string>;
 }
 
 function cardIdOf(tracker: string | undefined): number | null {
@@ -186,16 +284,19 @@ export function planKaitenSync(input: PlanInput): SyncPlan {
   const { tasks, mapping } = input;
   const cards = new Map(input.cards.map((c) => [c.id, c]));
   const ignore = new Set(input.ignore);
-  const report: SyncReport = { missingCards: [], unknownTrackers: [], ignored: [], firstLoadCandidates: 0, closedWithoutCard: [] };
+  const report: SyncReport = { missingCards: [], unknownTrackers: [], ignored: [], archivedCards: [], firstLoadCandidates: 0, closedWithoutCard: [] };
   const creates: SyncAction[] = [];
   const others: SyncAction[] = [];
 
   for (const task of tasks) {
-    const hash = contentHash(task.fm, task.body);
+    if (input.only && !input.only.has(task.fm.id)) continue;
+    const hash = deliveredHash(task, tasks, input.repoWebBase);
     if (task.fm.tracker === undefined) {
       const bornInCli = task.fm.created_via !== undefined;
       const archiveMonth = /^archive\/(\d{4}-\d{2})\//.exec(task.path)?.[1];
-      const firstLoadOk = input.firstLoad !== undefined && (!task.closed || (archiveMonth !== undefined && archiveMonth >= input.firstLoad.closedSince));
+      const load = input.firstLoad;
+      const closedOk = load !== undefined && archiveMonth !== undefined && archiveMonth >= load.closedSince && (task.fm.status === 'done' || load.withCancelled === true);
+      const firstLoadOk = load !== undefined && (!task.closed || closedOk);
       if (!bornInCli && !firstLoadOk) {
         if (!task.closed) report.firstLoadCandidates += 1;
         continue;
@@ -230,6 +331,10 @@ export function planKaitenSync(input: PlanInput): SyncPlan {
       report.missingCards.push(`${task.slug} (${cardId})`);
       continue;
     }
+    if (card.archived) {
+      report.archivedCards.push(`${task.slug} (${cardId})`);
+      continue;
+    }
 
     const patch: { title?: string; properties?: Record<string, unknown> } = {};
     if (!sameValue(card.title, task.fm.title)) patch.title = task.fm.title;
@@ -238,7 +343,15 @@ export function planKaitenSync(input: PlanInput): SyncPlan {
     if (Object.keys(diff).length > 0) patch.properties = diff;
     const stale = task.fm.content_hash !== hash;
     if (stale || patch.title !== undefined || patch.properties !== undefined) {
-      others.push({ kind: 'update', task, cardId, patch, content: stale ? renderContent(task, tasks, input.repoWebBase) : null, contentHash: hash });
+      others.push({
+        kind: 'update',
+        task,
+        cardId,
+        patch,
+        content: stale ? renderContent(task, tasks, input.repoWebBase) : null,
+        contentHash: hash,
+        firstDelivery: task.fm.content_hash === undefined,
+      });
     }
 
     const epic = epicOf(tasks, task);
