@@ -107,7 +107,10 @@ export const FIELDS = {
   team: { owner: 'kaiten', required: false, schema: nonEmpty },
   created: { owner: 'cli', required: true, schema: date },
   created_by: { owner: 'cli', required: true, schema: nonEmpty },
-  created_via: { owner: 'cli', required: true, schema: z.enum(CREATED_VIA) },
+  // Кто завёл задачу — агент или человек — отмечает CLI при `kaiten new` со слов
+  // агента. У задач, перенесённых из старых форматов, поля нет: угадывать по
+  // истории git владелец запретил (28.09.2026).
+  created_via: { owner: 'cli', required: false, schema: z.enum(CREATED_VIA) },
   updated: { owner: 'cli', required: true, schema: date },
   planning: { owner: 'kaiten', required: false, schema: PlanningSchema },
   content_hash: { owner: 'cli', required: false, schema: z.string().regex(/^sha256:[a-f0-9]{64}$/, 'sha256:<64 hex>') },

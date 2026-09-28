@@ -14,10 +14,10 @@ import { execFileSync } from 'node:child_process';
 
 export interface CommitInfo {
   author: string;
+  /** Почта автора: по ней, а не по имени, автор сопоставляется с человеком. */
+  email: string;
   /** Дата автора, `YYYY-MM-DD`. */
   date: string;
-  /** Коммит сделан агентом: в сообщении трейлер соавтора Claude. */
-  agent: boolean;
 }
 
 export interface TaskHistory {
@@ -39,21 +39,19 @@ interface RawCommit extends CommitInfo {
 const RECORD = '\x1e';
 const FIELD = '\x1f';
 
-const AGENT_RE = /Co-Authored-By:[^\n]*\b(?:Claude|anthropic)|Claude-Session:|Generated with \[Claude Code\]/i;
-
-/** Разбор вывода `git log --format=<RECORD>%an<FIELD>%aI<FIELD>%B<FIELD> --name-status`. */
+/** Разбор вывода `git log --format=<RECORD>%an<FIELD>%ae<FIELD>%aI<FIELD>%B<FIELD> --name-status`. */
 export function parseGitLog(output: string): RawCommit[] {
   const commits: RawCommit[] = [];
   for (const chunk of output.split(RECORD)) {
     if (!chunk.trim()) continue;
-    const [author, isoDate, message, rest = ''] = chunk.split(FIELD);
+    const [author, email, isoDate, , rest = ''] = chunk.split(FIELD);
     const changes: FileChange[] = [];
     for (const line of rest.split('\n')) {
       const parts = line.replace(/\r$/, '').split('\t');
       if (parts.length < 2 || !/^[ACDMRT]\d*$/.test(parts[0])) continue;
       changes.push({ status: parts[0][0], paths: parts.slice(1) });
     }
-    commits.push({ author: author.trim(), date: isoDate.trim().slice(0, 10), agent: AGENT_RE.test(message), changes });
+    commits.push({ author: author.trim(), email: (email ?? '').trim().toLowerCase(), date: (isoDate ?? '').trim().slice(0, 10), changes });
   }
   return commits;
 }
@@ -91,7 +89,7 @@ export function buildHistory(commitsNewestFirst: RawCommit[], layout: 'folders' 
   const result = new Map<string, TaskHistory>();
   const location = new Map<string, boolean>();
   for (const commit of [...commitsNewestFirst].reverse()) {
-    const info: CommitInfo = { author: commit.author, date: commit.date, agent: commit.agent };
+    const info: CommitInfo = { author: commit.author, email: commit.email, date: commit.date };
     const touched = new Map<string, { closedNow: boolean; wasOpen: boolean }>();
     for (const change of commit.changes) {
       const target = keyOfPath(change.paths.at(-1) ?? '', layout);
@@ -127,7 +125,7 @@ export function readHistory(repoPath: string, layout: 'folders' | 'numbered', ta
   const run = (extra: string[]): string =>
     execFileSync(
       'git',
-      ['-c', 'core.quotePath=false', 'log', '-M', ...extra, '--name-status', `--format=${RECORD}%an${FIELD}%aI${FIELD}%B${FIELD}`, '--', tasksDirName],
+      ['-c', 'core.quotePath=false', 'log', '-M', ...extra, '--name-status', `--format=${RECORD}%an${FIELD}%ae${FIELD}%aI${FIELD}%B${FIELD}`, '--', tasksDirName],
       { cwd: repoPath, encoding: 'utf8', maxBuffer: 256 * 1024 * 1024 },
     );
   const history = buildHistory(parseGitLog(run([])), layout);

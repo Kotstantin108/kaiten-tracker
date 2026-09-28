@@ -166,7 +166,8 @@ describe('скелет и раздел критериев по типу', () => 
 
   it('пустой пункт скелета — не критерий', () => {
     const { issues } = lintTask(serializeTaskDocument(frontmatter({ type: 'bug' }), `\n${renderSkeleton('bug')}`));
-    expect(messages(issues, 'error')).toEqual(['в разделе «Критерии» нет ни одного пункта `- [ ]`']);
+    expect(messages(issues, 'error')).toEqual([]);
+    expect(messages(issues, 'warning')).toContain('в разделе «Критерии» нет ни одного пункта `- [ ]`');
   });
 
   it('раздел ищется по имени и не заходит в следующий, заголовки в коде не считаются', () => {
@@ -187,7 +188,9 @@ describe('скелет и раздел критериев по типу', () => 
     expect(messages(lintTask(serializeTaskDocument(frontmatter({ type: 'bug' }), legacy)).issues, 'error')).toEqual([]);
     const empty = '\n## Что сделали\n\nВсё.\n';
     expect(messages(lintTask(serializeTaskDocument(frontmatter({ status: 'done' }), empty)).issues, 'error')).toEqual([]);
-    expect(messages(lintTask(serializeTaskDocument(frontmatter(), empty)).issues, 'error')).toEqual(['нет раздела «Критерии готовности»']);
+    // Критерии необязательны и у живых задач: только напоминание.
+    expect(messages(lintTask(serializeTaskDocument(frontmatter(), empty)).issues, 'error')).toEqual([]);
+    expect(messages(lintTask(serializeTaskDocument(frontmatter(), empty)).issues, 'warning')).toContain('нет раздела «Критерии готовности»');
   });
 
   it('«Шаги» чекбоксами у эпика — предупреждение', () => {

@@ -19,6 +19,7 @@
  *                      как оверлей ниже --overlay; с --write дополняются новыми
  *                      черновиками с `reviewed: false` — отметка «проверить»
  *                      живёт в git, а не во временном отчёте
+ *   --people <path>    люди и их почты в git (по умолч. convert/people.json)
  *   --report <path>    отчёт (по умолч. tmp/convert/<проект>-report.md)
  *
  * Коды выхода: 0 — ок; 2 — ошибка аргументов или конфига; 6 — ошибка Kaiten.
@@ -110,6 +111,12 @@ function gitLines(repoPath: string, args: string[]): string[] {
     .split('\0')
     .filter(Boolean);
 }
+
+/** Люди проекта: ключ → имя, и почты авторов коммитов → ключ человека. */
+const PeopleSchema = z.object({
+  people: z.record(z.string(), z.object({ name: z.string() })),
+  emails: z.record(z.string(), z.string()),
+});
 
 /** Ключ истории задачи: `<дата>_<slug>` или имя файла globex — как в `external_id` без репозитория. */
 function historyKey(task: TaskFile): string {
@@ -206,7 +213,10 @@ async function main(): Promise<void> {
     const root = repoPaths.get(repoName);
     return root !== undefined && existsSync(join(root, path));
   };
-  const result = convertProject({ tasks, history, logs, overlay, cards, exists, extraFiles });
+  const peoplePath = argValue(argv, '--people') ?? 'convert/people.json';
+  const people = existsSync(peoplePath) ? PeopleSchema.parse(JSON.parse(readFileSync(peoplePath, 'utf8'))) : { people: {}, emails: {} };
+  const person = (commit: { author: string; email: string }): string | undefined => people.emails[commit.email.toLowerCase()];
+  const result = convertProject({ tasks, history, logs, overlay, cards, exists, extraFiles, person });
   const lint = lintRepository(
     result.files.filter((f) => !f.path.endsWith('.log.md')),
     project.repos.map((r) => r.name),
@@ -260,8 +270,11 @@ async function main(): Promise<void> {
     '## Предупреждения линтера по классам',
     ...[...warningClasses].sort((a, b) => b[1] - a[1]).map(([k, v]) => `- ${v} × ${k}`),
     '',
-    `## Авторы из git (${Object.keys(r.authors).length}; создано агентом: ${r.agentCreated})`,
+    `## Кто завёл задачи (${Object.keys(r.authors).length})`,
     ...Object.entries(r.authors).sort((a, b) => b[1] - a[1]).map(([k, v]) => `- ${k}: ${v}`),
+    '',
+    `## Авторы git без записи в ${peoplePath} (${Object.keys(r.unknownAuthors).length})`,
+    ...Object.entries(r.unknownAuthors).sort((a, b) => b[1] - a[1]).map(([k, v]) => `- ${k}: ${v}`),
     '',
     `## Родители (${r.parentProblems.length})`,
     ...r.parentProblems.map((p) => `- ${p.externalId}: ${p.problem}`),

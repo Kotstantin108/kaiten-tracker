@@ -73,6 +73,11 @@ export interface ConvertInput {
    * уровня), и остальное при переносе потерялось бы.
    */
   extraFiles?: ReadonlyMap<string, readonly string[]>;
+  /**
+   * Человек по автору коммита: почта → ключ (`convert/people.json`). Нет в
+   * таблице — остаётся имя автора из git, и оно попадает в отчёт.
+   */
+  person?: (commit: { author: string; email: string }) => string | undefined;
 }
 
 export interface OutputFile {
@@ -110,7 +115,8 @@ export interface ConvertReport {
   unresolvedLinks: Array<{ externalId: string; target: string }>;
   noHistory: string[];
   authors: Record<string, number>;
-  agentCreated: number;
+  /** Авторы git, которых нет в таблице людей: `имя <почта>` → число задач. */
+  unknownAuthors: Record<string, number>;
   attachments: number;
 }
 
@@ -262,7 +268,7 @@ export function convertProject(input: ConvertInput): ConvertResult {
     unresolvedLinks: [],
     noHistory: [],
     authors: {},
-    agentCreated: 0,
+    unknownAuthors: {},
     attachments: 0,
   };
 
@@ -320,6 +326,13 @@ export function convertProject(input: ConvertInput): ConvertResult {
     });
   }
 
+  const who = (commit: { author: string; email: string }): string => {
+    const key = input.person?.(commit);
+    if (key) return key;
+    const raw = `${commit.author} <${commit.email}>`;
+    report.unknownAuthors[raw] = (report.unknownAuthors[raw] ?? 0) + 1;
+    return commit.author;
+  };
   const extrasOf = (task: TaskFile): readonly string[] => input.extraFiles?.get(task.externalId) ?? task.attachments;
   /** Путь внутри папки задачи — её вложение: файл или подпапка с файлами. */
   const holds = (task: TaskFile, rel: string): boolean => {
@@ -427,9 +440,8 @@ export function convertProject(input: ConvertInput): ConvertResult {
       if (kaiten !== undefined && kaiten !== file) report.kaitenFields.push({ externalId: task.externalId, field, file: file ?? '—', kaiten });
     }
 
-    const author = history?.first.author ?? 'неизвестно';
+    const author = history ? who(history.first) : 'неизвестно';
     report.authors[author] = (report.authors[author] ?? 0) + 1;
-    if (history?.first.agent) report.agentCreated += 1;
     const phase = PHASE_RE.exec(task.body)?.[1];
 
     const fm: Frontmatter = FrontmatterSchema.parse({
@@ -446,7 +458,6 @@ export function convertProject(input: ConvertInput): ConvertResult {
       team,
       created,
       created_by: author,
-      created_via: history?.first.agent ? 'agent' : 'human',
       updated: history?.last.date ?? created,
       planning: phase ? { phase } : undefined,
     });
@@ -457,7 +468,7 @@ export function convertProject(input: ConvertInput): ConvertResult {
     const log = input.logs.get(task.externalId);
     const closedLine =
       CLOSED_STATUSES.includes(task.status) && p.status === task.status && history
-        ? `- ${(history.closed ?? history.last).date} — ${p.status === 'done' ? 'закрыто' : 'отменено'}: ${(history.closed ?? history.last).author} (по истории git при переносе в формат v2)\n`
+        ? `- ${(history.closed ?? history.last).date} — ${p.status === 'done' ? 'закрыто' : 'отменено'}: ${who(history.closed ?? history.last)} (по истории git при переносе в формат v2)\n`
         : '';
     if (log || closedLine) {
       files.push({ path: p.logPath, text: `${closedLine}${closedLine && log ? '\n' : ''}${log ? log.replace(/\r\n/g, '\n').replace(/\s*$/, '\n') : ''}` });

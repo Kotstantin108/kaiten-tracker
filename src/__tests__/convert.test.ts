@@ -39,10 +39,10 @@ function task(over: Partial<TaskFile> & { slug: string; date?: string; type?: Ta
   };
 }
 
-const commit = (author: string, date: string, agent = false): TaskHistory['first'] => ({ author, date, agent });
+const commit = (author: string, date: string, email = `${author}@example.com`): TaskHistory['first'] => ({ author, email, date });
 
 function input(tasks: TaskFile[], over: Partial<ConvertInput> = {}): ConvertInput {
-  const history = new Map<string, TaskHistory>(tasks.map((t) => [t.externalId, { first: commit('Автор', '2026-09-16', true), last: commit('Автор', '2026-09-20'), closed: null }]));
+  const history = new Map<string, TaskHistory>(tasks.map((t) => [t.externalId, { first: commit('Автор', '2026-09-16'), last: commit('Автор', '2026-09-20'), closed: null }]));
   return { tasks, history, logs: new Map(), overlay: {}, cards: new Map(), ...over };
 }
 
@@ -54,18 +54,22 @@ function file(result: ReturnType<typeof convertProject>, path: string): string {
 
 describe('история git', () => {
   const log = [
-    '\x1eБ\x1f2026-09-20T10:00:00+04:00\x1fзакрыть\x1f\n\nR100\ttasks/backlog/stories/20260916_story_p1_foo/TASK.md\ttasks/done/2026-09/20260916_story_p2_foo/TASK.md\n',
-    '\x1eА\x1f2026-09-18T10:00:00+04:00\x1fправка\x1f\n\nM\ttasks/backlog/stories/20260916_story_p1_foo/TASK.md\n',
-    '\x1eА\x1f2026-09-16T10:00:00+04:00\x1fзавести\n\nCo-Authored-By: Claude Opus 5 <noreply@anthropic.com>\x1f\n\nA\ttasks/backlog/stories/20260916_story_p1_foo/TASK.md\nA\ttasks/backlog/stories/20260916_story_p1_foo/LOG.md\n',
+    '\x1eБ\x1fb@example.com\x1f2026-09-20T10:00:00+04:00\x1fзакрыть\x1f\n\nR100\ttasks/backlog/stories/20260916_story_p1_foo/TASK.md\ttasks/done/2026-09/20260916_story_p2_foo/TASK.md\n',
+    '\x1eА\x1fa@example.com\x1f2026-09-18T10:00:00+04:00\x1fправка\x1f\n\nM\ttasks/backlog/stories/20260916_story_p1_foo/TASK.md\n',
+    '\x1eА\x1fA@Example.com\x1f2026-09-16T10:00:00+04:00\x1fзавести\n\nCo-Authored-By: Claude Opus 5 <noreply@anthropic.com>\x1f\n\nA\ttasks/backlog/stories/20260916_story_p1_foo/TASK.md\nA\ttasks/backlog/stories/20260916_story_p1_foo/LOG.md\n',
   ].join('');
 
-  it('автор — первый коммит, закрыл — переезд в done/, ключ переживает смену приоритета в имени', () => {
+  it('автор — первый коммит (почта в нижнем регистре), закрыл — переезд в done/, ключ переживает смену приоритета', () => {
     const history = buildHistory(parseGitLog(log), 'folders').get('20260916_foo');
-    expect(history).toEqual({ first: commit('А', '2026-09-16', true), last: commit('Б', '2026-09-20'), closed: commit('Б', '2026-09-20') });
+    expect(history).toEqual({
+      first: commit('А', '2026-09-16', 'a@example.com'),
+      last: commit('Б', '2026-09-20', 'b@example.com'),
+      closed: commit('Б', '2026-09-20', 'b@example.com'),
+    });
   });
 
   it('нумерованная школа: ключ — имя файла, закрытие — переезд в tasks/done/', () => {
-    const numbered = '\x1eВ\x1f2026-09-11T00:00:00Z\x1fdone\x1f\n\nR100\ttasks/0003-home.md\ttasks/done/0003-home.md\n\x1eВ\x1f2026-09-01T00:00:00Z\x1fnew\x1f\n\nA\ttasks/0003-home.md\n';
+    const numbered = '\x1eВ\x1fv@example.com\x1f2026-09-11T00:00:00Z\x1fdone\x1f\n\nR100\ttasks/0003-home.md\ttasks/done/0003-home.md\n\x1eВ\x1fv@example.com\x1f2026-09-01T00:00:00Z\x1fnew\x1f\n\nA\ttasks/0003-home.md\n';
     expect(buildHistory(parseGitLog(numbered), 'numbered').get('0003-home')?.closed?.date).toBe('2026-09-11');
   });
 });
@@ -175,14 +179,18 @@ describe('конвертер', () => {
     const t = task({ slug: 'done-one', status: 'done', bucketMonth: '2026-05', hasLog: true });
     const result = convertProject(
       input([t], {
-        history: new Map([[t.externalId, { first: commit('А', '2026-05-01'), last: commit('Б', '2026-05-10'), closed: commit('Б', '2026-05-09') }]]),
+        history: new Map([[t.externalId, { first: commit('А', '2026-05-01', 'a@x.ru'), last: commit('Б', '2026-05-10'), closed: commit('Б', '2026-05-09', 'b@x.ru') }]]),
+        person: ({ email }) => ({ 'a@x.ru': 'alice', 'b@x.ru': 'bob' })[email],
         logs: new Map([[t.externalId, '# LOG\r\n\r\n- сделано\r\n']]),
       }),
     );
     expect(file(result, 'archive/2026-05/done-one.log.md')).toBe(
-      '- 2026-05-09 — закрыто: Б (по истории git при переносе в формат v2)\n\n# LOG\n\n- сделано\n',
+      '- 2026-05-09 — закрыто: bob (по истории git при переносе в формат v2)\n\n# LOG\n\n- сделано\n',
     );
-    expect(result.tasks[0].frontmatter).toMatchObject({ created_by: 'А', created_via: 'human', updated: '2026-05-10' });
+    expect(result.tasks[0].frontmatter).toMatchObject({ created_by: 'alice', updated: '2026-05-10' });
+    // Кто завёл — агент или человек — по истории не угадываем.
+    expect(result.tasks[0].frontmatter.created_via).toBeUndefined();
+    expect(result.report.unknownAuthors).toEqual({});
   });
 
   it('папка без приоритета — без priority; «Суть» — из оверлея, иначе черновик на проверку', () => {
