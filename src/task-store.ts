@@ -2,7 +2,8 @@
  * Хранилище задач проекта на машине разработчика: git без рабочей копии
  * (`clone --bare`). Решение владельца 28.09.2026: единственный путь к задачам
  * — CLI `kaiten`; файлов задач, которые можно открыть или поправить руками,
- * на диске нет. Люди читают задачи на GitHub или в копии `kaiten export`.
+ * на диске нет. Люди читают задачи на GitHub или в копии для чтения — её
+ * включают в настройках (`kaiten-context.ts`), и `kaiten pull` её обновляет.
  *
  * Где лежит: `%LOCALAPPDATA%\kaiten\<tasksRepo>.git` (macOS — `~/Library/
  * Application Support/kaiten`, Linux — `$XDG_DATA_HOME/kaiten`). `KAITEN_STORE`
@@ -185,15 +186,15 @@ export function blobSha(content: Buffer): string {
 
 // ── копия для чтения людьми ─────────────────────────────────────────────
 
-export const EXPORT_MANIFEST = '.kaiten-export.json';
+export const COPY_MANIFEST = '.kaiten-copy.json';
 
-export type ExportRefusal = 'foreign-folder' | 'inside-repo' | 'other-project';
+export type CopyRefusal = 'foreign-folder' | 'inside-repo' | 'other-project';
 
-export interface ExportResult {
-  refused?: ExportRefusal;
+export interface CopyResult {
+  refused?: CopyRefusal;
   written: number;
   removed: number;
-  /** Файлы копии, изменённые вручную: без `force` не перезаписываются. */
+  /** Файлы копии, изменённые вручную: не перезаписываются; удалённый файл вернётся при следующем обновлении. */
   modified: string[];
 }
 
@@ -203,7 +204,7 @@ interface Manifest {
 }
 
 function readManifest(target: string): Manifest | null {
-  const path = join(target, EXPORT_MANIFEST);
+  const path = join(target, COPY_MANIFEST);
   if (!existsSync(path)) return null;
   const raw: unknown = JSON.parse(readFileSync(path, 'utf8'));
   if (typeof raw !== 'object' || raw === null || !('project' in raw) || !('files' in raw)) return null;
@@ -232,11 +233,12 @@ function writeReadOnly(path: string, content: Buffer): void {
  * Копия всех файлов репозитория задач в папку человека — только для чтения.
  * Пишем только в пустую папку или в свою прошлую копию того же проекта, и
  * никогда внутрь рабочей копии git: так копия не попадёт в репозиторий кода.
- * Файлы помечаются «только чтение»; правленные вручную не перезаписываются
- * без `force`, чтобы не потерять чужой текст молча.
+ * Файлы помечаются «только чтение»; правленные вручную не перезаписываются,
+ * чтобы не потерять чужой текст молча, — вернуть файл как в задачах можно,
+ * удалив его из копии.
  */
-export function exportStore(dir: string, entries: readonly StoreEntry[], target: string, project: string, force = false): ExportResult {
-  const result: ExportResult = { written: 0, removed: 0, modified: [] };
+export function syncCopy(dir: string, entries: readonly StoreEntry[], target: string, project: string): CopyResult {
+  const result: CopyResult = { written: 0, removed: 0, modified: [] };
   const manifest = readManifest(target);
   if (manifest && manifest.project !== project) return { ...result, refused: 'other-project' };
   if (!manifest && existsSync(target) && readdirSync(target).length > 0) return { ...result, refused: 'foreign-folder' };
@@ -255,7 +257,7 @@ export function exportStore(dir: string, entries: readonly StoreEntry[], target:
   const next: Record<string, string> = {};
   for (const e of entries) {
     const path = join(target, e.path);
-    if (!force && isModified(e.path)) {
+    if (isModified(e.path)) {
       result.modified.push(e.path);
       next[e.path] = previous[e.path];
       continue;
@@ -267,7 +269,7 @@ export function exportStore(dir: string, entries: readonly StoreEntry[], target:
   }
   for (const rel of Object.keys(previous)) {
     if (next[rel] !== undefined) continue;
-    if (!force && isModified(rel)) {
+    if (isModified(rel)) {
       result.modified.push(rel);
       continue;
     }
@@ -279,7 +281,7 @@ export function exportStore(dir: string, entries: readonly StoreEntry[], target:
     }
   }
   mkdirSync(target, { recursive: true });
-  writeFileSync(join(target, EXPORT_MANIFEST), `${JSON.stringify({ project, files: next }, null, 2)}\n`);
+  writeFileSync(join(target, COPY_MANIFEST), `${JSON.stringify({ project, files: next }, null, 2)}\n`);
   result.modified.sort();
   return result;
 }

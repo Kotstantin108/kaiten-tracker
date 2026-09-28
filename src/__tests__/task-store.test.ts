@@ -9,7 +9,7 @@ import { dirname, join } from 'node:path';
 
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
-import { blobSha, cloneStore, EXPORT_MANIFEST, exportStore, isStore, listEntries, readBlobs, readStoreTree, StoreError, updateStore } from '../task-store.js';
+import { blobSha, cloneStore, COPY_MANIFEST, syncCopy, isStore, listEntries, readBlobs, readStoreTree, StoreError, updateStore } from '../task-store.js';
 
 const GIT = ['-c', 'core.autocrlf=false', '-c', 'user.name=test', '-c', 'user.email=test@example.com', '-c', 'init.defaultBranch=main'];
 
@@ -113,44 +113,46 @@ describe('хранилище', () => {
 });
 
 describe('копия для людей', () => {
-  const target = (): string => join(tmp, 'export', 'acme');
+  const target = (): string => join(tmp, 'copy', 'acme');
 
   it('пишет все файлы только для чтения и помнит, что написала', () => {
-    const r = exportStore(store, listEntries(store), target(), 'acme');
+    const r = syncCopy(store, listEntries(store), target(), 'acme');
     expect(r).toEqual({ written: 6, removed: 0, modified: [] });
     expect(readFileSync(join(target(), 'attachments/onboarding/img/scheme.png'))).toEqual(BINARY);
     expect(readFileSync(join(target(), 'archive/2026-09/старое.md'), 'utf8')).toContain('кириллица');
     expect(statSync(join(target(), 'active/onboarding.md')).mode & 0o200).toBe(0);
-    expect(existsSync(join(target(), EXPORT_MANIFEST))).toBe(true);
+    expect(existsSync(join(target(), COPY_MANIFEST))).toBe(true);
   });
 
   it('повтор ничего не пишет; удалённая из задач — удаляется из копии', () => {
-    expect(exportStore(store, listEntries(store), target(), 'acme')).toEqual({ written: 0, removed: 0, modified: [] });
+    expect(syncCopy(store, listEntries(store), target(), 'acme')).toEqual({ written: 0, removed: 0, modified: [] });
     rmSync(join(author, 'active/new-task.md'));
     commit('убрать');
     updateStore(store);
-    expect(exportStore(store, listEntries(store), target(), 'acme')).toEqual({ written: 0, removed: 1, modified: [] });
+    expect(syncCopy(store, listEntries(store), target(), 'acme')).toEqual({ written: 0, removed: 1, modified: [] });
     expect(existsSync(join(target(), 'active/new-task.md'))).toBe(false);
   });
 
-  it('правку в копии не затирает молча; --force возвращает как в задачах', () => {
+  it('правку в копии не затирает молча; удалённый из копии файл возвращается как в задачах', () => {
     const path = join(target(), 'active/onboarding.md');
     chmodSync(path, 0o644);
     writeFileSync(path, 'правка руками\n');
-    expect(exportStore(store, listEntries(store), target(), 'acme').modified).toEqual(['active/onboarding.md']);
+    expect(syncCopy(store, listEntries(store), target(), 'acme').modified).toEqual(['active/onboarding.md']);
     expect(readFileSync(path, 'utf8')).toBe('правка руками\n');
     // И на следующем прогоне — снова предупреждение, а не «уже как было».
-    expect(exportStore(store, listEntries(store), target(), 'acme').modified).toEqual(['active/onboarding.md']);
-    expect(exportStore(store, listEntries(store), target(), 'acme', true).modified).toEqual([]);
+    expect(syncCopy(store, listEntries(store), target(), 'acme').modified).toEqual(['active/onboarding.md']);
+    chmodSync(path, 0o644);
+    rmSync(path);
+    expect(syncCopy(store, listEntries(store), target(), 'acme').modified).toEqual([]);
     expect(readFileSync(path, 'utf8')).toContain('Онбординг');
   });
 
   it('не пишет в чужую непустую папку, в репозиторий git и поверх копии другого проекта', () => {
     const foreign = join(tmp, 'foreign');
     put(foreign, 'notes.txt', 'моё');
-    expect(exportStore(store, listEntries(store), foreign, 'acme').refused).toBe('foreign-folder');
-    expect(exportStore(store, listEntries(store), join(author, 'tasks-copy'), 'acme').refused).toBe('inside-repo');
+    expect(syncCopy(store, listEntries(store), foreign, 'acme').refused).toBe('foreign-folder');
+    expect(syncCopy(store, listEntries(store), join(author, 'tasks-copy'), 'acme').refused).toBe('inside-repo');
     expect(existsSync(join(author, 'tasks-copy'))).toBe(false);
-    expect(exportStore(store, listEntries(store), target(), 'globex').refused).toBe('other-project');
+    expect(syncCopy(store, listEntries(store), target(), 'globex').refused).toBe('other-project');
   });
 });

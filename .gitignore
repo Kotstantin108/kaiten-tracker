@@ -5,3 +5,4 @@ tmp/
 !.env.example
 *.log
 .playwright-mcp/
+kaiten.settings.json

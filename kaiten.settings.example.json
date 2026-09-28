@@ -1,0 +1,10 @@
+{
+  "kaiten": {
+    "domain": "company.kaiten.ru",
+    "token": "ваш личный токен Kaiten"
+  },
+  "localCopy": {
+    "enabled": false,
+    "dir": "D:/tasks"
+  }
+}

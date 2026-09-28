@@ -1,6 +1,5 @@
 /**
- * CLI `kaiten` — команды чтения: `list`, `show`, `search`, `files`, `pull`,
- * и `export` — копия задач для людей.
+ * CLI `kaiten` — команды чтения: `list`, `show`, `search`, `files`, `pull`.
  *
  * Для кого. Для агента и разработчика в репозитории кода. `--help` и
  * сообщения говорят только, что делает команда, её аргументы и пример;
@@ -15,29 +14,29 @@
  *     трогают. Сверки перед чтением пока нет — она пишет и пушит, поэтому
  *     придёт с командами записи.
  *   · `pull` клонирует по `tasksRepo.url` или забирает свежее и перематывает
- *     ветку вперёд.
- *   · `export` — копия для чтения в папку, которую выбрал человек (не в
- *     репозиторий git); правки в ней никуда не уходят.
- *   · Проект: `--project`, `KAITEN_PROJECT`, иначе по репозиторию, из
- *     которого запущена команда (имя из `origin`, без него — имя папки
- *     верхнего уровня), иначе единственный проект конфига.
- *   · Конфиг — `tracker.config.json` рядом с инструментом, не в текущей
- *     папке. `KAITEN_CONFIG` и `KAITEN_STORE` подменяют конфиг и хранилище
- *     (тесты, пробные прогоны); в сообщениях они не упоминаются.
+ *     ветку вперёд; если в настройках включена копия для чтения — обновляет
+ *     и её (`kaiten-context.ts`).
+ *   · Проект и продукт — только из файла `.kaiten` репозитория кода
+ *     (решение 28.09): нет файла — репозиторий не подключён, команды не
+ *     работают. Флага проекта нет.
+ *   · Конфиг `tracker.config.json` и настройки `kaiten.settings.json` —
+ *     рядом с инструментом, не в текущей папке. `KAITEN_CONFIG`,
+ *     `KAITEN_SETTINGS` и `KAITEN_STORE` подменяют их и хранилище (тесты,
+ *     пробные прогоны); в сообщениях они не упоминаются.
  *
  * Коды выхода: 0 — ок; 1 — задача не найдена или обновить не удалось;
  * 2 — ошибка аргументов, проекта или отсутствующих задач; 3 — внутренняя
  * ошибка (подробности — с `KAITEN_DEBUG=1`).
  */
 
-import { execFileSync } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { basename, dirname, join, resolve } from 'node:path';
+import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseArgs, type ParseArgsConfig } from 'node:util';
 
 import { loadConfig, loadProject, type LoadedProject } from './config.js';
+import { localCopyDir, loadSettings, PROJECT_FILE, readProjectFile, SettingsError } from './kaiten-context.js';
 import { STATUSES, TASK_TYPES, type TaskStatus, type TaskType } from './core/schema.js';
 import {
   belongsToProject,
@@ -55,12 +54,12 @@ import { formatProblems, formatSearch, formatShow, formatTaskLines, presentBody,
 import {
   cloneStore,
   defaultStorePath,
-  exportStore,
   isStore,
   listEntries,
   readBlobs,
   readStoreTree,
   StoreError,
+  syncCopy,
   updateStore,
   type StoreEntry,
 } from './task-store.js';
@@ -75,10 +74,7 @@ class UsageError extends Error {
 }
 
 const CONFIG_PATH = process.env.KAITEN_CONFIG ?? fileURLToPath(new URL('../tracker.config.json', import.meta.url));
-
-function projectKeys(): string[] {
-  return Object.keys(loadConfig(CONFIG_PATH).projects);
-}
+const SETTINGS_PATH = process.env.KAITEN_SETTINGS ?? fileURLToPath(new URL('../kaiten.settings.json', import.meta.url));
 
 // ── справка ──────────────────────────────────────────────────────────────
 
@@ -95,23 +91,18 @@ function mainHelp(): string {
   kaiten pull                    получить свежие задачи проекта
 
 ${TASK_REF_HELP}
-Проект определяется по репозиторию, из которого запущена команда.
-Вне его — флаг --project (${projectKeys().join(', ')}).
+Команды работают в репозитории, подключённом к kaiten: проект и продукт
+берутся из него.
 
 Подробно о команде: kaiten <команда> --help
-
-Для людей, кому удобнее папки и файлы: kaiten export --help
 `;
 }
-
-const PROJECT_HELP = '  --project <имя>     проект, если команда запущена не из его репозитория';
 
 const FILTER_HELP = `  --repo <имя>        только задачи этого репозитория
   --epic <задача>     только задачи эпика
   --status <список>   статусы через запятую: ${STATUSES.join(', ')}
   --type <список>     типы через запятую: ${TASK_TYPES.join(', ')}
-  --json              вывод в JSON
-${PROJECT_HELP}`;
+  --json              вывод в JSON`;
 
 const HELP: Record<string, string> = {
   list: `kaiten list — список задач.
@@ -138,7 +129,6 @@ ${TASK_REF_HELP}
 
 Флаги:
   --json              вывод в JSON
-${PROJECT_HELP}
 
 Пример:
   kaiten show PRJ-123
@@ -163,7 +153,6 @@ ${FILTER_HELP}
 
 Флаги:
   --save              сохранить все вложения во временную папку
-${PROJECT_HELP}
 
 Примеры:
   kaiten files PRJ-123
@@ -174,82 +163,40 @@ ${PROJECT_HELP}
 Нужен перед работой, если задачи давно не обновлялись. Первый запуск
 загружает задачи проекта целиком.
 
-Флаги:
-${PROJECT_HELP}
-
 Пример:
   kaiten pull
-`,
-  export: `kaiten export <папка> — копия задач проекта для чтения в своём редакторе.
-
-Для людей, которым удобнее папки и файлы: active/ — открытые задачи,
-archive/ — закрытые по месяцам, attachments/ — вложения. Повторный запуск
-обновляет копию. Файлы копии — только для чтения: правки в ней никуда не
-уходят. Папка — пустая или прошлая копия, и не внутри репозитория git.
-
-Флаги:
-  --force             перезаписать и файлы, изменённые в копии вручную
-${PROJECT_HELP}
-
-Пример:
-  kaiten export D:/tasks/acme
 `,
 };
 
 // ── контекст: проект, продукт, задачи ────────────────────────────────────
 
-function git(cwd: string, args: string[]): string | null {
-  try {
-    return execFileSync('git', args, { cwd, stdio: ['ignore', 'pipe', 'ignore'], encoding: 'utf8' }).trim();
-  } catch {
-    return null;
-  }
-}
-
-/** Имя репозитория кода, из которого запущена команда: по `origin`, без него — по папке верхнего уровня. */
-function currentRepoNames(cwd: string): string[] {
-  const top = git(cwd, ['rev-parse', '--show-toplevel']);
-  if (!top) return [];
-  const names: string[] = [];
-  const origin = git(cwd, ['remote', 'get-url', 'origin']);
-  if (origin) names.push(basename(origin.replace(/[\\/]+$/, '')).replace(/\.git$/, ''));
-  names.push(basename(top));
-  return names;
-}
-
 interface Context {
   loaded: LoadedProject;
   title: string;
-  /** Репозиторий кода проекта, из которого запущена команда. */
-  currentRepo: string | null;
+  /** Репозиторий кода проекта, из которого запущена команда (из `.kaiten`). */
+  currentRepo: string;
   store: string;
 }
 
-function resolveContext(projectFlag: string | undefined): Context {
-  const names = currentRepoNames(process.cwd());
-  const keys = projectKeys();
-  let key = projectFlag ?? process.env.KAITEN_PROJECT ?? null;
-  let currentRepo: string | null = null;
-
-  if (!key) {
-    const { projects } = loadConfig(CONFIG_PATH);
-    for (const k of keys) {
-      const hit = names.find((n) => projects[k].repos.some((r) => r.name === n));
-      if (hit) {
-        key = k;
-        currentRepo = hit;
-        break;
-      }
-    }
+function resolveContext(): Context {
+  const found = readProjectFile(process.cwd());
+  if ('missing' in found) {
+    throw new UsageError(`Этот репозиторий не подключён к kaiten: в нём нет файла ${PROJECT_FILE}. Подключает репозиторий владелец проекта.`);
   }
-  if (!key && keys.length === 1) key = keys[0];
-  if (!key) throw new UsageError(`Не понял, какой это проект. Запустите команду из репозитория проекта или укажите --project (${keys.join(', ')}).`);
-  if (!keys.includes(key)) throw new UsageError(`Проекта «${key}» нет. Есть: ${keys.join(', ')}.`);
+  if ('error' in found) throw new UsageError(`Файл ${PROJECT_FILE} этого репозитория не читается: ${found.error}. Исправляет владелец проекта.`);
 
+  const { projects } = loadConfig(CONFIG_PATH);
+  const key = found.file.project;
+  if (!projects[key]) {
+    throw new UsageError(`Файл ${PROJECT_FILE}: проекта «${key}» в kaiten нет (есть: ${Object.keys(projects).join(', ')}). Исправляет владелец проекта.`);
+  }
   const loaded = loadProject(CONFIG_PATH, key);
-  if (!currentRepo) currentRepo = names.find((n) => loaded.project.repos.some((r) => r.name === n)) ?? null;
+  const repos = loaded.project.repos.map((r) => r.name);
+  if (!repos.includes(found.file.repo)) {
+    throw new UsageError(`Файл ${PROJECT_FILE}: в проекте ${loaded.project.title} нет репозитория «${found.file.repo}» (есть: ${repos.join(', ')}). Исправляет владелец проекта.`);
+  }
   const store = defaultStorePath(loaded.project.tasksRepo?.name ?? `${key}-tasks`);
-  return { loaded, title: loaded.project.title, currentRepo, store };
+  return { loaded, title: loaded.project.title, currentRepo: found.file.repo, store };
 }
 
 interface Loaded {
@@ -264,7 +211,7 @@ function loadTasks(ctx: Context): Loaded {
   const tree = readStoreTree(ctx.store, entries);
   const index = buildIndex(tree.files, tree.logs);
   if (!belongsToProject(index.tasks, ctx.loaded.project.repos.map((r) => r.name))) {
-    throw new UsageError(`Задачи на этой машине — другого проекта, не ${ctx.title}. Укажите --project.`);
+    throw new UsageError(`Задачи на этой машине — другого проекта, не ${ctx.title}. Сообщите тому, кто настраивал kaiten.`);
   }
   return { index, entries };
 }
@@ -287,7 +234,7 @@ function reportProblems(index: TaskIndex): void {
 type Options = NonNullable<ParseArgsConfig['options']>;
 type Values = Record<string, string | boolean | undefined>;
 
-const COMMON: Options = { project: { type: 'string' }, help: { type: 'boolean', short: 'h' } };
+const COMMON: Options = { help: { type: 'boolean', short: 'h' } };
 const FILTERS: Options = {
   repo: { type: 'string' },
   epic: { type: 'string' },
@@ -317,10 +264,6 @@ function parse(command: string, args: string[], options: Options, maxPositionals
     throw new UsageError(`Лишний аргумент: ${parsed.positionals.slice(maxPositionals).join(' ')}\nСправка: kaiten ${command} --help`);
   }
   return { values: parsed.values as Values, positionals: parsed.positionals };
-}
-
-function projectFlag(values: Values): string | undefined {
-  return typeof values.project === 'string' ? values.project : undefined;
 }
 
 function listOf<T extends string>(raw: string | boolean | undefined, allowed: readonly T[], flag: string): T[] | undefined {
@@ -367,7 +310,7 @@ function findTask(index: TaskIndex, ref: string): TaskRecord {
 
 function list(args: string[]): void {
   const { values } = parse('list', args, { ...FILTERS, all: { type: 'boolean' }, closed: { type: 'boolean' } }, 0);
-  const ctx = resolveContext(projectFlag(values));
+  const ctx = resolveContext();
   const { index } = loadTasks(ctx);
   const filter = buildFilter(ctx, index, values);
   const scope = filter.repo ?? (values.all ? null : ctx.currentRepo);
@@ -381,7 +324,6 @@ function list(args: string[]): void {
     const which = filter.statuses?.length ? filter.statuses.join(', ') : filter.closed ? 'все' : 'открытые';
     console.log(`${where} · ${which}: ${tasks.length}\n`);
     if (tasks.length > 0) console.log(formatTaskLines(index.tasks, tasks, !scope).join('\n'));
-    if (!scope && !values.all && !ctx.currentRepo) console.log('\nКоманда запущена не из репозитория продукта — показан весь проект.');
   }
   reportProblems(index);
 }
@@ -389,7 +331,7 @@ function list(args: string[]): void {
 function show(args: string[]): void {
   const { values, positionals } = parse('show', args, { json: { type: 'boolean' } }, 1);
   if (positionals.length === 0) throw new UsageError('Укажите задачу: kaiten show PRJ-123');
-  const ctx = resolveContext(projectFlag(values));
+  const ctx = resolveContext();
   const { index, entries } = loadTasks(ctx);
   const task = findTask(index, positionals[0]);
   const attachments = attachmentsOf(entries, task).map((e) => attachmentName(e, task));
@@ -400,7 +342,7 @@ function show(args: string[]): void {
 function search(args: string[]): void {
   const { values, positionals } = parse('search', args, FILTERS);
   if (positionals.length === 0) throw new UsageError('Укажите слова для поиска: kaiten search таймаут вебхук');
-  const ctx = resolveContext(projectFlag(values));
+  const ctx = resolveContext();
   const { index } = loadTasks(ctx);
   const filter = { ...buildFilter(ctx, index, values), closed: true };
   const hits = searchTasks(filterTasks(index.tasks, filter), positionals.join(' '));
@@ -428,7 +370,7 @@ function isText(content: Buffer): boolean {
 function files(args: string[]): void {
   const { values, positionals } = parse('files', args, { save: { type: 'boolean' } }, 2);
   if (positionals.length === 0) throw new UsageError('Укажите задачу: kaiten files PRJ-123');
-  const ctx = resolveContext(projectFlag(values));
+  const ctx = resolveContext();
   const { index, entries } = loadTasks(ctx);
   const task = findTask(index, positionals[0]);
   const own = attachmentsOf(entries, task);
@@ -473,8 +415,10 @@ function files(args: string[]): void {
 }
 
 function pull(args: string[]): void {
-  const { values } = parse('pull', args, {}, 0);
-  const ctx = resolveContext(projectFlag(values));
+  parse('pull', args, {}, 0);
+  const ctx = resolveContext();
+  // Настройки — до загрузки: битые настройки не должны обнаружиться после неё.
+  const copyDir = localCopyDir(loadSettings(SETTINGS_PATH), ctx.loaded.key);
   let changed = true;
   // Испорченное хранилище (оборванная загрузка, чужая папка) человек удалить не
   // может: где оно лежит, CLI не говорит. Поэтому `pull` загружает заново.
@@ -488,34 +432,32 @@ function pull(args: string[]): void {
   } else {
     changed = updateStore(ctx.store);
   }
-  const { index } = loadTasks(ctx);
+  const { index, entries } = loadTasks(ctx);
   const open = index.tasks.filter((t) => !t.closed).length;
   console.log(`Задачи проекта ${ctx.title} ${changed ? 'обновлены' : 'уже свежие'}: открытых ${open}, всего ${index.tasks.length}.`);
   reportProblems(index);
+  if (copyDir) refreshLocalCopy(ctx, entries, copyDir);
 }
 
-function exportCommand(args: string[]): void {
-  const { values, positionals } = parse('export', args, { force: { type: 'boolean' } }, 1);
-  if (positionals.length === 0) throw new UsageError('Укажите папку для копии: kaiten export D:/tasks/acme');
-  const ctx = resolveContext(projectFlag(values));
-  const { entries } = loadTasks(ctx);
-  const target = resolve(positionals[0]);
-  const result = exportStore(ctx.store, entries, target, ctx.loaded.key, values.force === true);
-  if (result.refused === 'foreign-folder') throw new UsageError(`Папка ${target} не пуста и не похожа на копию задач. Укажите пустую или новую папку.`);
-  if (result.refused === 'inside-repo') throw new UsageError(`Папка ${target} внутри репозитория git. Копию задач держат вне репозиториев — укажите другую папку.`);
-  if (result.refused === 'other-project') throw new UsageError(`В папке ${target} копия задач другого проекта. Укажите другую папку.`);
-
-  console.log(`Копия задач проекта ${ctx.title} в ${target}: обновлено файлов ${result.written}, удалено ${result.removed}.`);
-  console.log('Файлы копии — только для чтения: правки в ней никуда не уходят.');
+/**
+ * Копия для чтения из настроек. Её путь человек задал сам, поэтому в
+ * сообщениях он есть; но пишем только когда что-то не так — обычный `pull`
+ * о копии молчит.
+ */
+function refreshLocalCopy(ctx: Context, entries: readonly StoreEntry[], target: string): void {
+  const result = syncCopy(ctx.store, entries, target, ctx.loaded.key);
+  if (result.refused === 'foreign-folder') console.error(`\nКопию для чтения не обновить: папка ${target} не пуста и не похожа на копию задач. Укажите в настройках kaiten другую папку.`);
+  if (result.refused === 'inside-repo') console.error(`\nКопию для чтения не обновить: папка ${target} внутри репозитория git. Укажите в настройках kaiten папку вне репозиториев.`);
+  if (result.refused === 'other-project') console.error(`\nКопию для чтения не обновить: в папке ${target} копия другого проекта.`);
   if (result.modified.length > 0) {
-    console.log(`\nИзменены в копии вручную и не перезаписаны (${result.modified.length}):`);
-    for (const p of result.modified.slice(0, 10)) console.log(`  ${p}`);
-    if (result.modified.length > 10) console.log(`  …и ещё ${result.modified.length - 10}`);
-    console.log(`Вернуть как в задачах: kaiten export ${positionals[0]} --force`);
+    console.error(`\nВ копии для чтения изменены вручную и не обновлены (${result.modified.length}):`);
+    for (const p of result.modified.slice(0, 10)) console.error(`  ${join(target, p)}`);
+    if (result.modified.length > 10) console.error(`  …и ещё ${result.modified.length - 10}`);
+    console.error('Правки в копии никуда не уходят. Удалите эти файлы — при следующем обновлении они вернутся как в задачах.');
   }
 }
 
-const COMMANDS: Record<string, (args: string[]) => void> = { list, show, search, files, pull, export: exportCommand };
+const COMMANDS: Record<string, (args: string[]) => void> = { list, show, search, files, pull };
 
 function storeMessage(error: StoreError): string {
   switch (error.kind) {
@@ -554,6 +496,10 @@ try {
   if (error instanceof UsageError) {
     console.error(error.message);
     process.exit(error.code);
+  }
+  if (error instanceof SettingsError) {
+    console.error(`Не читаются ${error.message}`);
+    process.exit(2);
   }
   if (error instanceof StoreError) {
     console.error(storeMessage(error));
