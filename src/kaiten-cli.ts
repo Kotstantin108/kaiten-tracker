@@ -16,7 +16,10 @@ import { loadConfig, loadProject, type LoadedProject } from './config.js';
 import { buildIndex, belongsToProject, resolveTask, type TaskIndex, type TaskRecord } from './core/tasks-index.js';
 import { localCopyDir, loadSettings, PROJECT_FILE, readProjectFile, type KaitenSettings } from './kaiten-context.js';
 import { formatProblems } from './kaiten-format.js';
-import { sendInBackground, takeNotices } from './store-write.js';
+import { repoWebBase } from './core/kaiten-sync-plan.js';
+import { KaitenClient } from './kaiten-client.js';
+import { apiErrorText, runKaitenSync, type SyncRun } from './kaiten-sync.js';
+import { noteFailures, recordOp, sendInBackground, syncStore, takeNotices } from './store-write.js';
 import { defaultStorePath, gitText, isStore, listEntries, readStoreTree, StoreError, syncCopy, type StoreEntry } from './task-store.js';
 
 export class UsageError extends Error {
@@ -201,20 +204,79 @@ export function today(now = new Date()): string {
 // ── отправка и сообщения о ней ───────────────────────────────────────────
 
 /**
+ * Шаг Kaiten после отправки в git (решение 16): только при включённом
+ * `sync.kaiten`. Тот же план, что показывает `npm run kaiten-sync`, без
+ * первой заливки. Ключи карточек и «доставлено» возвращаются в задачи
+ * операциями `synced` через журнал и уходят общим тем же проходом. Ошибки —
+ * в журнал: о них скажет следующая команда. `client` подменяется в тестах.
+ */
+export async function syncWithKaiten(ctx: Context, client?: KaitenClient): Promise<SyncRun | null> {
+  const current = settings();
+  if (!current.sync.kaiten) return null;
+  const mapping = ctx.loaded.project.mapping;
+  const login = current.kaiten;
+  if (!mapping || (!login && !client)) {
+    noteFailures(ctx.store, [{ what: 'синхронизация с Kaiten', reason: mapping ? 'не настроен вход в Kaiten (kaiten.domain и kaiten.token в настройках)' : 'доска проекта не настроена' }]);
+    return null;
+  }
+  const kaiten = client ?? new KaitenClient({ domain: login?.domain ?? '', token: login?.token ?? '', minIntervalMs: 150 });
+  let run: SyncRun;
+  try {
+    run = await runKaitenSync(
+      kaiten,
+      {
+        tasks: loadTasks(ctx).index.tasks,
+        mapping,
+        ignore: ctx.loaded.project.ignoreCards,
+        repoWebBase: repoWebBase(ctx.loaded.project.tasksRepo?.url),
+        defaultTeam: ctx.loaded.config.defaultTeam,
+        boardId: mapping.boardId,
+      },
+      true,
+    );
+  } catch (error) {
+    noteFailures(ctx.store, [{ what: 'синхронизация с Kaiten', reason: apiErrorText(error) }]);
+    return null;
+  }
+  for (const { op, what } of run.ops) {
+    const recorded = recordOp(ctx.store, op, what, today());
+    if ('error' in recorded) run.errors.push({ what, message: recorded.error });
+  }
+  if (run.ops.length > 0) {
+    try {
+      syncStore(ctx.store);
+    } catch (error) {
+      if (!(error instanceof StoreError)) throw error;
+    }
+  }
+  noteFailures(
+    ctx.store,
+    run.errors.map((e) => ({ what: `Kaiten: ${e.what}`, reason: e.message })),
+  );
+  return run;
+}
+
+/** Отправить общим и обновить Kaiten. Ошибки записаны в журнал — о них скажет следующая команда. */
+export async function sendAll(ctx: Context, client?: KaitenClient): Promise<void> {
+  try {
+    sendInBackground(ctx.store);
+  } catch (error) {
+    if (!(error instanceof StoreError)) throw error;
+    return;
+  }
+  await syncWithKaiten(ctx, client);
+}
+
+/**
  * Отправить записанное общим. По умолчанию — отдельным фоновым процессом
  * (`kaiten __send`), команда не ждёт сеть. `KAITEN_SEND=inline` — сразу, в
  * этом процессе; `off` — не отправлять (тесты и пробные прогоны).
  */
-export function startSend(ctx: Context): void {
+export async function startSend(ctx: Context): Promise<void> {
   const mode = process.env.KAITEN_SEND;
   if (mode === 'off') return;
   if (mode === 'inline') {
-    try {
-      sendInBackground(ctx.store);
-    } catch (error) {
-      if (!(error instanceof StoreError)) throw error;
-      // Вид ошибки записан в журнал — о нём скажет следующая команда.
-    }
+    await sendAll(ctx);
     return;
   }
   const child = spawn(process.execPath, [...process.execArgv, process.argv[1], '__send'], {

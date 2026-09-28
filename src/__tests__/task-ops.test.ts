@@ -67,7 +67,8 @@ describe('пункты', () => {
     const [change] = ok(applyOp({ kind: 'check', id: ID, items: ['Ретраи с паузой и джиттером'], checked: true }, texts(), CTX));
     expect(change.text).toContain('- [x] Ретраи с паузой\n  и джиттером');
     expect(fmOf(change.text).updated).toBe('2026-09-28');
-    expect(fmOf(change.text).content_hash).toMatch(/^sha256:/);
+    // «Доставлено в Kaiten» ставит только синхронизация — правка его не трогает.
+    expect(fmOf(change.text).content_hash).toBeUndefined();
     expect(ok(applyOp({ kind: 'check', id: ID, items: ['Воспроизвести'], checked: true }, texts(), CTX))).toEqual([]);
     const off = ok(applyOp({ kind: 'check', id: ID, items: ['Воспроизвести'], checked: false }, texts(), CTX));
     expect(off[0].text).toContain('- [ ] Воспроизвести');

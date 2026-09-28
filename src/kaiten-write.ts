@@ -123,7 +123,7 @@ function readStdin(): string {
 }
 
 /** Записать операцию и сказать, что получилось. */
-function commit(ctx: Context, op: Op, what: string): void {
+async function commit(ctx: Context, op: Op, what: string): Promise<void> {
   const result = recordOp(ctx.store, op, what, today());
   if ('error' in result) throw new UsageError(`Не записано: ${result.error}`, 1);
   const first = result.summary.charAt(0).toUpperCase() + result.summary.slice(1);
@@ -131,7 +131,7 @@ function commit(ctx: Context, op: Op, what: string): void {
   for (const w of result.warnings) console.log(`  подсказка: ${w}`);
   if (!result.changed) return;
   refreshLocalCopy(ctx);
-  startSend(ctx);
+  await startSend(ctx);
 }
 
 function begin(): Context {
@@ -145,7 +145,7 @@ function taskArg(positionals: string[], command: string): string {
   return positionals[0];
 }
 
-function newTask(args: string[]): void {
+async function newTask(args: string[]): Promise<void> {
   const { values, positionals } = parse(
     'new',
     args,
@@ -193,11 +193,11 @@ function newTask(args: string[]): void {
     today(),
   );
   if (typeof text !== 'string') throw new UsageError(`Не записано: ${text.error}`, 1);
-  commit(ctx, { kind: 'new', path: `active/${slug}.md`, text }, `новая задача ${slug}`);
+  await commit(ctx, { kind: 'new', path: `active/${slug}.md`, text }, `новая задача ${slug}`);
   console.log(`Открыть: kaiten show ${slug}`);
 }
 
-function check(args: string[]): void {
+async function check(args: string[]): Promise<void> {
   const { values, positionals } = parse('check', args, { off: { type: 'boolean' } });
   const ref = taskArg(positionals, 'check');
   const queries = positionals.slice(1);
@@ -212,20 +212,20 @@ function check(args: string[]): void {
     else items.push(hit.item);
   }
   if (problems.length > 0) throw new UsageError(`В задаче ${refOf(task)} ${problems.join('\n')}`, 1);
-  commit(ctx, { kind: 'check', id: task.fm.id, items, checked: !values.off }, `${values.off ? 'снятие' : 'отметка'} пунктов в ${refOf(task)}`);
+  await commit(ctx, { kind: 'check', id: task.fm.id, items, checked: !values.off }, `${values.off ? 'снятие' : 'отметка'} пунктов в ${refOf(task)}`);
 }
 
-function log(args: string[]): void {
+async function log(args: string[]): Promise<void> {
   const { values, positionals } = parse('log', args, { stdin: { type: 'boolean' } }, 2);
   const ref = taskArg(positionals, 'log');
   const text = values.stdin ? readStdin() : positionals[1];
   if (!text?.trim()) throw new UsageError('Укажите текст: kaiten log PRJ-123 "что сделано"');
   const ctx = begin();
   const task = findTask(loadTasks(ctx).index, ref);
-  commit(ctx, { kind: 'log', id: task.fm.id, text }, `запись в журнал ${refOf(task)}`);
+  await commit(ctx, { kind: 'log', id: task.fm.id, text }, `запись в журнал ${refOf(task)}`);
 }
 
-function withReason(command: 'block' | 'cancel', args: string[]): void {
+async function withReason(command: 'block' | 'cancel', args: string[]): Promise<void> {
   const { values, positionals } = parse(command, args, { reason: { type: 'string' } }, 1);
   const ref = taskArg(positionals, command);
   const reason = stringFlag(values, 'reason')?.trim();
@@ -233,7 +233,7 @@ function withReason(command: 'block' | 'cancel', args: string[]): void {
   const ctx = begin();
   const task = findTask(loadTasks(ctx).index, ref);
   const what = command === 'block' ? `блокировка ${refOf(task)}` : `отмена ${refOf(task)}`;
-  commit(ctx, { kind: command, id: task.fm.id, reason }, what);
+  await commit(ctx, { kind: command, id: task.fm.id, reason }, what);
 }
 
 /** Текст задачи для правки — канонический: так его и запишет любая команда. */
@@ -245,7 +245,7 @@ function editorCommand(): string {
   return process.env.VISUAL ?? process.env.EDITOR ?? (process.platform === 'win32' ? 'notepad' : 'vi');
 }
 
-function edit(args: string[]): void {
+async function edit(args: string[]): Promise<void> {
   const { values, positionals } = parse('edit', args, { stdin: { type: 'boolean' } }, 1);
   const ref = taskArg(positionals, 'edit');
   const ctx = begin();
@@ -254,7 +254,7 @@ function edit(args: string[]): void {
   const what = `правка ${refOf(task)}`;
 
   if (values.stdin) {
-    commit(ctx, { kind: 'edit', id: task.fm.id, text: readStdin(), baseHash }, what);
+    await commit(ctx, { kind: 'edit', id: task.fm.id, text: readStdin(), baseHash }, what);
     return;
   }
 
@@ -278,7 +278,7 @@ function edit(args: string[]): void {
       for (const w of result.warnings) console.log(`  подсказка: ${w}`);
       if (result.changed) {
         refreshLocalCopy(ctx);
-        startSend(ctx);
+        await startSend(ctx);
       }
       return;
     }
@@ -287,7 +287,7 @@ function edit(args: string[]): void {
   }
 }
 
-export const WRITE_COMMANDS: Record<string, (args: string[]) => void> = {
+export const WRITE_COMMANDS: Record<string, (args: string[]) => Promise<void>> = {
   new: newTask,
   check,
   log,

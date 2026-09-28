@@ -58,7 +58,10 @@ export const CardSchema = z
           .object({
             id: z.number(),
             name: z.string().nullable().optional(),
-            items: z.array(z.object({ text: z.string().nullable().optional() }).passthrough()).nullable().optional(),
+            items: z
+              .array(z.object({ id: z.number().optional(), text: z.string().nullable().optional(), checked: z.boolean().optional() }).passthrough())
+              .nullable()
+              .optional(),
           })
           .passthrough(),
       )
@@ -358,6 +361,16 @@ export class KaitenClient {
       body: { text: item.text, checked: item.checked, sort_order: sortOrder },
       schema: z.unknown(),
     });
+  }
+
+  /**
+   * Отметка пункта чек-листа. НЕ ПРОВЕРЕНО ЖИВЬЁМ: путь и тело — по
+   * документации (`PATCH /cards/{card_id}/checklists/{checklist_id}/items/{id}`).
+   * Первый живой вызов — на безвредной тестовой карточке с перечитыванием
+   * (грабли PROMPT: API молча выбрасывает незнакомое).
+   */
+  async updateChecklistItem(cardId: number, checklistId: number, itemId: number, patch: { checked: boolean }): Promise<unknown> {
+    return this.request('PATCH', `/cards/${cardId}/checklists/${checklistId}/items/${itemId}`, { body: patch, schema: z.unknown() });
   }
 
   // ── Структура аккаунта: чтение и создание для `setup` ─────────────────────

@@ -1,0 +1,162 @@
+/**
+ * Поддельный Kaiten в памяти для тестов синхронизации: ни одного сетевого
+ * вызова. Повторяет то, что проверено живьём: список карточек без описания и
+ * пунктов чек-листов (они — только в `GET /cards/{id}`), свойства — `id_<поле>`,
+ * выбор — массив id, ограничение доски «без «Сути» не создать» — 400 с
+ * `error_text`. Пути связи, пунктов и комментариев — по документации.
+ */
+
+import { KaitenClient } from '../kaiten-client.js';
+
+export interface FakeItem {
+  id: number;
+  text: string;
+  checked: boolean;
+}
+
+export interface FakeChecklist {
+  id: number;
+  name: string;
+  items: FakeItem[];
+}
+
+export interface FakeCard {
+  id: number;
+  title: string;
+  board_id: number;
+  column_id?: number;
+  lane_id?: number;
+  type_id?: number;
+  external_id: string | null;
+  description: string;
+  properties: Record<string, unknown>;
+  parents_ids: number[] | null;
+  checklists: FakeChecklist[];
+  comments: string[];
+  archived: boolean;
+}
+
+export interface FakeKaiten {
+  client: KaitenClient;
+  cards: Map<number, FakeCard>;
+  /** Запросы, меняющие данные: `POST /cards`, `PATCH /cards/1`… */
+  writes: string[];
+  /** Поле «Суть», без которого карточку не создать (ограничение доски). */
+  requiredSummaryKey: string | null;
+  failOn?: (method: string, path: string) => { status: number; body: unknown } | null;
+}
+
+export function fakeKaiten(options: { requiredSummaryKey?: string | null } = {}): FakeKaiten {
+  let nextId = 900_000;
+  const fake: FakeKaiten = {
+    cards: new Map(),
+    writes: [],
+    requiredSummaryKey: options.requiredSummaryKey ?? null,
+    client: undefined as unknown as KaitenClient,
+  };
+
+  const json = (status: number, body: unknown): Response => new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
+  const listView = (c: FakeCard): Record<string, unknown> => {
+    const { description: _d, checklists, comments: _c, ...rest } = c;
+    return { ...rest, checklists: checklists.map(({ items: _i, ...l }) => l) };
+  };
+  const findChecklist = (id: number): FakeChecklist | undefined => [...fake.cards.values()].flatMap((c) => c.checklists).find((l) => l.id === id);
+
+  const impl = async (input: Parameters<typeof fetch>[0], init?: RequestInit): Promise<Response> => {
+    const url = new URL(String(input));
+    const method = init?.method ?? 'GET';
+    const path = url.pathname.replace(/^\/api\/latest/, '');
+    const body = (init?.body ? JSON.parse(String(init.body)) : {}) as Record<string, unknown>;
+    if (method !== 'GET') fake.writes.push(`${method} ${path}`);
+    const failure = fake.failOn?.(method, path);
+    if (failure) return json(failure.status, failure.body);
+
+    let m: RegExpExecArray | null;
+    if (method === 'GET' && path === '/cards') {
+      const board = url.searchParams.get('board_id');
+      const ext = url.searchParams.get('external_id');
+      const offset = Number(url.searchParams.get('offset') ?? 0);
+      const limit = Number(url.searchParams.get('limit') ?? 100);
+      const all = [...fake.cards.values()].filter((c) => !c.archived && (!board || c.board_id === Number(board)) && (!ext || c.external_id === ext));
+      return json(200, all.slice(offset, offset + limit).map(listView));
+    }
+    if ((m = /^\/cards\/(\d+)$/.exec(path))) {
+      const card = fake.cards.get(Number(m[1]));
+      if (!card) return json(404, { message: 'not found' });
+      if (method === 'GET') return json(200, card);
+      if (method === 'PATCH') {
+        const { properties, ...rest } = body;
+        Object.assign(card, rest);
+        if (properties) card.properties = { ...card.properties, ...(properties as Record<string, unknown>) };
+        return json(200, card);
+      }
+    }
+    if (method === 'POST' && path === '/cards') {
+      const props = (body.properties ?? {}) as Record<string, unknown>;
+      if (fake.requiredSummaryKey && !props[fake.requiredSummaryKey]) return json(400, { error_text: 'Нельзя создать карточку без «Сути»' });
+      const card: FakeCard = {
+        id: nextId++,
+        title: String(body.title),
+        board_id: Number(body.board_id),
+        column_id: body.column_id as number | undefined,
+        lane_id: body.lane_id as number | undefined,
+        type_id: body.type_id as number | undefined,
+        external_id: (body.external_id as string | undefined) ?? null,
+        description: String(body.description ?? ''),
+        properties: props,
+        parents_ids: null,
+        checklists: [],
+        comments: [],
+        archived: false,
+      };
+      fake.cards.set(card.id, card);
+      return json(200, card);
+    }
+    if (method === 'POST' && (m = /^\/cards\/(\d+)\/children$/.exec(path))) {
+      const child = fake.cards.get(Number(body.card_id));
+      if (!child) return json(404, {});
+      child.parents_ids = [...(child.parents_ids ?? []), Number(m[1])];
+      return json(200, {});
+    }
+    if (method === 'POST' && (m = /^\/cards\/(\d+)\/checklists$/.exec(path))) {
+      const list: FakeChecklist = { id: nextId++, name: String(body.name), items: [] };
+      fake.cards.get(Number(m[1]))?.checklists.push(list);
+      return json(200, { id: list.id, name: list.name });
+    }
+    if (method === 'POST' && (m = /^\/checklists\/(\d+)\/items$/.exec(path))) {
+      findChecklist(Number(m[1]))?.items.push({ id: nextId++, text: String(body.text), checked: Boolean(body.checked) });
+      return json(200, {});
+    }
+    if (method === 'PATCH' && (m = /^\/cards\/\d+\/checklists\/(\d+)\/items\/(\d+)$/.exec(path))) {
+      const [, listId, itemId] = m;
+      const item = findChecklist(Number(listId))?.items.find((i) => i.id === Number(itemId));
+      if (!item) return json(404, {});
+      item.checked = Boolean(body.checked);
+      return json(200, item);
+    }
+    if (method === 'POST' && (m = /^\/cards\/(\d+)\/comments$/.exec(path))) {
+      fake.cards.get(Number(m[1]))?.comments.push(String(body.text));
+      return json(200, {});
+    }
+    return json(404, { message: `нет маршрута ${method} ${path}` });
+  };
+
+  fake.client = new KaitenClient({ domain: 'test.kaiten.ru', token: 'secret-token', fetchImpl: impl as typeof fetch, sleep: async () => {}, maxRetries: 0 });
+  return fake;
+}
+
+/** Карточка, заведённая «руками» (пилот, интерфейс Kaiten). */
+export function seedCard(fake: FakeKaiten, card: Partial<FakeCard> & { id: number; title: string; board_id: number }): FakeCard {
+  const full: FakeCard = {
+    external_id: null,
+    description: '',
+    properties: {},
+    parents_ids: null,
+    checklists: [],
+    comments: [],
+    archived: false,
+    ...card,
+  };
+  fake.cards.set(full.id, full);
+  return full;
+}

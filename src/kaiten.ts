@@ -39,11 +39,13 @@ import {
   loadTasks,
   parse,
   printNotices,
+  sendAll,
   refreshLocalCopy,
   reportProblems,
   resolveContext,
   settings,
   storeMessage,
+  syncWithKaiten,
   TASK_REF_HELP,
   UsageError,
   type Context,
@@ -53,7 +55,7 @@ import {
 import { localCopyDir, SettingsError } from './kaiten-context.js';
 import { formatSearch, formatShow, formatTaskLines, presentBody, showJson, taskJson } from './kaiten-format.js';
 import { editableText, WRITE_COMMANDS, WRITE_HELP } from './kaiten-write.js';
-import { hasPending, sendInBackground, syncStore } from './store-write.js';
+import { hasPending, syncStore } from './store-write.js';
 import { cloneStore, isStore, readBlobs, StoreError, type StoreEntry } from './task-store.js';
 
 // ── справка ──────────────────────────────────────────────────────────────
@@ -321,7 +323,7 @@ function files(args: string[]): void {
   console.log(chosen.length === 1 ? `Сохранено: ${join(dir, attachmentName(chosen[0], task))}` : `Сохранено вложений ${chosen.length} в ${dir}`);
 }
 
-function pull(args: string[]): void {
+async function pull(args: string[]): Promise<void> {
   parse('pull', args, {}, 0);
   const ctx = readContext();
   // Настройки — до загрузки: битые настройки не должны обнаружиться после неё.
@@ -350,25 +352,23 @@ function pull(args: string[]): void {
   console.log(`Задачи проекта ${ctx.title} ${changed ? 'обновлены' : 'уже свежие'}: открытых ${open}, всего ${index.tasks.length}.`);
   if (sent > 0) console.log(`Отправлено изменений: ${sent}.`);
   reportProblems(index);
+  const kaiten = await syncWithKaiten(ctx);
+  if (kaiten && kaiten.done > 0) console.log(`Kaiten обновлён: ${kaiten.done}.`);
+  for (const e of kaiten?.errors ?? []) console.error(`Kaiten: ${e.what} — ${e.message}.`);
   refreshLocalCopy(ctx, copyDir);
 }
 
-/** Скрытая команда: фоновая отправка, её запускают команды записи. Молчит. */
-function send(): void {
-  const ctx = resolveContext();
-  try {
-    sendInBackground(ctx.store);
-  } catch {
-    // Вид ошибки записан в журнал — о нём скажет следующая команда.
-  }
+/** Скрытая команда: фоновая отправка (git, затем Kaiten), её запускают команды записи. Молчит. */
+async function send(): Promise<void> {
+  await sendAll(resolveContext());
 }
 
-const COMMANDS: Record<string, (args: string[]) => void> = { list, show, search, files, pull, ...WRITE_COMMANDS };
+const COMMANDS: Record<string, (args: string[]) => void | Promise<void>> = { list, show, search, files, pull, ...WRITE_COMMANDS };
 
-function main(): void {
+async function main(): Promise<void> {
   const [command, ...args] = process.argv.slice(2);
   if (command === '__send') {
-    send();
+    await send();
     return;
   }
   if (!command || command === 'help' || command === '--help' || command === '-h') {
@@ -382,12 +382,10 @@ function main(): void {
     process.stdout.write(HELP[command]);
     return;
   }
-  run(args);
+  await run(args);
 }
 
-try {
-  main();
-} catch (error) {
+main().catch((error: unknown) => {
   if (error instanceof UsageError) {
     console.error(error.message);
     process.exit(error.code);
@@ -404,4 +402,4 @@ try {
   if (process.env.KAITEN_DEBUG) console.error(error);
   console.error('kaiten: внутренняя ошибка. Повторите команду; если повторяется — сообщите тому, кто настраивал kaiten.');
   process.exit(3);
-}
+});

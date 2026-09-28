@@ -394,6 +394,16 @@ export interface Notices {
   problem: StoreErrorKind | null;
 }
 
+/** Сообщить следующей команде о том, что не удалось (например, в Kaiten). */
+export function noteFailures(store: string, failures: readonly Omit<FailedEntry, 'at'>[], at = new Date()): void {
+  if (failures.length === 0) return;
+  withLock(store, JOURNAL_LOCK, () => {
+    const journal = readJournal(store);
+    journal.failed.push(...failures.map((f) => ({ ...f, at: at.toISOString() })));
+    writeJournal(store, journal);
+  });
+}
+
 /** Не применённые операции (показываются один раз) и неотправленное. */
 export function takeNotices(store: string): Notices {
   if (!existsSync(join(store, JOURNAL))) return { failed: [], pending: 0, problem: null };

@@ -27,7 +27,13 @@ export type Op =
   | { kind: 'log'; id: string; text: string }
   | { kind: 'cancel'; id: string; reason: string }
   | { kind: 'block'; id: string; reason: string }
-  | { kind: 'edit'; id: string; text: string; baseHash: string };
+  | { kind: 'edit'; id: string; text: string; baseHash: string }
+  /**
+   * Служебная операция синхронизации: карточка получила содержимое с этим
+   * хешем (и, при создании, — её ключ). Меняет только поля CLI и не трогает
+   * `updated`: иначе учёт синхронизации сам выглядел бы правкой задачи.
+   */
+  | { kind: 'synced'; id: string; contentHash: string; tracker?: string };
 
 export interface OpContext {
   /** Дата операции `YYYY-MM-DD` — из журнала, не «сегодня». */
@@ -71,11 +77,13 @@ function logPath(taskPath: string): string {
 
 // ── проверка перед записью ───────────────────────────────────────────────
 
-/** Файл, который пишет CLI: служебные поля обновлены, текст канонический. */
+/**
+ * Файл, который пишет CLI: `updated` — дата операции, текст канонический.
+ * `content_hash` не трогаем: его ставит только синхронизация с Kaiten
+ * (операция `synced`), иначе правка считалась бы уже доставленной в карточку.
+ */
 function finalize(fm: Frontmatter, body: string, date: string): string {
-  const next: Frontmatter = { ...fm, updated: date };
-  next.content_hash = contentHash(next, body);
-  return serializeTaskDocument(next, body);
+  return serializeTaskDocument({ ...fm, updated: date }, body);
 }
 
 /** Ошибки линтера блокируют запись; предупреждения возвращаются как есть. */
@@ -316,6 +324,11 @@ export function applyOp(op: Op, texts: TaskTexts, ctx: OpContext): OpResult {
         summary: `задача ${ref} заблокирована`,
         warnings: [],
       };
+    }
+    case 'synced': {
+      const fm: Frontmatter = { ...task.fm, content_hash: op.contentHash, ...(op.tracker ? { tracker: op.tracker } : {}) };
+      if (fm.content_hash === task.fm.content_hash && fm.tracker === task.fm.tracker) return { changes: [], summary: `${ref} уже в Kaiten`, warnings: [] };
+      return { changes: [{ path: task.path, text: serializeTaskDocument(fm, task.body) }], summary: `${refOf({ ...task, fm })} отправлена в Kaiten`, warnings: [] };
     }
     case 'edit': {
       if (contentHash(task.fm, task.body) !== op.baseHash) {

@@ -63,6 +63,12 @@ export const ProjectSchema = z.object({
    * репозиториев задач нет, его нет и в конфиге.
    */
   tasksRepo: z.object({ name: z.string().min(1), url: z.string().min(1).optional() }).optional(),
+  /**
+   * Карточки, которые синхронизация не трогает никогда: владелец сказал не
+   * трогать (28.09: «Что-то» 10000003 без external_id и story export-csv
+   * 10000002, перенесённая в «Сделано» руками).
+   */
+  ignoreCards: z.array(z.number()).default([]),
   /** Поля, которые `setup` отключает и переименовывает (данные на карточках остаются). */
   retireFields: z.array(z.string()).default([]),
   mapping: MappingSchema.optional(),

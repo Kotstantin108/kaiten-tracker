@@ -105,6 +105,8 @@ repo: acme-app
 | `src/kaiten-write.ts` | Команды записи `new`, `check`, `log`, `block`, `cancel`, `edit` |
 | `src/core/task-ops.ts` | Операции записи над задачами (чистая часть): применение к свежему состоянию, пункты, журнал, slug |
 | `src/store-write.ts` | Журнал операций, коммит без рабочей копии, пересборка поверх общего и отправка (фоновая — `kaiten __send`), замки |
+| `src/core/kaiten-sync-plan.ts` | План синхронизации файл → Kaiten (чистая часть): что создать, что обновить, описание с пометкой Q41, ссылки на репозиторий задач |
+| `src/kaiten-sync.ts`, `src/kaiten-sync-cli.ts` | Выполнение плана и скрипт владельца `npm run kaiten-sync` (сухой прогон по умолчанию, `--apply`, `--first-load`) |
 | `skills/kaiten/SKILL.md` | Скилл агента: как работать с задачами через `kaiten` |
 | `tracker.config.json` | Репозитории-источники и маппинг доски Kaiten |
 

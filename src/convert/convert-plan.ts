@@ -25,7 +25,7 @@
 import { createHash } from 'node:crypto';
 import { posix } from 'node:path';
 
-import { contentHash, serializeTaskDocument } from '../core/document.js';
+import { serializeTaskDocument } from '../core/document.js';
 import { SLUG_RE } from '../core/lint.js';
 import { CLOSED_STATUSES, FrontmatterSchema, type Frontmatter, type Priority, type TaskStatus, type TaskType } from '../core/schema.js';
 import { ulid } from '../core/ulid.js';
@@ -462,7 +462,8 @@ export function convertProject(input: ConvertInput): ConvertResult {
       planning: phase ? { phase } : undefined,
     });
     const docBody = `\n${body.replace(/^\n+/, '').replace(/\s*$/, '\n')}`;
-    fm.content_hash = contentHash(fm, docBody);
+    // content_hash не ставим: это «доставлено в Kaiten», а описания пилотных
+    // карточек ещё в старом виде — первая синхронизация должна их переписать.
     files.push({ path: p.path, text: serializeTaskDocument(fm, docBody) });
 
     const log = input.logs.get(task.externalId);

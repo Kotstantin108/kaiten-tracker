@@ -91,6 +91,11 @@ const SettingsSchema = z
       })
       .strict()
       .optional(),
+    /**
+     * Синхронизация с Kaiten (решение 16, 28.09): команды записи обновляют
+     * карточки, только если `sync.kaiten` включён. По умолчанию выключен.
+     */
+    sync: z.object({ kaiten: z.boolean().default(false) }).strict().default({ kaiten: false }),
     /** Кто вы в реестре людей (`convert/people.json`): автор новых задач. Без него — по git-почте. */
     person: z.string().trim().min(1).optional(),
     localCopy: z

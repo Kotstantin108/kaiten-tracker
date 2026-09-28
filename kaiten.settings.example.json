@@ -3,6 +3,10 @@
     "domain": "company.kaiten.ru",
     "token": "ваш личный токен Kaiten"
   },
+  "sync": {
+    "kaiten": false
+  },
+  "person": "alice",
   "localCopy": {
     "enabled": false,
     "dir": "D:/tasks"
