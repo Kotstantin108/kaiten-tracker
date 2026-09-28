@@ -3,6 +3,9 @@
   "version": "0.1.0",
   "private": true,
   "description": "Синхронизатор задач репозиториев Acme и Kaiten: разовая заливка, дальше цикл сверки",
+  "bin": {
+    "kaiten": "bin/kaiten.mjs"
+  },
   "type": "module",
   "scripts": {
     "typecheck": "tsc --noEmit",
@@ -13,7 +16,8 @@
     "yonote": "tsx --env-file-if-exists=.env src/yonote.ts",
     "setup": "tsx --env-file-if-exists=.env src/setup.ts",
     "tasks:lint": "tsx --env-file-if-exists=.env src/tasks-lint.ts",
-    "convert": "tsx --env-file-if-exists=.env src/convert.ts"
+    "convert": "tsx --env-file-if-exists=.env src/convert.ts",
+    "kaiten": "tsx src/kaiten.ts"
   },
   "dependencies": {
     "yaml": "^2.9.1",

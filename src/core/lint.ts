@@ -78,7 +78,7 @@ function checkLocation(fm: Frontmatter, path: string, issues: LintIssue[]): void
 
 /** Сообщения схемы по-русски; отсутствующее поле называется прямо, без «получено undefined». */
 const ruError = z.locales.ru().localeError;
-const schemaError: z.core.$ZodErrorMap = (issue) =>
+export const schemaError: z.core.$ZodErrorMap = (issue) =>
   issue.input === undefined && (issue.code === 'invalid_type' || issue.code === 'invalid_value') ? 'обязательное поле' : ruError(issue);
 
 export function lintTask(text: string, context: LintContext = {}): LintResult {

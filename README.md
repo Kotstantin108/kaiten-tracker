@@ -30,6 +30,20 @@ npm run import -- --scope pilot --epic reports      # план, ничего н�
 npm run import -- --only acme-app:20260916_export-csv --apply
 ```
 
+CLI задач для агентов и разработчиков (только чтение, без сети, кроме `pull`):
+
+```bash
+npm link                      # команда kaiten в PATH
+kaiten list                   # открытые задачи продукта текущего репозитория
+kaiten show PRJ-123            # задача целиком, её эпик и соседние задачи
+kaiten search таймаут вебхук  # по словам, в открытых и закрытых
+kaiten pull                   # свежие задачи проекта
+```
+
+Задачи читаются из клона репозитория задач проекта: `TASKS_DIR`, иначе
+`~/.kaiten/<tasksRepo.name>`. Проект — по репозиторию кода, из которого
+запущена команда, или `--project`. Справка — `kaiten <команда> --help`.
+
 Без `--apply` не делается ни одной записи. Без токена скрипт работает офлайн:
 строит план по локальным файлам и говорит, что состояние аккаунта неизвестно.
 
@@ -53,6 +67,10 @@ npm run import -- --only acme-app:20260916_export-csv --apply
 | `src/core/lint.ts`, `src/tasks-lint.ts` | Линтер файла и всего репозитория задач (`npm run tasks:lint -- <dir> [--project p]`, выход 0/1) |
 | `src/convert/convert-plan.ts`, `src/convert/git-history.ts`, `src/convert.ts` | Разовый конвертер старых школ в репозиторий задач v2: чистая часть, история git одним проходом, CLI `npm run convert` (без `--write` только отчёт) |
 | `src/core/ulid.ts` | ULID для поля `id` без зависимостей |
+| `src/core/tasks-index.ts` | Задачи проекта в памяти: поиск по ключу/id/slug, эпик и его задачи, фильтры, сортировка, поиск по словам |
+| `src/tasks-files.ts` | Чтение репозитория задач с диска: файлы задач и журналы `<slug>.log.md` |
+| `src/kaiten.ts`, `src/kaiten-format.ts`, `bin/kaiten.mjs` | CLI `kaiten` на чтение: `list`, `show`, `search`, `pull` |
+| `skills/kaiten/SKILL.md` | Скилл агента: как работать с задачами через `kaiten` |
 | `tracker.config.json` | Репозитории-источники и маппинг доски Kaiten |
 
 ## Что установлено живьём в Kaiten (23–24.09.2026)

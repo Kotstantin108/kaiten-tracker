@@ -57,6 +57,13 @@ export const ProjectSchema = z.object({
     repoField: z.string().min(1),
   }),
   repos: z.array(RepoSchema).min(1),
+  /**
+   * Репозиторий задач проекта. Клон лежит в `TASKS_DIR` (один клон — один
+   * проект, как у `tasks:lint`), иначе в `~/.kaiten/<name>`. `url` нужен
+   * только `kaiten pull` для первого клонирования; пока репозиториев задач
+   * нет, его нет и в конфиге.
+   */
+  tasksRepo: z.object({ name: z.string().min(1), url: z.string().min(1).optional() }).optional(),
   /** Поля, которые `setup` отключает и переименовывает (данные на карточках остаются). */
   retireFields: z.array(z.string()).default([]),
   mapping: MappingSchema.optional(),
@@ -83,9 +90,13 @@ export interface LoadedProject {
  * Проект из конфига. Без `--project` — единственный проект; если их
  * несколько, выбрать должен человек: писать не в ту доску нельзя.
  */
-export function loadProject(path: string, wanted: string | null): LoadedProject {
+export function loadConfig(path: string): TrackerConfig {
   if (!existsSync(path)) throw new Error(`Не найден конфиг ${path}`);
-  const config = ConfigSchema.parse(JSON.parse(readFileSync(path, 'utf8')));
+  return ConfigSchema.parse(JSON.parse(readFileSync(path, 'utf8')));
+}
+
+export function loadProject(path: string, wanted: string | null): LoadedProject {
+  const config = loadConfig(path);
   const keys = Object.keys(config.projects);
   const key = wanted ?? (keys.length === 1 ? keys[0] : null);
   if (!key) throw new Error(`В конфиге несколько проектов (${keys.join(', ')}) — укажите --project`);
