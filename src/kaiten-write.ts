@@ -111,7 +111,10 @@ ${TASK_REF_HELP}
 
 Примеры:
   kaiten edit PRJ-123
-  kaiten show PRJ-123 --raw > draft.md   … правка …   kaiten edit PRJ-123 --stdin < draft.md
+  kaiten edit PRJ-123 --stdin <<'EOF'
+  ---
+  …весь текст задачи из kaiten show PRJ-123 --raw, с правками…
+  EOF
 `,
 };
 

@@ -3,12 +3,13 @@
  * Сети нет: «GitHub» — bare-репозиторий во временной папке.
  */
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
+import * as documentModule from '../core/document.js';
 import { serializeTaskDocument } from '../core/document.js';
 import { FrontmatterSchema } from '../core/schema.js';
 import { newTaskText } from '../core/task-ops.js';
@@ -16,6 +17,8 @@ import { readJournal, recordOp, syncStore, takeNotices, withLock } from '../stor
 import { cloneStore, listEntries, readStoreTree, StoreError } from '../task-store.js';
 
 const ID = '01K5ZQ3R8F2K9M4N7P0T5V8W3A';
+/** git на Windows под нагрузкой всего набора медленный: 5 с по умолчанию мало. */
+const GIT_TIMEOUT = 30_000;
 const DATE = '2026-09-28';
 
 function git(cwd: string, ...args: string[]): string {
@@ -68,7 +71,7 @@ beforeAll(() => {
 
 afterAll(() => rmSync(tmp, { recursive: true, force: true }));
 
-describe('запись и отправка', () => {
+describe('запись и отправка', { timeout: GIT_TIMEOUT }, () => {
   let a: string;
   let b: string;
 
@@ -134,7 +137,95 @@ describe('запись и отправка', () => {
   });
 });
 
-describe('пустой репозиторий задач', () => {
+describe('обрывы и гонки', { timeout: GIT_TIMEOUT }, () => {
+  /** Свежий «GitHub» с одной задачей и хранилища к нему. */
+  function world(name: string, stores: number): { origin: string; stores: string[] } {
+    const origin = join(tmp, `${name}.git`);
+    git(tmp, 'clone', '-q', '--bare', remote, origin);
+    // Задача в исходном виде — предыдущие тесты её отменили.
+    const seed = join(tmp, `${name}-seed`);
+    git(tmp, 'clone', '-q', origin, seed);
+    execFileSync('node', ['-e', `require('fs').mkdirSync(${JSON.stringify(join(seed, 'active'))}, { recursive: true })`]);
+    writeFileSync(join(seed, 'active', 'webhook.md'), TASK);
+    git(seed, 'add', '-A');
+    git(seed, 'commit', '-q', '-m', 'reset', '--allow-empty');
+    git(seed, 'push', '-q', 'origin', 'main');
+    return {
+      origin,
+      stores: Array.from({ length: stores }, (_, i) => {
+        const s = join(tmp, `${name}-${i}.git`);
+        cloneStore(origin, s);
+        return s;
+      }),
+    };
+  }
+  const logOf = (origin: string): string => git(origin, 'show', 'main:active/webhook.log.md');
+
+  it('обрыв после push: следующая отправка не применяет операции второй раз', () => {
+    const { origin, stores } = world('crash', 1);
+    recordOp(stores[0], { kind: 'log', id: ID, text: 'ровно один раз' }, 'журнал', DATE);
+    expect(() =>
+      syncStore(stores[0], {
+        afterPush: () => {
+          throw new Error('процесс убит');
+        },
+      }),
+    ).toThrow('процесс убит');
+    expect(readJournal(stores[0]).pending).toHaveLength(1);
+    expect(syncStore(stores[0])).toMatchObject({ sent: 1, failed: [] });
+    expect(logOf(origin).match(/ровно один раз/g)).toHaveLength(1);
+    expect(readJournal(stores[0]).pending).toHaveLength(0);
+  });
+
+  it('кто-то отправил между сборкой и push: повтор, оба изменения на месте', () => {
+    const { origin, stores } = world('race', 2);
+    recordOp(stores[0], { kind: 'check', id: ID, items: ['Ретраи'], checked: true }, 'отметка', DATE);
+    let raced = false;
+    const result = syncStore(stores[0], {
+      beforePush: () => {
+        if (raced) return;
+        raced = true;
+        recordOp(stores[1], { kind: 'log', id: ID, text: 'успел раньше' }, 'журнал', DATE);
+        syncStore(stores[1]);
+      },
+    });
+    expect(result).toMatchObject({ sent: 1, failed: [] });
+    expect(git(origin, 'show', 'main:active/webhook.md')).toContain('- [x] Ретраи');
+    expect(logOf(origin)).toContain('успел раньше');
+  });
+
+  it('сервер отказал по правилам — не «гонка», повторов нет', () => {
+    const { origin, stores } = world('refused', 1);
+    writeFileSync(join(origin, 'hooks', 'pre-receive'), '#!/bin/sh\necho "protected branch" >&2\nexit 1\n');
+    execFileSync('node', ['-e', `require('fs').chmodSync(${JSON.stringify(join(origin, 'hooks', 'pre-receive'))}, 0o755)`]);
+    recordOp(stores[0], { kind: 'log', id: ID, text: 'не примут' }, 'журнал', DATE);
+    try {
+      syncStore(stores[0]);
+      expect.unreachable();
+    } catch (error) {
+      expect((error as StoreError).kind).toBe('refused');
+    }
+    expect(readJournal(stores[0]).sendProblem?.kind).toBe('refused');
+    expect(readJournal(stores[0]).pending).toHaveLength(1);
+  });
+
+  it('правка, опоздавшая к чужой, не пропадает: текст сохранён', () => {
+    const { stores } = world('edit', 2);
+    const current = taskText(stores[0]) ?? '';
+    const { contentHash, parseTaskDocument } = documentModule;
+    const raw = parseTaskDocument(current);
+    const base = contentHash(FrontmatterSchema.parse(raw.data), raw.body);
+    recordOp(stores[0], { kind: 'edit', id: ID, text: current.replace('Оплата иногда зависает.', 'Моя «Суть».'), baseHash: base }, 'правка webhook', DATE);
+    recordOp(stores[1], { kind: 'edit', id: ID, text: current.replace('Оплата иногда зависает.', 'Чужая «Суть».'), baseHash: base }, 'правка webhook', DATE);
+    syncStore(stores[1]);
+    const result = syncStore(stores[0]);
+    expect(result.failed).toHaveLength(1);
+    const kept = /текст сохранён в (.+)$/.exec(result.failed[0].reason)?.[1] ?? '';
+    expect(readFileSync(kept, 'utf8')).toContain('Моя «Суть».');
+  });
+});
+
+describe('пустой репозиторий задач', { timeout: GIT_TIMEOUT }, () => {
   it('первая задача создаёт ветку', () => {
     const empty = join(tmp, 'empty.git');
     git(tmp, 'init', '-q', '--bare', empty);
@@ -151,7 +242,7 @@ describe('пустой репозиторий задач', () => {
   });
 });
 
-describe('замки', () => {
+describe('замки', { timeout: GIT_TIMEOUT }, () => {
   it('брошенный замок умершего процесса снимается', () => {
     const dir = mkdtempSync(join(tmp, 'lock-'));
     writeFileSync(join(dir, 'x.lock'), '999999 2026-09-28T00:00:00Z');

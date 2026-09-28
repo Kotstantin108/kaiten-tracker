@@ -249,7 +249,8 @@ export function newTaskText(input: NewTaskInput, date: string): string | { error
     updated: date,
   });
   if (!parsed.success) return { error: parsed.error.issues.map((i) => `${i.path.join('.')}: ${i.message}`).join('; ') };
-  const body = input.body?.trim() ? `${input.body.trim()}\n` : renderSkeleton(input.type);
+  // Пустой пункт скелета — заготовка для редактора; в задаче он был бы пустым пунктом чек-листа.
+  const body = input.body?.trim() ? `${input.body.trim()}\n` : renderSkeleton(input.type).replace(/^- \[ \] \n/gm, '');
   return finalize(parsed.data, body, date);
 }
 
@@ -257,14 +258,18 @@ export function newTaskText(input: NewTaskInput, date: string): string | { error
 
 export function applyOp(op: Op, texts: TaskTexts, ctx: OpContext): OpResult {
   if (op.kind === 'new') {
-    if (!SLUG_RE.test(op.path.split('/').at(-1)?.replace(/\.md$/, '') ?? '')) return { error: 'имя задачи — только латиница через дефис' };
-    const slug = op.path.split('/').at(-1)?.replace(/\.md$/, '') ?? '';
-    if (takenSlugs(texts).has(slug)) return { error: `задача ${slug} уже есть — выберите другое имя` };
-    const result = checked(op.text, op.path);
+    const wanted = op.path.split('/').at(-1)?.replace(/\.md$/, '') ?? '';
+    if (!SLUG_RE.test(wanted)) return { error: 'имя задачи — только латиница через дефис' };
+    // Имя ещё не отправленной задачи не свято: если его успел занять другой,
+    // задача получает следующее свободное, а не пропадает.
+    const slug = uniqueSlug(wanted, takenSlugs(texts));
+    const path = `active/${slug}.md`;
+    const result = checked(op.text, path);
     if ('error' in result) return result;
     const id = parseTaskDocument(op.text).data as { id?: string };
     if (records(texts).some((t) => t.fm.id === id.id)) return { error: 'задача с таким id уже есть' };
-    return { changes: [{ path: op.path, text: op.text }], summary: `новая задача ${slug}`, warnings: result.warnings };
+    const renamed = slug === wanted ? '' : ` (имя ${wanted} было занято)`;
+    return { changes: [{ path, text: op.text }], summary: `новая задача ${slug}${renamed}`, warnings: result.warnings };
   }
 
   const task = byId(texts, op.id);

@@ -25,12 +25,12 @@
  * Автор — git-имя разработчика: агент работает через его CLI (Q33).
  */
 
-import { closeSync, existsSync, mkdtempSync, openSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { closeSync, existsSync, mkdtempSync, openSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { applyOp, type Op, type OpResult, type TaskTexts } from './core/task-ops.js';
-import { git, gitText, listEntries, readBlobs, revOrNull, storeBranch, StoreError, type StoreErrorKind } from './task-store.js';
+import { git, gitText, isStore, listEntries, readBlobs, revOrNull, storeBranch, StoreError, type StoreErrorKind } from './task-store.js';
 
 // ── журнал ───────────────────────────────────────────────────────────────
 
@@ -55,6 +55,8 @@ export interface Journal {
   next: number;
   pending: JournalEntry[];
   failed: FailedEntry[];
+  /** Отправляемое сейчас: push этого коммита несёт операции до `lastSeq` включительно. */
+  inflight?: { head: string; lastSeq: number };
   /** Последняя неудачная отправка: вид ошибки и когда. Успешная — стирает. */
   sendProblem?: { kind: StoreErrorKind; at: string };
 }
@@ -71,9 +73,8 @@ function writeJournal(store: string, journal: Journal): void {
   const path = join(store, JOURNAL);
   const tmp = `${path}.tmp`;
   writeFileSync(tmp, `${JSON.stringify(journal, null, 2)}\n`);
-  // Замена целиком: оборванная запись не оставит полжурнала.
-  writeFileSync(path, readFileSync(tmp));
-  rmSync(tmp, { force: true });
+  // Замена целиком (rename заменяет файл и на Windows): оборванная запись не оставит полжурнала.
+  renameSync(tmp, path);
 }
 
 export function hasPending(store: string): boolean {
@@ -108,7 +109,9 @@ export function withLock<T>(store: string, name: string, fn: () => T, options: {
   while (fd === null) {
     try {
       fd = openSync(path, 'wx');
-    } catch {
+    } catch (error) {
+      // Занят — только EEXIST; нет папки или нет прав — ждать бессмысленно.
+      if (!(typeof error === 'object' && error !== null && 'code' in error && error.code === 'EEXIST')) throw new StoreError('not-store');
       let stale = true;
       try {
         const [pid] = readFileSync(path, 'utf8').split(' ');
@@ -234,13 +237,49 @@ export interface SyncResult {
   failed: FailedEntry[];
 }
 
+export interface SyncOptions {
+  now?: () => Date;
+  /** Только для тестов: вызывается перед push (чужой push — гонка) и после него (обрыв). */
+  beforePush?: () => void;
+  afterPush?: () => void;
+}
+
 const MAX_ATTEMPTS = 5;
 
 /**
- * Забрать общее, пересобрать локальное, отправить неотправленное. Сетевые
- * шаги — вне замка журнала: команды записи не ждут сеть.
+ * Текст, который иначе пропал бы вместе с не применённой операцией (новая
+ * задача, правка, запись журнала), — во временный файл: вне репозитория кода,
+ * и человек может применить его заново.
  */
-export function syncStore(store: string, now: () => Date = () => new Date()): SyncResult {
+function keepText(entry: JournalEntry): string | null {
+  const op = entry.op;
+  const text = op.kind === 'new' || op.kind === 'edit' || op.kind === 'log' ? op.text : null;
+  if (text === null) return null;
+  const path = join(tmpdir(), `kaiten-${op.kind}-${entry.seq}-${Date.now()}.md`);
+  writeFileSync(path, text);
+  return path;
+}
+
+/**
+ * Забрать общее, пересобрать локальное, отправить неотправленное.
+ *
+ * Отправитель один: замок `kaiten-send.lock` берут и фоновая отправка, и
+ * `kaiten pull` — иначе вторая пересобрала бы поверх уже отправленного и
+ * применила операции дважды. Сетевые шаги — вне замка журнала: команды
+ * записи сеть не ждут.
+ *
+ * Обрыв между push и записью журнала: перед push в журнале метка
+ * `inflight` (что отправляем и до какой операции). Следующая отправка,
+ * увидев метку, проверяет, дошёл ли тот push, и если да — выбрасывает уже
+ * отправленные операции, а не применяет их второй раз.
+ */
+export function syncStore(store: string, options: SyncOptions = {}): SyncResult {
+  if (!isStore(store)) throw new StoreError('not-store');
+  return withLock(store, SEND_LOCK, () => syncLocked(store, options), { waitMs: 60_000, staleMs: 5 * 60_000 });
+}
+
+function syncLocked(store: string, options: SyncOptions): SyncResult {
+  const now = options.now ?? (() => new Date());
   const branch = storeBranch(store);
   const local = `refs/heads/${branch}`;
   const remote = `refs/remotes/origin/${branch}`;
@@ -258,16 +297,30 @@ export function syncStore(store: string, now: () => Date = () => new Date()): Sy
       const journal = readJournal(store);
       const before = revOrNull(store, local);
       const base = revOrNull(store, remote);
+      if (journal.inflight) {
+        const landed = base !== null && isAncestor(store, journal.inflight.head, base);
+        if (landed) {
+          const done = journal.inflight.lastSeq;
+          outcome.sent += journal.pending.filter((e) => e.seq <= done).length;
+          journal.pending = journal.pending.filter((e) => e.seq > done);
+        }
+        delete journal.inflight;
+      }
       const rebuilt = rebuild(store, base, journal.pending);
       setRef(store, local, rebuilt.head, before);
       if (rebuilt.head !== before) outcome.changed = true;
-      const failed = rebuilt.failed.map((f) => ({ what: f.entry.what, reason: f.reason, at: now().toISOString() }));
+      const failed = rebuilt.failed.map((f) => {
+        const kept = keepText(f.entry);
+        return { what: f.entry.what, reason: kept ? `${f.reason}; текст сохранён в ${kept}` : f.reason, at: now().toISOString() };
+      });
       outcome.failed.push(...failed);
       journal.failed.push(...failed);
       // Операции, которые ничего не меняют на свежем состоянии, отправлять незачем.
       journal.pending = rebuilt.applied.filter((a) => a.result.changes.length > 0).map((a) => a.entry);
+      const lastSeq = journal.pending.at(-1)?.seq ?? 0;
+      if (journal.pending.length > 0 && rebuilt.head !== null) journal.inflight = { head: rebuilt.head, lastSeq };
       writeJournal(store, journal);
-      return { head: rebuilt.head, base, lastSeq: journal.pending.at(-1)?.seq ?? 0, count: journal.pending.length };
+      return { head: rebuilt.head, base, lastSeq, count: journal.pending.length };
     });
 
     if (plan.count === 0 || plan.head === null || plan.head === plan.base) {
@@ -275,6 +328,7 @@ export function syncStore(store: string, now: () => Date = () => new Date()): Sy
       return outcome;
     }
 
+    options.beforePush?.();
     try {
       git(store, ['push', '--quiet', 'origin', `${plan.head}:refs/heads/${branch}`]);
     } catch (error) {
@@ -282,10 +336,12 @@ export function syncStore(store: string, now: () => Date = () => new Date()): Sy
       if (error instanceof StoreError) noteProblem(store, error.kind, now());
       throw error;
     }
+    options.afterPush?.();
 
     const more = withLock(store, JOURNAL_LOCK, () => {
       const journal = readJournal(store);
       journal.pending = journal.pending.filter((e) => e.seq > plan.lastSeq);
+      delete journal.inflight;
       delete journal.sendProblem;
       writeJournal(store, journal);
       git(store, ['update-ref', remote, plan.head ?? '']);
@@ -297,6 +353,15 @@ export function syncStore(store: string, now: () => Date = () => new Date()): Sy
   }
   noteProblem(store, 'rejected', now());
   throw new StoreError('rejected');
+}
+
+function isAncestor(store: string, ancestor: string, of: string): boolean {
+  try {
+    git(store, ['merge-base', '--is-ancestor', ancestor, of]);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function noteProblem(store: string, kind: StoreErrorKind, at: Date): void {
@@ -316,9 +381,9 @@ function clearProblem(store: string): void {
   });
 }
 
-/** Отправка в фоне: один отправитель за раз; следующий ждёт и отправит накопившееся. */
+/** Отправка в фоне: тот же `syncStore` — один отправитель за раз, следующий ждёт. */
 export function sendInBackground(store: string): void {
-  withLock(store, SEND_LOCK, () => syncStore(store), { waitMs: 60_000, staleMs: 5 * 60_000 });
+  syncStore(store);
 }
 
 // ── что сказать человеку ─────────────────────────────────────────────────

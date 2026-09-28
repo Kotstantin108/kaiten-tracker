@@ -42,10 +42,21 @@ export interface Context {
   /** Репозиторий кода проекта, из которого запущена команда (из `.kaiten`). */
   currentRepo: string;
   store: string;
+  /** Папка, из которой запущена команда: в ней ищется `.kaiten`, в ней же работает фоновая отправка. */
+  workDir: string;
+}
+
+/**
+ * Откуда запустили команду. `npm run kaiten` переводит процесс в папку
+ * инструмента, а исходную кладёт в `INIT_CWD` — без неё `.kaiten` не найти.
+ */
+function invocationDir(): string {
+  return process.env.INIT_CWD ?? process.cwd();
 }
 
 export function resolveContext(): Context {
-  const found = readProjectFile(process.cwd());
+  const workDir = invocationDir();
+  const found = readProjectFile(workDir);
   if ('missing' in found) {
     throw new UsageError(`Этот репозиторий не подключён к kaiten: в нём нет файла ${PROJECT_FILE}. Подключает репозиторий владелец проекта.`);
   }
@@ -62,7 +73,7 @@ export function resolveContext(): Context {
     throw new UsageError(`Файл ${PROJECT_FILE}: в проекте ${loaded.project.title} нет репозитория «${found.file.repo}» (есть: ${repos.join(', ')}). Исправляет владелец проекта.`);
   }
   const store = storePathOf(loaded);
-  return { loaded, title: loaded.project.title, currentRepo: found.file.repo, store };
+  return { loaded, title: loaded.project.title, currentRepo: found.file.repo, store, workDir };
 }
 
 function storePathOf(loaded: LoadedProject): string {
@@ -207,7 +218,7 @@ export function startSend(ctx: Context): void {
     return;
   }
   const child = spawn(process.execPath, [...process.execArgv, process.argv[1], '__send'], {
-    cwd: process.cwd(),
+    cwd: ctx.workDir,
     detached: true,
     stdio: 'ignore',
     windowsHide: true,
@@ -228,6 +239,8 @@ export function storeMessage(kind: StoreError['kind']): string {
       return 'Для истории изменений не задано ваше имя и почта: git config --global user.name "…" и user.email "…".';
     case 'busy':
       return 'Задачи сейчас меняет другая команда kaiten. Повторите через несколько секунд.';
+    case 'refused':
+      return 'Хранилище задач не принимает изменения по своим правилам. Это вопрос к владельцу проекта.';
     case 'rejected':
       return 'Изменения не удалось отправить: задачи слишком часто меняются одновременно. Повторите kaiten pull.';
     default:

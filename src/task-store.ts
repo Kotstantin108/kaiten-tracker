@@ -25,7 +25,7 @@ import { dirname, join, resolve } from 'node:path';
 
 import type { TasksTree } from './tasks-files.js';
 
-export type StoreErrorKind = 'no-access' | 'offline' | 'not-found' | 'rejected' | 'no-identity' | 'busy' | 'not-store' | 'other';
+export type StoreErrorKind = 'no-access' | 'offline' | 'not-found' | 'rejected' | 'refused' | 'no-identity' | 'busy' | 'not-store' | 'other';
 
 export class StoreError extends Error {
   constructor(readonly kind: StoreErrorKind) {
@@ -46,8 +46,10 @@ export function defaultStorePath(name: string): string {
 
 /** Вид ошибки по тексту git — сам текст наружу не выходит: в нём пути. */
 function classify(stderr: string): StoreErrorKind {
-  // Push отвергнут: кто-то успел раньше — это не ошибка, а повод повторить.
-  if (/\[rejected\]|non-fast-forward|fetch first|failed to push/i.test(stderr)) return 'rejected';
+  // Сервер отказал по правилам (защищённая ветка, хук) — повтор не поможет.
+  if (/\[remote rejected\]|pre-receive hook declined|protected branch/i.test(stderr)) return 'refused';
+  // Push отвергнут, потому что кто-то успел раньше, — не ошибка, а повод повторить.
+  if (/\[rejected\]/.test(stderr) && /non-fast-forward|fetch first/i.test(stderr)) return 'rejected';
   if (/Please tell me who you are|empty ident|unable to auto-detect email/i.test(stderr)) return 'no-identity';
   if (/Authentication failed|Permission denied|could not read Username|returned error: 403|access denied/i.test(stderr)) return 'no-access';
   if (/Repository not found|does not appear to be a git repository|not found/i.test(stderr)) return 'not-found';

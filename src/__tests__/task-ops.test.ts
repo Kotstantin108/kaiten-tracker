@@ -159,8 +159,12 @@ describe('новая задача', () => {
     expect(text).toContain('## Как воспроизвести');
     const op: Op = { kind: 'new', path: 'active/pochinit-503.md', text };
     expect(ok(applyOp(op, texts(), CTX))).toEqual([{ path: 'active/pochinit-503.md', text }]);
-    const dup = applyOp(op, texts({ 'active/pochinit-503.md': text }), CTX);
-    expect('error' in dup && dup.error).toContain('уже есть');
+    // Имя заняли, пока задача не отправлена, — она получает следующее, а не пропадает.
+    const other = text.replace(input.id, '01K5ZQ3R8F2K9M4N7P0T5V8W3C');
+    const renamed = applyOp({ kind: 'new', path: 'active/pochinit-503.md', text: other }, texts({ 'active/pochinit-503.md': text }), CTX);
+    expect(ok(renamed)[0].path).toBe('active/pochinit-503-2.md');
+    expect('error' in renamed || renamed.summary).toContain('было занято');
+    expect(text).not.toMatch(/^- \[ \] $/m);
   });
 
   it('без «Сути» задачу не создать', () => {
