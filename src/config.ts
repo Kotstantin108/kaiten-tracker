@@ -58,10 +58,9 @@ export const ProjectSchema = z.object({
   }),
   repos: z.array(RepoSchema).min(1),
   /**
-   * Репозиторий задач проекта. Клон лежит в `TASKS_DIR` (один клон — один
-   * проект, как у `tasks:lint`), иначе в `~/.kaiten/<name>`. `url` нужен
-   * только `kaiten pull` для первого клонирования; пока репозиториев задач
-   * нет, его нет и в конфиге.
+   * Репозиторий задач проекта. `name` — имя хранилища на машине
+   * (`task-store.ts`), `url` нужен `kaiten pull` для первой загрузки; пока
+   * репозиториев задач нет, его нет и в конфиге.
    */
   tasksRepo: z.object({ name: z.string().min(1), url: z.string().min(1).optional() }).optional(),
   /** Поля, которые `setup` отключает и переименовывает (данные на карточках остаются). */

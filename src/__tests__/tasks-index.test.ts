@@ -9,7 +9,7 @@ import { serializeTaskDocument } from '../core/document.js';
 import type { TaskFileText } from '../core/lint.js';
 import { FrontmatterSchema, type Frontmatter } from '../core/schema.js';
 import { belongsToProject, buildIndex, checklistProgress, childrenOf, epicOf, filterTasks, refOf, resolveTask, searchTasks, sortTasks, type TaskRecord } from '../core/tasks-index.js';
-import { formatShow, formatTaskLines } from '../kaiten-format.js';
+import { formatShow, formatTaskLines, presentBody } from '../kaiten-format.js';
 
 const EPIC_ID = '01K5ZQ3R8F2K9M4N7P0T5V8W2X';
 const IDS = ['01K5ZQ3R8F2K9M4N7P0T5V8W3A', '01K5ZQ3R8F2K9M4N7P0T5V8W3B', '01K5ZQ3R8F2K9M4N7P0T5V8W3C', '01K5ZQ3R8F2K9M4N7P0T5V8W3D'];
@@ -155,11 +155,21 @@ describe('вывод', () => {
   });
 
   it('show: эпик, пункты, журнал и соседние задачи', () => {
-    const text = formatShow(index.tasks, bySlug('webhook-timeout'), '/tasks/active/webhook-timeout.md');
+    const text = formatShow(index.tasks, bySlug('webhook-timeout'), ['trace.log']);
     expect(text).toContain('10000002 · bug · ready · приоритет p1 · acme-app');
     expect(text).toContain('Эпик: PRJ-100 — Переделать онбординг');
     expect(text).toContain('Пункты: Критерии 1/2 · Шаги 0/1');
+    expect(text).toContain('Вложения (1): kaiten files 10000002');
     expect(text).toContain('## Журнал');
     expect(text).toMatch(/## Другие задачи эпика \(2\)[\s\S]*android-intro/);
+    // Где лежат задачи, вывод не называет.
+    expect(text).not.toMatch(/active\/|archive\/|\.md\b/);
+  });
+
+  it('ссылки на задачи и вложения показаны командами, а не путями', () => {
+    const body = 'См. [старое](/archive/2026-09/old-intro.md#итог), [эпик](/active/onboarding.md) и [отчёт](/attachments/onboarding/RESEARCH%20v2.md).';
+    expect(presentBody(index.tasks, body)).toBe(
+      'См. [старое](kaiten show old-intro), [эпик](kaiten show PRJ-100) и [отчёт](kaiten files PRJ-100 RESEARCH v2.md).',
+    );
   });
 });

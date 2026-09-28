@@ -37,7 +37,28 @@ export function formatSearch(all: readonly TaskRecord[], hits: readonly SearchHi
   return hits.flatMap((hit, i) => (hit.snippet ? [lines[i], `    … ${hit.snippet}`] : [lines[i]]));
 }
 
-export function formatShow(all: readonly TaskRecord[], task: TaskRecord, filePath: string): string {
+/**
+ * Ссылки тела на другие задачи (`/active/<slug>.md`, `/archive/…`) и на
+ * вложения (`/attachments/<slug>/<файл>`) ведут в репозиторий задач, которого
+ * у читателя нет. Показываем их командами: так агенту есть куда идти, и
+ * расположение задач нигде не всплывает.
+ */
+export function presentBody(all: readonly TaskRecord[], body: string): string {
+  const refBySlug = new Map(all.map((t) => [t.slug, refOf(t)]));
+  return body
+    .replace(/\]\(\/(?:active|archive\/\d{4}-\d{2})\/([a-z0-9-]+)\.md(?:#[^)]*)?\)/g, (_, slug: string) => `](kaiten show ${refBySlug.get(slug) ?? slug})`)
+    .replace(/\]\(\/attachments\/([a-z0-9-]+)\/([^)\s]+)\)/g, (_, slug: string, file: string) => `](kaiten files ${refBySlug.get(slug) ?? slug} ${safeDecode(file)})`);
+}
+
+function safeDecode(text: string): string {
+  try {
+    return decodeURI(text);
+  } catch {
+    return text;
+  }
+}
+
+export function formatShow(all: readonly TaskRecord[], task: TaskRecord, attachments: readonly string[]): string {
   const fm = task.fm;
   const out: string[] = [`# ${fm.title}`, ''];
   const facts = [refOf(task), fm.type, fm.status, fm.priority ? `приоритет ${fm.priority}` : 'без приоритета'];
@@ -63,8 +84,8 @@ export function formatShow(all: readonly TaskRecord[], task: TaskRecord, filePat
 
   const progress = checklistProgress(task.body);
   if (progress.length > 0) out.push(`Пункты: ${progress.map((p) => `${p.name} ${p.done}/${p.total}`).join(' · ')}`);
-  out.push(`Файл: ${filePath}`);
-  out.push('', `Суть: ${fm.summary}`, '', task.body.trim());
+  if (attachments.length > 0) out.push(`Вложения (${attachments.length}): kaiten files ${refOf(task)}`);
+  out.push('', `Суть: ${fm.summary}`, '', presentBody(all, task.body).trim());
 
   if (task.log?.trim()) out.push('', '## Журнал', '', task.log.trim());
 
@@ -91,7 +112,6 @@ export interface TaskJson {
   priority: string | null;
   repo: string | null;
   epic: string | null;
-  path: string;
 }
 
 export function taskJson(all: readonly TaskRecord[], task: TaskRecord): TaskJson {
@@ -108,19 +128,19 @@ export function taskJson(all: readonly TaskRecord[], task: TaskRecord): TaskJson
     priority: task.fm.priority ?? null,
     repo: task.fm.repo ?? null,
     epic: epic ? refOf(epic) : (task.fm.epic ?? null),
-    path: task.path,
   };
 }
 
-export function showJson(all: readonly TaskRecord[], task: TaskRecord): object {
+export function showJson(all: readonly TaskRecord[], task: TaskRecord, attachments: readonly string[]): object {
   const epic = epicOf(all, task);
   const group = task.fm.type === 'epic' ? childrenOf(all, task) : epic ? childrenOf(all, epic).filter((t) => t !== task) : [];
   return {
     ...taskJson(all, task),
     frontmatter: task.fm,
-    body: task.body,
+    body: presentBody(all, task.body),
     log: task.log,
     checklists: checklistProgress(task.body),
+    attachments,
     [task.fm.type === 'epic' ? 'children' : 'siblings']: group.map((t) => taskJson(all, t)),
   };
 }

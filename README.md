@@ -37,12 +37,19 @@ npm link                      # команда kaiten в PATH
 kaiten list                   # открытые задачи продукта текущего репозитория
 kaiten show PRJ-123            # задача целиком, её эпик и соседние задачи
 kaiten search таймаут вебхук  # по словам, в открытых и закрытых
+kaiten files PRJ-123           # вложения задачи
 kaiten pull                   # свежие задачи проекта
+kaiten export D:/tasks/sm     # копия задач для чтения в своём редакторе
 ```
 
-Задачи читаются из клона репозитория задач проекта: `TASKS_DIR`, иначе
-`~/.kaiten/<tasksRepo.name>`. Проект — по репозиторию кода, из которого
+CLI — единственный путь к задачам. Хранилище на машине — git без рабочей
+копии (`%LOCALAPPDATA%\kaiten\<tasksRepo>.git`, см. `src/task-store.ts`):
+файлов задач на диске нет, и вывод CLI не называет, где они лежат. Людям,
+которым удобнее папки, — `kaiten export` (копия только для чтения) или
+репозиторий задач на GitHub. Проект — по репозиторию кода, из которого
 запущена команда, или `--project`. Справка — `kaiten <команда> --help`.
+Пробные прогоны — с `KAITEN_STORE` и `KAITEN_CONFIG`, чтобы не трогать
+настоящее хранилище.
 
 Без `--apply` не делается ни одной записи. Без токена скрипт работает офлайн:
 строит план по локальным файлам и говорит, что состояние аккаунта неизвестно.
@@ -68,8 +75,9 @@ kaiten pull                   # свежие задачи проекта
 | `src/convert/convert-plan.ts`, `src/convert/git-history.ts`, `src/convert.ts` | Разовый конвертер старых школ в репозиторий задач v2: чистая часть, история git одним проходом, CLI `npm run convert` (без `--write` только отчёт) |
 | `src/core/ulid.ts` | ULID для поля `id` без зависимостей |
 | `src/core/tasks-index.ts` | Задачи проекта в памяти: поиск по ключу/id/slug, эпик и его задачи, фильтры, сортировка, поиск по словам |
-| `src/tasks-files.ts` | Чтение репозитория задач с диска: файлы задач и журналы `<slug>.log.md` |
-| `src/kaiten.ts`, `src/kaiten-format.ts`, `bin/kaiten.mjs` | CLI `kaiten` на чтение: `list`, `show`, `search`, `pull` |
+| `src/tasks-files.ts` | Чтение репозитория задач из папки (линтер, CI): файлы задач и журналы `<slug>.log.md` |
+| `src/task-store.ts` | Хранилище задач без рабочей копии: загрузка, обновление, чтение одним `cat-file --batch`, копия `export` |
+| `src/kaiten.ts`, `src/kaiten-format.ts`, `bin/kaiten.mjs` | CLI `kaiten` на чтение: `list`, `show`, `search`, `files`, `pull`, `export` |
 | `skills/kaiten/SKILL.md` | Скилл агента: как работать с задачами через `kaiten` |
 | `tracker.config.json` | Репозитории-источники и маппинг доски Kaiten |
 
