@@ -91,13 +91,31 @@ export const BoardSchema = z
   .passthrough();
 export type Board = z.infer<typeof BoardSchema>;
 
+/** Поле, предлагаемое к заполнению в типе карточки (`card_properties`, документация card-types). */
+export const CardTypePropertySchema = z
+  .object({
+    regular_property: z.string().nullable().optional(),
+    property_uid: z.string().nullable().optional(),
+    sort_order: z.number().optional(),
+    required: z.boolean().optional(),
+  })
+  .passthrough();
+export type CardTypeProperty = z.infer<typeof CardTypePropertySchema>;
+
 export const CardTypeSchema = z
-  .object({ id: z.number(), name: z.string().default(''), letter: z.string().optional(), archived: z.boolean().optional() })
+  .object({
+    id: z.number(),
+    name: z.string().default(''),
+    letter: z.string().optional(),
+    archived: z.boolean().optional(),
+    description_template: z.string().nullable().optional(),
+    card_properties: z.array(CardTypePropertySchema).nullable().optional(),
+  })
   .passthrough();
 export type CardType = z.infer<typeof CardTypeSchema>;
 
 export const CustomPropertySchema = z
-  .object({ id: z.number(), name: z.string().default(''), type: z.string().optional(), condition: z.string().optional() })
+  .object({ id: z.number(), uid: z.string().optional(), name: z.string().default(''), type: z.string().optional(), condition: z.string().optional() })
   .passthrough();
 export type CustomProperty = z.infer<typeof CustomPropertySchema>;
 
@@ -380,12 +398,30 @@ export class KaitenClient {
     return this.request('POST', '/card-types', { body: type, schema: CardTypeSchema });
   }
 
+  async getCardType(id: number): Promise<CardType> {
+    return this.request('GET', `/card-types/${id}`, { schema: CardTypeSchema });
+  }
+
+  /**
+   * Шаблон описания и поля типа. Проверено живьём 28.09.2026: `PATCH` без
+   * одного из `letter/name/color/properties/card_properties` отвечает 400, а
+   * `description_template`, которого нет в схеме запроса документации, с
+   * `name` принимается и сохраняется. Поэтому `name` передаётся всегда.
+   */
+  async updateCardType(
+    id: number,
+    patch: { name: string; description_template?: string; card_properties?: Array<{ regular_property?: string | null; property_uid?: string | null; sort_order?: number; required?: boolean }> },
+  ): Promise<CardType> {
+    return this.request('PATCH', `/card-types/${id}`, { body: patch, schema: CardTypeSchema });
+  }
+
   async listCustomProperties(): Promise<CustomProperty[]> {
     return this.request('GET', '/company/custom-properties', { schema: z.array(CustomPropertySchema) });
   }
 
   async createCustomProperty(property: { name: string; type: 'select' | 'string' }): Promise<CustomProperty> {
-    const body = property.type === 'select' ? { ...property, multi_select: false, show_on_facade: true } : property;
+    // Строка — многострочная: «Суть» бывает в три предложения.
+    const body = property.type === 'select' ? { ...property, multi_select: false, show_on_facade: true } : { ...property, multiline: true };
     return this.request('POST', '/company/custom-properties', { body, schema: CustomPropertySchema });
   }
 

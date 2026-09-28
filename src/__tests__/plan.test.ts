@@ -173,6 +173,26 @@ describe('buildPlan', () => {
     expect(warned.warnings[0].detail).toContain('acme-mobile');
   });
 
+  it('«Суть» — в поле карточки, а не блоком в описании; поле файла обновляется всегда', () => {
+    const withSummary: BoardMapping = { ...mapping, summaryProperty: { id: 45 } };
+    const fieldRender = { rewriteLinks: true, summaryInDescription: false };
+    const t = task({ externalId: '20260916_s', title: 'С', summary: 'Проверим Kaiten до оплаты.' });
+    expect(renderDescription(t, fieldRender)).not.toContain('**Суть.**');
+    expect(renderDescription(t, render)).toContain('**Суть.** Проверим Kaiten до оплаты.');
+
+    const created = buildPlan({ tasks: [t], existing: new Map(), mapping: withSummary, render: fieldRender, linkEpics: false }).actions[0];
+    expect(created.kind === 'create' && created.payload.properties).toMatchObject({ id_45: 'Проверим Kaiten до оплаты.' });
+
+    // Пилот: «Суть» была блоком в описании, поля нет — обновляются и описание, и поле.
+    const old = new Map([[t.externalId, { ...asExisting(100, t), properties: { id_43: 'acme-app' } }]]);
+    const update = buildPlan({ tasks: [t], existing: old, mapping: withSummary, render: fieldRender, linkEpics: false }).actions[0];
+    expect(update.kind === 'update' && update.reasons).toEqual(['суть', 'тело задачи']);
+    expect(update.kind === 'update' && update.payload.properties).toEqual({ id_45: 'Проверим Kaiten до оплаты.' });
+
+    const synced = new Map([[t.externalId, { ...asExisting(100, t), description: renderDescription(t, fieldRender), properties: { id_43: 'acme-app', id_45: 'Проверим Kaiten до оплаты.' } }]]);
+    expect(buildPlan({ tasks: [t], existing: synced, mapping: withSummary, render: fieldRender, linkEpics: false }).actions[0].kind).toBe('unchanged');
+  });
+
   it('связь, видная только со стороны эпика, тоже считается существующей', () => {
     const epic = task({
       externalId: '20260916_epic',

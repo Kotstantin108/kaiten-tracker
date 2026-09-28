@@ -5,9 +5,12 @@
  */
 import { describe, expect, it } from 'vitest';
 
-import { buildMapping, DESIRED, planSetup, withSelectValues, type CurrentStructure } from '../setup-plan.js';
+import { kaitenTemplate } from '../core/skeleton.js';
+import { buildMapping, DESIRED, planSetup, withSelectValues, type CurrentStructure, type DesiredStructure } from '../setup-plan.js';
 
-const desired = withSelectValues({ repo: ['acme-app', 'acme-site'], team: ['Разработка', 'Менеджмент'] });
+/** Схема без «Сути» и шаблонов — для тестов полей-выборов; «Суть» проверяется отдельно. */
+const selectsOnly = (d: DesiredStructure): DesiredStructure => ({ ...d, summary: null, templates: false, suggested: [] });
+const desired = selectsOnly(withSelectValues({ repo: ['acme-app', 'acme-site'], team: ['Разработка', 'Менеджмент'] }));
 
 const empty: CurrentStructure = {
   spaces: [{ id: 1, title: 'Первое пространство' }],
@@ -62,7 +65,7 @@ describe('planSetup', () => {
   });
 
   it('поле без вариантов в конфиге не заводится', () => {
-    const plan = planSetup(empty, withSelectValues({}));
+    const plan = planSetup(empty, selectsOnly(withSelectValues({})));
     expect(plan.actions.flatMap((a) => (a.kind === 'create-property' ? [a.name] : []))).toEqual(['Приоритет']);
   });
 
@@ -78,7 +81,7 @@ describe('planSetup', () => {
   });
 
   it('новый вариант в конфиге — досоздаётся только он', () => {
-    const more = withSelectValues({ repo: ['acme-app', 'acme-site', 'acme-mobile'], team: ['Разработка', 'Менеджмент'] });
+    const more = selectsOnly(withSelectValues({ repo: ['acme-app', 'acme-site', 'acme-mobile'], team: ['Разработка', 'Менеджмент'] }));
     expect(planSetup(complete(), more).actions).toEqual([{ kind: 'create-select-value', property: 'Репозиторий', value: 'acme-mobile' }]);
   });
 
@@ -116,5 +119,55 @@ describe('buildMapping', () => {
 
   it('неполная структура — ошибка со списком, а не маппинг с дырами', () => {
     expect(() => buildMapping(empty, desired)).toThrow(/не хватает: доска «Задачи».*колонка «Входящие»/);
+  });
+});
+
+describe('шаблоны описаний и обязательная «Суть»', () => {
+  const full: DesiredStructure = { ...desired, summary: { name: 'Суть' }, templates: true, suggested: ['due_date'] };
+
+  it('без поля: завести «Суть», шаблоны и обязательность во всех пяти типах', () => {
+    const plan = planSetup(complete(), full);
+    expect(plan.actions.filter((a) => a.kind === 'create-property')).toEqual([{ kind: 'create-property', name: 'Суть', type: 'string' }]);
+    expect(plan.actions.flatMap((a) => (a.kind === 'set-type-template' ? [a.typeName] : []))).toEqual(['Epic', 'Story', 'Tech', 'Bug', 'Spike']);
+    expect(plan.actions.flatMap((a) => (a.kind === 'require-type-property' ? [a.typeName] : []))).toEqual(['Epic', 'Story', 'Tech', 'Bug', 'Spike']);
+    // «Срок» — предлагается, но не обязателен.
+    expect(plan.actions.flatMap((a) => (a.kind === 'suggest-type-field' ? [`${a.typeName}:${a.field}`] : []))).toEqual([
+      'Epic:due_date',
+      'Story:due_date',
+      'Tech:due_date',
+      'Bug:due_date',
+      'Spike:due_date',
+    ]);
+  });
+
+  it('всё заведено — пустой план; чужой шаблон перезаписывается, лишние поля типа не мешают', () => {
+    const current = complete();
+    current.properties.push({ id: 400, uid: 'uid-sut', name: 'Суть', type: 'string' });
+    const key = (name: string) => DESIRED.types.find((t) => t.name === name)?.key ?? 'story';
+    current.cardTypes = current.cardTypes.map((t) => ({
+      ...t,
+      description_template: kaitenTemplate(key(t.name)),
+      card_properties: [
+        { regular_property: 'tags', property_uid: null, sort_order: 1, required: false },
+        { regular_property: null, property_uid: 'uid-sut', sort_order: -1, required: true },
+        { regular_property: 'due_date', property_uid: null, sort_order: 2, required: false },
+      ],
+    }));
+    expect(planSetup(current, full).actions).toEqual([]);
+
+    current.cardTypes = current.cardTypes.map((t) => (t.name === 'Bug' ? { ...t, description_template: 'правка руками' } : t));
+    expect(planSetup(current, full).actions).toEqual([{ kind: 'set-type-template', typeName: 'Bug', template: kaitenTemplate('bug') }]);
+  });
+
+  it('шаблон — разделы скелета с подсказками, без чекбоксов', () => {
+    expect(kaitenTemplate('bug')).toContain('## Как воспроизвести');
+    expect(kaitenTemplate('epic').match(/^## .+$/gm)).toEqual(['## Цель', '## Критерии-результаты']);
+    expect(Object.values(DESIRED.types).some((t) => kaitenTemplate(t.key).includes('[ ]'))).toBe(false);
+  });
+
+  it('маппинг получает id поля «Суть»', () => {
+    const current = complete();
+    current.properties.push({ id: 400, uid: 'uid-sut', name: 'Суть', type: 'string' });
+    expect(buildMapping(current, full).summaryProperty).toEqual({ id: 400 });
   });
 });

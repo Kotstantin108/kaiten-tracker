@@ -17,8 +17,15 @@
  * его нет), а «Репозиторий» сначала завели строкой. Такое поле план не
  * удаляет, а отключает и переименовывает («… (строка, отключено)»): значения
  * на карточках сохраняются, имя освобождается под поле-выбор.
+ *
+ * ШАБЛОНЫ И «СУТЬ» (решение владельца 28.09.2026). У каждого типа — шаблон
+ * описания по скелету формата v2 (`kaitenTemplate`) и обязательное текстовое
+ * поле «Суть»: «Суть» живёт в поле, а не блоком в описании. Типы общие на
+ * компанию, поэтому это действует во всех проектах. Шаблон, который человек
+ * поменял в интерфейсе, план перезапишет: источник шаблонов — этот код.
  */
 
+import { kaitenTemplate } from './core/skeleton.js';
 import { PRIORITIES, type Priority, type TaskType } from './task-source.js';
 import type { Board, CardType, CustomProperty, SelectValue, Space } from './kaiten-client.js';
 
@@ -43,6 +50,15 @@ export interface DesiredStructure {
   columns: Array<{ status: SchemaStatus; title: string; type: 1 | 2 | 3 }>;
   types: Array<{ key: TaskType; name: string; letter: string; color: number }>;
   selects: Record<SelectRole, SelectSpec>;
+  /** Текстовое поле «Суть»: обязательное во всех типах; `null` — не заводим. */
+  summary: { name: string } | null;
+  /** Ставить ли типам шаблоны описаний по скелету формата v2. */
+  templates: boolean;
+  /**
+   * Стандартные поля, которые тип предлагает заполнить, но не требует:
+   * «Срок» (`due_date`) — решение владельца 28.09.2026. Владелец поля — Kaiten.
+   */
+  suggested: readonly string[];
   /** Поля, которые надо отключить и переименовать (данные на карточках остаются). */
   retire: readonly string[];
 }
@@ -74,6 +90,9 @@ export const DESIRED: DesiredStructure = {
     repo: { name: 'Репозиторий', values: [] },
     team: { name: 'Команда', values: [] },
   },
+  summary: { name: 'Суть' },
+  templates: true,
+  suggested: ['due_date'],
   retire: [],
 };
 
@@ -130,7 +149,10 @@ export type SetupAction =
   | { kind: 'create-column'; title: string; type: 1 | 2 | 3; sortOrder: number }
   | { kind: 'create-card-type'; name: string; letter: string; color: number }
   | { kind: 'retire-property'; id: number; name: string; newName: string }
-  | { kind: 'create-property'; name: string; type: 'select' }
+  | { kind: 'create-property'; name: string; type: 'select' | 'string' }
+  | { kind: 'set-type-template'; typeName: string; template: string }
+  | { kind: 'require-type-property'; typeName: string; property: string }
+  | { kind: 'suggest-type-field'; typeName: string; field: string }
   | { kind: 'create-select-value'; property: string; value: string };
 
 export interface SetupPlan {
@@ -162,8 +184,24 @@ export function findSelect(current: CurrentStructure, name: string): CustomPrope
 }
 
 /** Действующее одноимённое поле другого типа — его надо отключить, чтобы освободить имя. */
-function findClash(current: CurrentStructure, name: string): CustomProperty | undefined {
-  return current.properties.filter(alive).find((p) => same(p.name, name) && p.type !== 'select');
+function findClash(current: CurrentStructure, name: string, type: string = 'select'): CustomProperty | undefined {
+  return current.properties.filter(alive).find((p) => same(p.name, name) && p.type !== type);
+}
+
+/** Действующее текстовое поле с таким именем. */
+export function findText(current: CurrentStructure, name: string): CustomProperty | undefined {
+  return current.properties.filter(alive).find((p) => same(p.name, name) && p.type === 'string');
+}
+
+/** Стандартное поле (`due_date`, `tags`…) уже есть в полях типа. */
+export function typeSuggests(type: CardType, field: string): boolean {
+  return (type.card_properties ?? []).some((p) => p.regular_property === field);
+}
+
+/** Поле обязательно в типе: есть в `card_properties` с `required: true`. */
+export function typeRequires(type: CardType, property: CustomProperty | undefined): boolean {
+  if (!property?.uid) return false;
+  return (type.card_properties ?? []).some((p) => p.property_uid === property.uid && p.required === true);
 }
 
 function aliveValues(current: CurrentStructure, propertyId: number): SelectValue[] {
@@ -228,6 +266,28 @@ export function planSetup(current: CurrentStructure, desired: DesiredStructure =
     }
   }
 
+  // «Суть»: текстовое поле, обязательное во всех типах схемы.
+  const summary = desired.summary ? findText(current, desired.summary.name) : undefined;
+  if (desired.summary) {
+    const clash = findClash(current, desired.summary.name, 'string');
+    if (clash) actions.push({ kind: 'retire-property', id: clash.id, name: clash.name, newName: `${clash.name} (${clash.type ?? 'другой тип'}, отключено)` });
+    if (!summary) actions.push({ kind: 'create-property', name: desired.summary.name, type: 'string' });
+    else reused.push(`поле «${summary.name}» (${summary.id})`);
+  }
+  for (const type of desired.types) {
+    const found = findCardType(current, type.name);
+    const template = kaitenTemplate(type.key);
+    if (desired.templates && (found?.description_template ?? null) !== template) {
+      actions.push({ kind: 'set-type-template', typeName: type.name, template });
+    }
+    if (desired.summary && !(found && typeRequires(found, summary))) {
+      actions.push({ kind: 'require-type-property', typeName: type.name, property: desired.summary.name });
+    }
+    for (const field of desired.suggested) {
+      if (!(found && typeSuggests(found, field))) actions.push({ kind: 'suggest-type-field', typeName: type.name, field });
+    }
+  }
+
   return { actions, reused, extra };
 }
 
@@ -246,6 +306,8 @@ export interface KaitenMapping {
   priorityProperty: SelectMapping;
   repoProperty?: SelectMapping;
   teamProperty?: SelectMapping;
+  /** Текстовое поле «Суть». */
+  summaryProperty?: { id: number };
 }
 
 /**
@@ -289,6 +351,9 @@ export function buildMapping(current: CurrentStructure, desired: DesiredStructur
     selects[role] = { id: property.id, values };
   }
 
+  const summaryProperty = desired.summary ? findText(current, desired.summary.name) : undefined;
+  if (desired.summary && !summaryProperty) missing.push(`поле «${desired.summary.name}»`);
+
   if (missing.length > 0 || !board || !selects.priority) {
     throw new Error(`В аккаунте не хватает: ${missing.join(', ') || 'поля приоритета'}`);
   }
@@ -304,5 +369,6 @@ export function buildMapping(current: CurrentStructure, desired: DesiredStructur
     priorityProperty: selects.priority,
     ...(selects.repo ? { repoProperty: selects.repo } : {}),
     ...(selects.team ? { teamProperty: selects.team } : {}),
+    ...(summaryProperty ? { summaryProperty: { id: summaryProperty.id } } : {}),
   };
 }

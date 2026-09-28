@@ -212,6 +212,7 @@ function loadConfig(path: string, projectKey: string | null, wanted: string[]): 
     priorityProperty: k.priorityProperty as BoardMapping['priorityProperty'],
     repoProperty: k.repoProperty,
     teamProperty: k.teamProperty,
+    summaryProperty: k.summaryProperty,
     defaultTeam: config.defaultTeam,
   };
   const unmapped = k.boardId === 0 || Object.values(k.columns).every((id) => id === 0);
@@ -428,7 +429,7 @@ async function main(): Promise<void> {
     tasks: selected,
     existing,
     mapping,
-    render: { rewriteLinks: args.rewriteLinks },
+    render: { rewriteLinks: args.rewriteLinks, summaryInDescription: !mapping.summaryProperty },
     linkEpics: args.linkEpics,
   });
 

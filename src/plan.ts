@@ -42,6 +42,8 @@ export interface BoardMapping {
   repoProperty?: { id: number; values?: Record<string, number> };
   /** Поле-выбор «Команда»: ставится при создании, дальше владеет Kaiten. */
   teamProperty?: { id: number; values: Record<string, number> };
+  /** Текстовое поле «Суть»: владелец — файл, обновляется и у существующих карточек. */
+  summaryProperty?: { id: number };
   /** Команда для задач из репозиториев кода — это задачи разработки. */
   defaultTeam?: string;
 }
@@ -89,6 +91,11 @@ export interface ChecklistPatch extends Checklist {
 export interface RenderOptions {
   /** Переписывать относительные ссылки в постоянные URL репозитория. */
   rewriteLinks: boolean;
+  /**
+   * «Суть» первым блоком описания. С 28.09.2026 «Суть» — отдельное поле
+   * карточки, и блок нужен, только пока поля в аккаунте нет.
+   */
+  summaryInDescription?: boolean;
 }
 
 export type PlanAction =
@@ -169,7 +176,7 @@ export function renderCard(task: TaskFile, options: RenderOptions): { descriptio
   const head = [
     '_Текст обновляется автоматически из репозитория. Правки — комментарием._',
     '',
-    ...(task.summary ? [`**Суть.** ${task.summary}`, '', '---', ''] : []),
+    ...(task.summary && options.summaryInDescription !== false ? [`**Суть.** ${task.summary}`, '', '---', ''] : []),
   ].join('\n');
   const body = `${head}${extracted.body.replace(/^\s+/, '')}`;
 
@@ -251,6 +258,7 @@ function buildPayload(task: TaskFile, mapping: BoardMapping, description: string
   if (mapping.repoProperty && repo !== undefined) properties[`id_${mapping.repoProperty.id}`] = repo;
   const team = teamValueId(task, mapping);
   if (mapping.teamProperty && team !== undefined) properties[`id_${mapping.teamProperty.id}`] = [team];
+  if (mapping.summaryProperty && task.summary) properties[`id_${mapping.summaryProperty.id}`] = task.summary;
   if (Object.keys(properties).length > 0) payload.properties = properties;
 
   return payload;
@@ -320,6 +328,14 @@ export function buildPlan(input: BuildPlanInput): ImportPlan {
       if (JSON.stringify(card.properties[key] ?? null) !== JSON.stringify(repo)) {
         reasons.push('репозиторий');
         patch.properties = { ...patch.properties, [key]: repo };
+      }
+    }
+    // «Суть» — поле файла, как «Репозиторий»: обновляется всегда.
+    if (mapping.summaryProperty && task.summary && card.properties !== undefined) {
+      const key = `id_${mapping.summaryProperty.id}`;
+      if (card.properties[key] !== task.summary) {
+        reasons.push('суть');
+        patch.properties = { ...patch.properties, [key]: task.summary };
       }
     }
     // «Команда» — поле Kaiten: только заполняем пустое, выбор человека не трогаем.

@@ -27,6 +27,8 @@ export const MappingSchema = z.object({
   /** Значения — по имени репозитория на GitHub, не по подписи. */
   repoProperty: z.object({ id: z.number(), values: z.record(z.string(), z.number()).optional() }).optional(),
   teamProperty: SelectMappingSchema.optional(),
+  /** Текстовое поле «Суть» (решение 28.09.2026: поле вместо блока в описании). */
+  summaryProperty: z.object({ id: z.number() }).optional(),
 });
 export type ConfigMapping = z.infer<typeof MappingSchema>;
 

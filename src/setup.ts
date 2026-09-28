@@ -23,13 +23,17 @@
  */
 
 import { loadProject, saveMapping, type ConfigMapping, type LoadedProject } from './config.js';
-import { KaitenApiError, KaitenClient } from './kaiten-client.js';
+import { KaitenApiError, KaitenClient, type CardType } from './kaiten-client.js';
 
 import {
   buildMapping,
   findBoard,
   findSelect,
+  findCardType,
   findSpace,
+  findText,
+  typeRequires,
+  typeSuggests,
   planSetup,
   SELECT_ROLES,
   desiredForProject,
@@ -101,7 +105,23 @@ function describe(action: SetupAction): string {
       return `поле «${action.name}» (${action.type})`;
     case 'create-select-value':
       return `вариант «${action.value}» свойства «${action.property}»`;
+    case 'set-type-template':
+      return `шаблон описания типа «${action.typeName}»: ${action.template.split('\n').filter((l) => l.startsWith('## ')).map((l) => l.slice(3)).join(' / ')}`;
+    case 'require-type-property':
+      return `поле «${action.property}» обязательно в типе «${action.typeName}»`;
+    case 'suggest-type-field':
+      return `стандартное поле «${action.field}» предлагается (не обязательно) в типе «${action.typeName}»`;
   }
+}
+
+/** Поля типа в форме запроса: `PATCH` заменяет список целиком, поэтому имеющиеся передаём обратно. */
+function typePropertiesRequest(type: CardType): Array<{ regular_property: string | null; property_uid: string | null; sort_order?: number; required: boolean }> {
+  return (type.card_properties ?? []).map((p) => ({
+    regular_property: p.regular_property ?? null,
+    property_uid: p.property_uid ?? null,
+    sort_order: p.sort_order,
+    required: p.required ?? false,
+  }));
 }
 
 /**
@@ -146,6 +166,43 @@ async function apply(client: KaitenClient, actions: SetupAction[], desired: Desi
         const property = findSelect(current, action.property);
         if (!property) throw new Error(`Свойство «${action.property}» не найдено`);
         await client.createSelectValue(property.id, action.value);
+        break;
+      }
+      // Изменения типов перечитываются сразу: API Kaiten молча выбрасывает
+      // незнакомое (грабли 23.09 с автоматизациями), и «200» ничего не доказывает.
+      case 'set-type-template': {
+        current = await readCurrent(client, desired);
+        const type = findCardType(current, action.typeName);
+        if (!type) throw new Error(`Тип «${action.typeName}» не найден`);
+        await client.updateCardType(type.id, { name: type.name, description_template: action.template });
+        const saved = await client.getCardType(type.id);
+        if (saved.description_template !== action.template) throw new Error(`Шаблон типа «${type.name}» не сохранился`);
+        break;
+      }
+      case 'require-type-property': {
+        current = await readCurrent(client, desired);
+        const type = findCardType(current, action.typeName);
+        const property = findText(current, action.property);
+        if (!type || !property?.uid) throw new Error(`Нет типа «${action.typeName}» или поля «${action.property}» с uid`);
+        const request = typePropertiesRequest(type).filter((p) => p.property_uid !== property.uid);
+        // «Суть» — первым полем типа.
+        const first = Math.min(0, ...request.map((p) => p.sort_order ?? 0)) - 1;
+        request.push({ regular_property: null, property_uid: property.uid, sort_order: first, required: true });
+        await client.updateCardType(type.id, { name: type.name, card_properties: request });
+        const saved = await client.getCardType(type.id);
+        if (!typeRequires(saved, property)) throw new Error(`Поле «${property.name}» не стало обязательным в типе «${type.name}»`);
+        break;
+      }
+      case 'suggest-type-field': {
+        current = await readCurrent(client, desired);
+        const type = findCardType(current, action.typeName);
+        if (!type) throw new Error(`Тип «${action.typeName}» не найден`);
+        const request = typePropertiesRequest(type);
+        const last = Math.max(0, ...request.map((p) => p.sort_order ?? 0)) + 1;
+        request.push({ regular_property: action.field, property_uid: null, sort_order: last, required: false });
+        await client.updateCardType(type.id, { name: type.name, card_properties: request });
+        const saved = await client.getCardType(type.id);
+        if (!typeSuggests(saved, action.field)) throw new Error(`Поле «${action.field}» не добавилось в тип «${type.name}»`);
         break;
       }
     }
