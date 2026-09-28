@@ -34,7 +34,7 @@ import { parseArgs, type ParseArgsConfig } from 'node:util';
 
 import { loadConfig, loadProject, type LoadedProject } from './config.js';
 import { STATUSES, TASK_TYPES, type TaskStatus, type TaskType } from './core/schema.js';
-import { buildIndex, filterTasks, resolveTask, searchTasks, sortTasks, type TaskFilter, type TaskIndex } from './core/tasks-index.js';
+import { belongsToProject, buildIndex, filterTasks, resolveTask, searchTasks, sortTasks, type TaskFilter, type TaskIndex } from './core/tasks-index.js';
 import { formatSearch, formatShow, formatTaskLines, showJson, taskJson } from './kaiten-format.js';
 import { readTasksTree } from './tasks-files.js';
 
@@ -198,7 +198,11 @@ function loadIndex(ctx: Context): TaskIndex {
     throw new UsageError(`Задач проекта ${ctx.loaded.project.title} на этой машине ещё нет. Получите их: kaiten pull`);
   }
   const tree = readTasksTree(ctx.tasksDir);
-  return buildIndex(tree.files, tree.logs);
+  const index = buildIndex(tree.files, tree.logs);
+  if (!belongsToProject(index.tasks, ctx.loaded.project.repos.map((r) => r.name))) {
+    throw new UsageError(`В ${ctx.tasksDir} задачи другого проекта, не ${ctx.loaded.project.title}. Проверьте TASKS_DIR или --project.`);
+  }
+  return index;
 }
 
 function reportProblems(index: TaskIndex): void {

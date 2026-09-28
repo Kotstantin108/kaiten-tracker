@@ -8,7 +8,7 @@ import { describe, expect, it } from 'vitest';
 import { serializeTaskDocument } from '../core/document.js';
 import type { TaskFileText } from '../core/lint.js';
 import { FrontmatterSchema, type Frontmatter } from '../core/schema.js';
-import { buildIndex, checklistProgress, childrenOf, epicOf, filterTasks, refOf, resolveTask, searchTasks, sortTasks, type TaskRecord } from '../core/tasks-index.js';
+import { belongsToProject, buildIndex, checklistProgress, childrenOf, epicOf, filterTasks, refOf, resolveTask, searchTasks, sortTasks, type TaskRecord } from '../core/tasks-index.js';
 import { formatShow, formatTaskLines } from '../kaiten-format.js';
 
 const EPIC_ID = '01K5ZQ3R8F2K9M4N7P0T5V8W2X';
@@ -56,6 +56,15 @@ describe('buildIndex', () => {
     expect(bySlug('webhook-timeout').log).toContain('staging');
     expect(bySlug('android-intro').log).toBeNull();
     expect(bySlug('old-intro').closed).toBe(true);
+  });
+});
+
+describe('belongsToProject', () => {
+  it('клон чужого проекта не выдаётся за свой; пустой и из одних эпиков проходит', () => {
+    expect(belongsToProject(index.tasks, ['acme-app', 'acme-mobile'])).toBe(true);
+    expect(belongsToProject(index.tasks, ['globex-site', 'globex-web'])).toBe(false);
+    expect(belongsToProject([], ['globex-site'])).toBe(true);
+    expect(belongsToProject([bySlug('onboarding')], ['globex-site'])).toBe(true);
   });
 });
 

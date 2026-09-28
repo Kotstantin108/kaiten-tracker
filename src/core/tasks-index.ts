@@ -72,6 +72,17 @@ export function buildIndex(files: readonly TaskFileText[], logs: ReadonlyMap<str
   return { tasks, problems };
 }
 
+/**
+ * Задачи того ли проекта: хоть одна задача с `repo` должна указывать на
+ * репозиторий проекта. Иначе `TASKS_DIR`, заданный под другой проект, дал бы
+ * чужие задачи под именем этого — уверенно и молча. Пустой клон и клон из
+ * одних эпиков без `repo` проходят: проверить нечем.
+ */
+export function belongsToProject(tasks: readonly TaskRecord[], repos: readonly string[]): boolean {
+  const withRepo = tasks.filter((t) => t.fm.repo !== undefined);
+  return withRepo.length === 0 || withRepo.some((t) => repos.includes(t.fm.repo as string));
+}
+
 /** Короткое имя задачи для вывода: ключ карточки, а пока его нет — slug. */
 export function refOf(task: TaskRecord): string {
   return task.fm.tracker ?? task.slug;
