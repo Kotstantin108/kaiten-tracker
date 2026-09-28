@@ -31,7 +31,7 @@
  */
 
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { basename, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -51,7 +51,7 @@ import {
   type TaskIndex,
   type TaskRecord,
 } from './core/tasks-index.js';
-import { formatSearch, formatShow, formatTaskLines, showJson, taskJson } from './kaiten-format.js';
+import { formatProblems, formatSearch, formatShow, formatTaskLines, presentBody, showJson, taskJson } from './kaiten-format.js';
 import {
   cloneStore,
   defaultStorePath,
@@ -93,13 +93,14 @@ function mainHelp(): string {
   kaiten search <слова>          найти задачи по словам
   kaiten files <задача> [файл]   вложения задачи
   kaiten pull                    получить свежие задачи проекта
-  kaiten export <папка>          копия задач в папку — читать в своём редакторе
 
 ${TASK_REF_HELP}
 Проект определяется по репозиторию, из которого запущена команда.
 Вне его — флаг --project (${projectKeys().join(', ')}).
 
 Подробно о команде: kaiten <команда> --help
+
+Для людей, кому удобнее папки и файлы: kaiten export --help
 `;
 }
 
@@ -278,11 +279,7 @@ function attachmentName(entry: StoreEntry, task: TaskRecord): string {
 }
 
 function reportProblems(index: TaskIndex): void {
-  if (index.problems.length === 0) return;
-  const shown = index.problems.slice(0, 5);
-  console.error(`\nНе читается задач: ${index.problems.length}. Что исправить:`);
-  for (const p of shown) console.error(`  ${p.path}: ${p.message}`);
-  if (index.problems.length > shown.length) console.error(`  …и ещё ${index.problems.length - shown.length}`);
+  for (const line of formatProblems(index.problems)) console.error(line);
 }
 
 // ── флаги ────────────────────────────────────────────────────────────────
@@ -408,7 +405,8 @@ function search(args: string[]): void {
   const filter = { ...buildFilter(ctx, index, values), closed: true };
   const hits = searchTasks(filterTasks(index.tasks, filter), positionals.join(' '));
   if (values.json) {
-    console.log(JSON.stringify(hits.map((h) => ({ ...taskJson(index.tasks, h.task), snippet: h.snippet })), null, 2));
+    const snippet = (text: string | null): string | null => (text === null ? null : presentBody(index.tasks, text));
+    console.log(JSON.stringify(hits.map((h) => ({ ...taskJson(index.tasks, h.task), snippet: snippet(h.snippet) })), null, 2));
   } else {
     console.log(`${ctx.title} · найдено: ${hits.length}\n`);
     if (hits.length > 0) console.log(formatSearch(index.tasks, hits, true).join('\n'));
@@ -478,6 +476,11 @@ function pull(args: string[]): void {
   const { values } = parse('pull', args, {}, 0);
   const ctx = resolveContext(projectFlag(values));
   let changed = true;
+  // Испорченное хранилище (оборванная загрузка, чужая папка) человек удалить не
+  // может: где оно лежит, CLI не говорит. Поэтому `pull` загружает заново.
+  // Безопасно, пока команды только читают: локальных коммитов нет. Командам
+  // записи так делать нельзя — там могут быть неотправленные изменения.
+  if (existsSync(ctx.store) && !isStore(ctx.store)) rmSync(ctx.store, { recursive: true, force: true });
   if (!existsSync(ctx.store)) {
     const url = ctx.loaded.project.tasksRepo?.url;
     if (!url) throw new UsageError(`Задачи проекта ${ctx.title} ещё негде взять: хранилище задач не подключено. Это вопрос к владельцу проекта.`);

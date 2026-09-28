@@ -203,8 +203,8 @@ export function searchTasks(tasks: readonly TaskRecord[], query: string): Search
     const missing = words.find((w) => !head.includes(w));
     let snippet: string | null = null;
     if (missing) {
-      const line = `${task.body}\n${task.log ?? ''}`.split('\n').find((l) => normalize(l).includes(missing)) ?? '';
-      snippet = line.trim().length > 140 ? `${line.trim().slice(0, 137)}…` : line.trim();
+      // Строка целиком: обрезает вывод — после того, как ссылки в ней заменены командами.
+      snippet = (`${task.body}\n${task.log ?? ''}`.split('\n').find((l) => normalize(l).includes(missing)) ?? '').trim();
     }
     hits.push({ task, snippet, score });
   }

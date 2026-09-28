@@ -101,6 +101,8 @@ describe('хранилище', () => {
       expect(error).toBeInstanceOf(StoreError);
       expect((error as StoreError).message).not.toContain(tmp);
     }
+    // Оборванная загрузка не оставляет полухранилища, которое потом не открыть.
+    expect(existsSync(join(tmp, 'store2', 'x.git'))).toBe(false);
   });
 
   it('blobSha совпадает с git', () => {

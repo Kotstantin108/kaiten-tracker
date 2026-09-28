@@ -4,7 +4,7 @@
  * чтобы его можно было сразу передать в `kaiten show`.
  */
 
-import { checklistProgress, childrenOf, epicOf, refOf, type SearchHit, type TaskRecord } from './core/tasks-index.js';
+import { checklistProgress, childrenOf, epicOf, refOf, slugOf, type SearchHit, type TaskProblem, type TaskRecord } from './core/tasks-index.js';
 
 function pad(value: string, width: number): string {
   return value.length >= width ? value : value + ' '.repeat(width - value.length);
@@ -34,7 +34,8 @@ export function formatSearch(all: readonly TaskRecord[], hits: readonly SearchHi
     hits.map((h) => h.task),
     withRepo,
   );
-  return hits.flatMap((hit, i) => (hit.snippet ? [lines[i], `    … ${hit.snippet}`] : [lines[i]]));
+  const cut = (text: string): string => (text.length > 140 ? `${text.slice(0, 137)}…` : text);
+  return hits.flatMap((hit, i) => (hit.snippet ? [lines[i], `    … ${cut(presentBody(all, hit.snippet))}`] : [lines[i]]));
 }
 
 /**
@@ -87,7 +88,7 @@ export function formatShow(all: readonly TaskRecord[], task: TaskRecord, attachm
   if (attachments.length > 0) out.push(`Вложения (${attachments.length}): kaiten files ${refOf(task)}`);
   out.push('', `Суть: ${fm.summary}`, '', presentBody(all, task.body).trim());
 
-  if (task.log?.trim()) out.push('', '## Журнал', '', task.log.trim());
+  if (task.log?.trim()) out.push('', '## Журнал', '', presentBody(all, task.log).trim());
 
   if (fm.type === 'epic') {
     const children = childrenOf(all, task);
@@ -131,6 +132,14 @@ export function taskJson(all: readonly TaskRecord[], task: TaskRecord): TaskJson
   };
 }
 
+/** Нечитаемые задачи — по slug: его же принимает `kaiten show`; путей файлов вывод не показывает. */
+export function formatProblems(problems: readonly TaskProblem[]): string[] {
+  if (problems.length === 0) return [];
+  const shown = problems.slice(0, 5).map((p) => `  ${slugOf(p.path)}: ${p.message}`);
+  const more = problems.length > shown.length ? [`  …и ещё ${problems.length - shown.length}`] : [];
+  return ['', `Не читается задач: ${problems.length}. Что исправить:`, ...shown, ...more];
+}
+
 export function showJson(all: readonly TaskRecord[], task: TaskRecord, attachments: readonly string[]): object {
   const epic = epicOf(all, task);
   const group = task.fm.type === 'epic' ? childrenOf(all, task) : epic ? childrenOf(all, epic).filter((t) => t !== task) : [];
@@ -138,7 +147,7 @@ export function showJson(all: readonly TaskRecord[], task: TaskRecord, attachmen
     ...taskJson(all, task),
     frontmatter: task.fm,
     body: presentBody(all, task.body),
-    log: task.log,
+    log: task.log === null ? null : presentBody(all, task.log),
     checklists: checklistProgress(task.body),
     attachments,
     [task.fm.type === 'epic' ? 'children' : 'siblings']: group.map((t) => taskJson(all, t)),

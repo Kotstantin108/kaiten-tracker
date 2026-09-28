@@ -77,10 +77,16 @@ export function isStore(dir: string): boolean {
 
 export function cloneStore(url: string, dir: string): void {
   mkdirSync(dirname(dir), { recursive: true });
-  git(dirname(dir), ['clone', '--quiet', '--bare', url, dir]);
-  // `clone --bare` не заводит refspec: без него `fetch` не обновит origin/*.
-  git(dir, ['config', 'remote.origin.fetch', '+refs/heads/*:refs/remotes/origin/*']);
-  git(dir, ['fetch', '--quiet', 'origin']);
+  try {
+    git(dirname(dir), ['clone', '--quiet', '--bare', url, dir]);
+    // `clone --bare` не заводит refspec: без него `fetch` не обновит origin/*.
+    git(dir, ['config', 'remote.origin.fetch', '+refs/heads/*:refs/remotes/origin/*']);
+    git(dir, ['fetch', '--quiet', 'origin']);
+  } catch (error) {
+    // Полухранилище не оставляем: удалить его человеку нечем — путь не называется.
+    rmSync(dir, { recursive: true, force: true });
+    throw error;
+  }
 }
 
 /** Забрать свежее и перемотать ветку вперёд. `true` — что-то изменилось. */

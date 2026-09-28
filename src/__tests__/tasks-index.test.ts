@@ -9,7 +9,7 @@ import { serializeTaskDocument } from '../core/document.js';
 import type { TaskFileText } from '../core/lint.js';
 import { FrontmatterSchema, type Frontmatter } from '../core/schema.js';
 import { belongsToProject, buildIndex, checklistProgress, childrenOf, epicOf, filterTasks, refOf, resolveTask, searchTasks, sortTasks, type TaskRecord } from '../core/tasks-index.js';
-import { formatShow, formatTaskLines, presentBody } from '../kaiten-format.js';
+import { formatProblems, formatSearch, formatShow, formatTaskLines, presentBody } from '../kaiten-format.js';
 
 const EPIC_ID = '01K5ZQ3R8F2K9M4N7P0T5V8W2X';
 const IDS = ['01K5ZQ3R8F2K9M4N7P0T5V8W3A', '01K5ZQ3R8F2K9M4N7P0T5V8W3B', '01K5ZQ3R8F2K9M4N7P0T5V8W3C', '01K5ZQ3R8F2K9M4N7P0T5V8W3D'];
@@ -164,6 +164,33 @@ describe('вывод', () => {
     expect(text).toMatch(/## Другие задачи эпика \(2\)[\s\S]*android-intro/);
     // Где лежат задачи, вывод не называет.
     expect(text).not.toMatch(/active\/|archive\/|\.md\b/);
+  });
+
+  it('ни поиск, ни журнал, ни нечитаемые задачи не называют путей', () => {
+    const tasks = buildIndex(
+      [
+        file(
+          'active/linked.md',
+          { id: IDS[0], title: 'Связать задачи' },
+          // Ссылка на границе обрезки строки поиска: обрежь до замены — половина пути утечёт.
+          `## Критерии готовности\n\n- [ ] Сверить по пилоту ${'а '.repeat(50)}[старое](/archive/2026-09/old-intro.md)\n`,
+        ),
+        file('archive/2026-09/old-intro.md', { id: IDS[1], status: 'done' }),
+        { path: 'active/broken.md', text: '---\ntitle: без остального\n---\n' },
+      ],
+      new Map([['active/linked.md', 'Итог в [отчёте](/attachments/linked/report.md)\n']]),
+    );
+    const all = tasks.tasks;
+    const hits = searchTasks(all, 'связать пилоту');
+    const searched = formatSearch(all, hits, true).join('\n');
+    const shown = formatShow(all, all[0], []);
+    const problems = formatProblems(tasks.problems).join('\n');
+    expect(presentBody(all, hits[0].snippet ?? '')).toContain('(kaiten show old-intro)');
+    expect(searched).toContain('…');
+    expect(shown).toContain('(kaiten files linked report.md)');
+    expect(problems).toContain('  broken: ');
+    for (const text of [searched, shown, problems]) expect(text).not.toMatch(/\/(?:active|archive|attachments)\b|\w\.md\b(?! ?\))|\]\(\//);
+    expect(problems).not.toContain('broken.md');
   });
 
   it('ссылки на задачи и вложения показаны командами, а не путями', () => {
