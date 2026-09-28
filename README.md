@@ -30,7 +30,8 @@ npm run import -- --scope pilot --epic reports      # план, ничего н�
 npm run import -- --only acme-app:20260916_export-csv --apply
 ```
 
-CLI задач для агентов и разработчиков (только чтение, без сети, кроме `pull`):
+CLI задач для агентов и разработчиков (чтение — без сети; запись — сразу
+локально, общим — в фоне):
 
 ```bash
 npm link                      # команда kaiten в PATH
@@ -38,7 +39,13 @@ kaiten list                   # открытые задачи продукта �
 kaiten show PRJ-123            # задача целиком, её эпик и соседние задачи
 kaiten search таймаут вебхук  # по словам, в открытых и закрытых
 kaiten files PRJ-123           # вложения задачи
-kaiten pull                   # свежие задачи проекта
+kaiten pull                   # свежие задачи проекта и отправка своих изменений
+kaiten new "Починить…" --type bug --summary "…" [--agent]
+kaiten check PRJ-123 "тест на таймаут"   # отметить пункты
+kaiten log PRJ-123 "что сделано"         # запись в журнал задачи
+kaiten block PRJ-123 --reason "…"        # задача заблокирована
+kaiten cancel PRJ-123 --reason "…"       # отменить (только не начатую)
+kaiten edit PRJ-123            # правка текста в своём редакторе; --stdin — для агента
 ```
 
 CLI — единственный путь к задачам. Хранилище на машине — git без рабочей
@@ -94,7 +101,10 @@ repo: acme-app
 | `src/tasks-files.ts` | Чтение репозитория задач из папки (линтер, CI): файлы задач и журналы `<slug>.log.md` |
 | `src/task-store.ts` | Хранилище задач без рабочей копии: загрузка, обновление, чтение одним `cat-file --batch`, копия для чтения |
 | `src/kaiten-context.ts` | Файл проекта `.kaiten` и настройки `kaiten.settings.json` (вход в Kaiten, копия для чтения) |
-| `src/kaiten.ts`, `src/kaiten-format.ts`, `bin/kaiten.mjs` | CLI `kaiten` на чтение: `list`, `show`, `search`, `files`, `pull` |
+| `src/kaiten.ts`, `src/kaiten-cli.ts`, `src/kaiten-format.ts`, `bin/kaiten.mjs` | CLI `kaiten`: справка, команды чтения `list`, `show`, `search`, `files`, `pull`; общее для команд |
+| `src/kaiten-write.ts` | Команды записи `new`, `check`, `log`, `block`, `cancel`, `edit` |
+| `src/core/task-ops.ts` | Операции записи над задачами (чистая часть): применение к свежему состоянию, пункты, журнал, slug |
+| `src/store-write.ts` | Журнал операций, коммит без рабочей копии, пересборка поверх общего и отправка (фоновая — `kaiten __send`), замки |
 | `skills/kaiten/SKILL.md` | Скилл агента: как работать с задачами через `kaiten` |
 | `tracker.config.json` | Репозитории-источники и маппинг доски Kaiten |
 

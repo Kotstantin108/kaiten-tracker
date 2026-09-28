@@ -1,0 +1,169 @@
+/**
+ * Операции записи: что агент может поменять в задаче и что CLI не пропустит.
+ */
+import { describe, expect, it } from 'vitest';
+
+import { contentHash, parseTaskDocument, serializeTaskDocument } from '../core/document.js';
+import { FrontmatterSchema, type Frontmatter } from '../core/schema.js';
+import { appendLog, applyOp, matchItem, newTaskText, slugify, uniqueSlug, type FileChange, type Op, type TaskTexts } from '../core/task-ops.js';
+
+const ID = '01K5ZQ3R8F2K9M4N7P0T5V8W3A';
+const CTX = { date: '2026-09-28' };
+
+function task(overrides: Partial<Frontmatter> = {}, body = '## Критерии\n\n- [ ] Тест на таймаут\n- [ ] Ретраи с паузой\n  и джиттером\n- [x] Воспроизвести\n'): string {
+  const fm = FrontmatterSchema.parse({
+    id: ID,
+    tracker: '10000002',
+    title: 'Починить таймаут вебхука',
+    summary: 'Оплата иногда зависает.',
+    type: 'bug',
+    status: 'ready',
+    repo: 'acme-app',
+    priority: 'p1',
+    created: '2026-09-16',
+    created_by: 'alice',
+    updated: '2026-09-16',
+    ...overrides,
+  });
+  return serializeTaskDocument(fm, body);
+}
+
+const texts = (extra: Record<string, string> = {}): TaskTexts => new Map(Object.entries({ 'active/webhook-timeout.md': task(), ...extra }));
+
+function ok(result: ReturnType<typeof applyOp>): FileChange[] {
+  if ('error' in result) throw new Error(result.error);
+  return result.changes;
+}
+
+function fmOf(text: string | null): Frontmatter {
+  return FrontmatterSchema.parse(parseTaskDocument(text ?? '').data);
+}
+
+describe('slug', () => {
+  it('латиница из русского заголовка, до ~50 знаков по слову, без повторов', () => {
+    expect(slugify('Починить таймаут вебхука платёжный сервис!')).toBe('pochinit-taymaut-vebkhuka-yukassa');
+    expect(slugify('Очень длинный заголовок задачи, который никак не помещается в пятьдесят знаков').length).toBeLessThanOrEqual(50);
+    expect(uniqueSlug('a', new Set(['a', 'a-2']))).toBe('a-3');
+  });
+});
+
+describe('пункты', () => {
+  const body = parseTaskDocument(task()).body;
+
+  it('по точному тексту или по единственному совпадению слов', () => {
+    expect(matchItem(body, 'тест на таймаут')).toEqual({ item: 'Тест на таймаут' });
+    expect(matchItem(body, 'джиттером')).toEqual({ item: 'Ретраи с паузой и джиттером' });
+  });
+
+  it('промах — список неотмеченных; двусмысленность — варианты', () => {
+    const miss = matchItem(body, 'деплой');
+    expect('error' in miss && miss.error).toContain('- Тест на таймаут');
+    expect('error' in miss && miss.error).not.toContain('Воспроизвести');
+    const both = matchItem(body, 'т');
+    expect('error' in both && both.error).toContain('нескольким');
+  });
+
+  it('check отмечает пункт, в т. ч. многострочный; повтор — без изменений', () => {
+    const [change] = ok(applyOp({ kind: 'check', id: ID, items: ['Ретраи с паузой и джиттером'], checked: true }, texts(), CTX));
+    expect(change.text).toContain('- [x] Ретраи с паузой\n  и джиттером');
+    expect(fmOf(change.text).updated).toBe('2026-09-28');
+    expect(fmOf(change.text).content_hash).toMatch(/^sha256:/);
+    expect(ok(applyOp({ kind: 'check', id: ID, items: ['Воспроизвести'], checked: true }, texts(), CTX))).toEqual([]);
+    const off = ok(applyOp({ kind: 'check', id: ID, items: ['Воспроизвести'], checked: false }, texts(), CTX));
+    expect(off[0].text).toContain('- [ ] Воспроизвести');
+  });
+});
+
+describe('журнал', () => {
+  it('запись с датой, первая строка — заголовок', () => {
+    expect(appendLog(null, CTX.date, 'Воспроизвёл на staging\nпричина в ретраях')).toBe('## [2026-09-28] Воспроизвёл на staging\nпричина в ретраях\n');
+    expect(appendLog('## [2026-09-01] создана\n', CTX.date, 'ещё')).toBe('## [2026-09-01] создана\n\n## [2026-09-28] ещё\n');
+    const [change] = ok(applyOp({ kind: 'log', id: ID, text: 'заметка' }, texts(), CTX));
+    expect(change.path).toBe('active/webhook-timeout.log.md');
+  });
+});
+
+describe('отмена и блокировка', () => {
+  it('отмена переносит задачу и журнал в архив месяца', () => {
+    const changes = ok(applyOp({ kind: 'cancel', id: ID, reason: 'дубль PRJ-1' }, texts({ 'active/webhook-timeout.log.md': '## [2026-09-16] создана\n' }), CTX));
+    expect(changes.map((c) => [c.path, c.text === null])).toEqual([
+      ['active/webhook-timeout.md', true],
+      ['active/webhook-timeout.log.md', true],
+      ['archive/2026-09/webhook-timeout.md', false],
+      ['archive/2026-09/webhook-timeout.log.md', false],
+    ]);
+    expect(fmOf(changes[2].text).status).toBe('cancelled');
+    expect(changes[3].text).toContain('## [2026-09-28] отменена: дубль PRJ-1');
+  });
+
+  it('отменить задачу в работе нельзя — как на доске', () => {
+    const r = applyOp({ kind: 'cancel', id: ID, reason: 'x' }, new Map([['active/webhook-timeout.md', task({ status: 'in-progress' })]]), CTX);
+    expect('error' in r && r.error).toContain('только из inbox, backlog, ready');
+  });
+
+  it('блокировка — статус и причина в журнале; без причины нельзя', () => {
+    const changes = ok(applyOp({ kind: 'block', id: ID, reason: 'ждём доступ к платёжный сервис' }, texts(), CTX));
+    expect(fmOf(changes[0].text).status).toBe('blocked');
+    expect(changes[1].text).toContain('заблокирована: ждём доступ');
+    expect('error' in applyOp({ kind: 'block', id: ID, reason: ' ' }, texts(), CTX)).toBe(true);
+  });
+});
+
+describe('правка текста', () => {
+  const current = texts().get('active/webhook-timeout.md') ?? '';
+  const { data, body } = parseTaskDocument(current);
+  const fm = FrontmatterSchema.parse(data);
+  const base = contentHash(fm, body);
+
+  it('меняет тело и поля файла', () => {
+    const edited = current.replace('- [ ] Тест на таймаут', '- [ ] Тест на таймаут и на 503').replace('Оплата иногда зависает.', 'Оплата зависает на два часа.');
+    const [change] = ok(applyOp({ kind: 'edit', id: ID, text: edited, baseHash: base }, texts(), CTX));
+    expect(change.text).toContain('Тест на таймаут и на 503');
+    expect(fmOf(change.text).summary).toBe('Оплата зависает на два часа.');
+  });
+
+  it('поля Kaiten и CLI руками не меняются', () => {
+    const r = applyOp({ kind: 'edit', id: ID, text: current.replace('status: ready', 'status: done').replace('priority: p1', 'priority: p0'), baseHash: base }, texts(), CTX);
+    expect('error' in r && r.error).toContain('status, priority');
+  });
+
+  it('одновременная правка другим — отказ, без изменений — пусто', () => {
+    const r = applyOp({ kind: 'edit', id: ID, text: current, baseHash: 'sha256:other' }, texts(), CTX);
+    expect('error' in r && r.error).toContain('одновременно');
+    expect(ok(applyOp({ kind: 'edit', id: ID, text: current, baseHash: base }, texts(), CTX))).toEqual([]);
+  });
+
+  it('битый файл не пишется', () => {
+    const r = applyOp({ kind: 'edit', id: ID, text: current.replace(/^title: .*$/m, 'title: ""'), baseHash: base }, texts(), CTX);
+    expect('error' in r).toBe(true);
+  });
+});
+
+describe('новая задача', () => {
+  const input = {
+    id: '01K5ZQ3R8F2K9M4N7P0T5V8W3B',
+    slug: 'pochinit-503',
+    title: 'Починить ответ на 503',
+    summary: 'Вебхук теряется, если база ответила ошибкой.',
+    type: 'bug' as const,
+    repo: 'acme-app',
+    createdBy: 'alice',
+    createdVia: 'agent' as const,
+  };
+
+  it('во «Входящих», без приоритета, со скелетом по типу', () => {
+    const text = newTaskText(input, CTX.date);
+    if (typeof text !== 'string') throw new Error(text.error);
+    const fm = fmOf(text);
+    expect([fm.status, fm.priority, fm.created_via, fm.created]).toEqual(['inbox', undefined, 'agent', '2026-09-28']);
+    expect(text).toContain('## Как воспроизвести');
+    const op: Op = { kind: 'new', path: 'active/pochinit-503.md', text };
+    expect(ok(applyOp(op, texts(), CTX))).toEqual([{ path: 'active/pochinit-503.md', text }]);
+    const dup = applyOp(op, texts({ 'active/pochinit-503.md': text }), CTX);
+    expect('error' in dup && dup.error).toContain('уже есть');
+  });
+
+  it('без «Сути» задачу не создать', () => {
+    expect(typeof newTaskText({ ...input, summary: '' }, CTX.date)).toBe('object');
+  });
+});

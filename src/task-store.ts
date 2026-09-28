@@ -13,8 +13,8 @@
  *
  * Чтение: `ls-tree -r -z` + один `cat-file --batch` на все файлы — замер
  * 28.09 на 908 файлах Acme: ~0,2 с, не медленнее чтения папки.
- * Обновление: `fetch` + перемотка ветки только вперёд; локальных коммитов у
- * команд чтения не бывает, расхождение — ошибка (понадобится командам записи).
+ * Обновление и запись — `store-write.ts`: локальная ветка = общая + операции
+ * журнала, применённые заново.
  */
 
 import { execFileSync } from 'node:child_process';
@@ -25,7 +25,7 @@ import { dirname, join, resolve } from 'node:path';
 
 import type { TasksTree } from './tasks-files.js';
 
-export type StoreErrorKind = 'no-access' | 'offline' | 'not-found' | 'diverged' | 'not-store' | 'other';
+export type StoreErrorKind = 'no-access' | 'offline' | 'not-found' | 'rejected' | 'no-identity' | 'busy' | 'not-store' | 'other';
 
 export class StoreError extends Error {
   constructor(readonly kind: StoreErrorKind) {
@@ -46,6 +46,9 @@ export function defaultStorePath(name: string): string {
 
 /** Вид ошибки по тексту git — сам текст наружу не выходит: в нём пути. */
 function classify(stderr: string): StoreErrorKind {
+  // Push отвергнут: кто-то успел раньше — это не ошибка, а повод повторить.
+  if (/\[rejected\]|non-fast-forward|fetch first|failed to push/i.test(stderr)) return 'rejected';
+  if (/Please tell me who you are|empty ident|unable to auto-detect email/i.test(stderr)) return 'no-identity';
   if (/Authentication failed|Permission denied|could not read Username|returned error: 403|access denied/i.test(stderr)) return 'no-access';
   if (/Repository not found|does not appear to be a git repository|not found/i.test(stderr)) return 'not-found';
   if (/Could not resolve host|unable to access|timed out|Failed to connect|Connection refused|network/i.test(stderr)) return 'offline';
@@ -54,17 +57,31 @@ function classify(stderr: string): StoreErrorKind {
 
 const GIT_BASE = ['-c', 'core.autocrlf=false', '-c', 'core.quotepath=false'];
 
-function git(cwd: string, args: string[], input?: Buffer | string): Buffer {
+export function git(cwd: string, args: string[], input?: Buffer | string, env?: NodeJS.ProcessEnv): Buffer {
   try {
-    return execFileSync('git', [...GIT_BASE, ...args], { cwd, input, stdio: ['pipe', 'pipe', 'pipe'], maxBuffer: 1 << 30 });
+    return execFileSync('git', [...GIT_BASE, ...args], { cwd, input, env: env ?? process.env, stdio: ['pipe', 'pipe', 'pipe'], maxBuffer: 1 << 30 });
   } catch (error) {
     const stderr = typeof error === 'object' && error !== null && 'stderr' in error ? String(error.stderr) : '';
     throw new StoreError(classify(stderr));
   }
 }
 
-function gitText(cwd: string, args: string[]): string {
-  return git(cwd, args).toString('utf8').trim();
+export function gitText(cwd: string, args: string[], input?: Buffer | string, env?: NodeJS.ProcessEnv): string {
+  return git(cwd, args, input, env).toString('utf8').trim();
+}
+
+/** sha коммита по ссылке или `null`, если её нет (пустой репозиторий, ничего не отправлено). */
+export function revOrNull(dir: string, ref: string): string | null {
+  try {
+    return gitText(dir, ['rev-parse', '--verify', '--quiet', `${ref}^{commit}`]) || null;
+  } catch {
+    return null;
+  }
+}
+
+/** Ветка задач: та, на которую смотрит HEAD хранилища (`main`). */
+export function storeBranch(dir: string): string {
+  return gitText(dir, ['symbolic-ref', '--short', 'HEAD']);
 }
 
 export function isStore(dir: string): boolean {
@@ -90,47 +107,17 @@ export function cloneStore(url: string, dir: string): void {
   }
 }
 
-/** Забрать свежее и перемотать ветку вперёд. `true` — что-то изменилось. */
-export function updateStore(dir: string): boolean {
-  if (!isStore(dir)) throw new StoreError('not-store');
-  git(dir, ['fetch', '--quiet', '--prune', 'origin']);
-  const branch = gitText(dir, ['symbolic-ref', '--short', 'HEAD']);
-  const remote = `refs/remotes/origin/${branch}`;
-  let theirs: string;
-  try {
-    theirs = gitText(dir, ['rev-parse', '--verify', '--quiet', remote]);
-  } catch {
-    return false; // В репозитории задач ещё нет ни одного коммита.
-  }
-  let ours: string | null = null;
-  try {
-    ours = gitText(dir, ['rev-parse', '--verify', '--quiet', `refs/heads/${branch}`]);
-  } catch {
-    ours = null;
-  }
-  if (ours === theirs) return false;
-  if (ours !== null) {
-    try {
-      git(dir, ['merge-base', '--is-ancestor', ours, theirs]);
-    } catch {
-      throw new StoreError('diverged');
-    }
-  }
-  git(dir, ['update-ref', `refs/heads/${branch}`, theirs]);
-  return true;
-}
-
 export interface StoreEntry {
   path: string;
   sha: string;
   size: number;
 }
 
-/** Все файлы последнего состояния задач. Пустой репозиторий — пустой список. */
-export function listEntries(dir: string): StoreEntry[] {
+/** Все файлы состояния задач (по умолчанию — локального, с неотправленными изменениями). Пустой репозиторий — пустой список. */
+export function listEntries(dir: string, rev = 'HEAD'): StoreEntry[] {
   let out: Buffer;
   try {
-    out = git(dir, ['ls-tree', '-r', '-z', '--long', 'HEAD']);
+    out = git(dir, ['ls-tree', '-r', '-z', '--long', rev]);
   } catch {
     return [];
   }

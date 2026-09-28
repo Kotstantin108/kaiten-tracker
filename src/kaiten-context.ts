@@ -19,6 +19,7 @@
  * `kaiten.settings.example.json`). В них:
  *   · `kaiten.domain` и `kaiten.token` — личный вход в Kaiten (для команд
  *     записи; скрипты `import`/`setup` пока читают `.env`);
+ *   · `person` — кто вы (автор новых задач), если git-почта не в реестре;
  *   · `localCopy` — копия задач для чтения людьми. По умолчанию выключена;
  *     включённая — лежит в `<dir>/<проект>` и обновляется при каждом
  *     `kaiten pull`.
@@ -90,6 +91,8 @@ const SettingsSchema = z
       })
       .strict()
       .optional(),
+    /** Кто вы в реестре людей (`convert/people.json`): автор новых задач. Без него — по git-почте. */
+    person: z.string().trim().min(1).optional(),
     localCopy: z
       .object({
         enabled: z.boolean().default(false),

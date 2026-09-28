@@ -9,7 +9,8 @@ import { dirname, join } from 'node:path';
 
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
-import { blobSha, cloneStore, COPY_MANIFEST, syncCopy, isStore, listEntries, readBlobs, readStoreTree, StoreError, updateStore } from '../task-store.js';
+import { blobSha, cloneStore, COPY_MANIFEST, syncCopy, isStore, listEntries, readBlobs, readStoreTree, StoreError } from '../task-store.js';
+import { syncStore } from '../store-write.js';
 
 const GIT = ['-c', 'core.autocrlf=false', '-c', 'user.name=test', '-c', 'user.email=test@example.com', '-c', 'init.defaultBranch=main'];
 
@@ -83,14 +84,14 @@ describe('хранилище', () => {
   it('pull: новое приезжает, повтор — без изменений', () => {
     put(author, 'active/new-task.md', '---\nid: z\n---\n');
     commit('новая задача');
-    expect(updateStore(store)).toBe(true);
+    expect(syncStore(store).changed).toBe(true);
     expect(listEntries(store).some((e) => e.path === 'active/new-task.md')).toBe(true);
-    expect(updateStore(store)).toBe(false);
+    expect(syncStore(store).changed).toBe(false);
   });
 
   it('обычная папка — не хранилище', () => {
     expect(isStore(author)).toBe(false);
-    expect(() => updateStore(join(tmp, 'нет-такой'))).toThrow(StoreError);
+    expect(() => syncStore(join(tmp, 'нет-такой'))).toThrow(StoreError);
   });
 
   it('недоступный адрес — ошибка с видом, без текста git', () => {
@@ -128,7 +129,7 @@ describe('копия для людей', () => {
     expect(syncCopy(store, listEntries(store), target(), 'acme')).toEqual({ written: 0, removed: 0, modified: [] });
     rmSync(join(author, 'active/new-task.md'));
     commit('убрать');
-    updateStore(store);
+    syncStore(store);
     expect(syncCopy(store, listEntries(store), target(), 'acme')).toEqual({ written: 0, removed: 1, modified: [] });
     expect(existsSync(join(target(), 'active/new-task.md'))).toBe(false);
   });

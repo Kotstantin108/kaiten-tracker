@@ -1,30 +1,29 @@
 /**
- * CLI `kaiten` — команды чтения: `list`, `show`, `search`, `files`, `pull`.
+ * CLI `kaiten` — задачи проекта для агента и разработчика. Точка входа:
+ * справка, команды чтения (`list`, `show`, `search`, `files`, `pull`) и
+ * разводка на команды записи (`kaiten-write.ts`).
  *
- * Для кого. Для агента и разработчика в репозитории кода. `--help` и
- * сообщения говорят только, что делает команда, её аргументы и пример;
- * устройство описано здесь и в README, но не в выводе (решение владельца
- * 25.09.2026). Решение 28.09.2026: CLI — единственный путь к задачам, поэтому
- * вывод никогда не называет, где задачи лежат: ни путь хранилища, ни сырые
- * ошибки git (в них пути), ни трассировку стека.
+ * Для кого. `--help` и сообщения говорят только, что делает команда, её
+ * аргументы и пример; устройство описано здесь и в README, но не в выводе
+ * (решение владельца 25.09.2026). Решение 28.09.2026: CLI — единственный путь
+ * к задачам, поэтому вывод никогда не называет, где задачи лежат: ни путь
+ * хранилища, ни сырые ошибки git (в них пути), ни трассировку стека.
  *
  * Как устроено.
  *   · Задачи — в хранилище без рабочей копии (`task-store.ts`): файлов задач
  *     на диске нет. Команды чтения работают без сети (Q10) и Kaiten не
- *     трогают. Сверки перед чтением пока нет — она пишет и пушит, поэтому
- *     придёт с командами записи.
- *   · `pull` клонирует по `tasksRepo.url` или забирает свежее и перематывает
- *     ветку вперёд; если в настройках включена копия для чтения — обновляет
- *     и её (`kaiten-context.ts`).
+ *     трогают.
+ *   · Запись — операцией в журнал хранилища с мгновенным локальным коммитом;
+ *     общим её отправляет фоновый процесс (`store-write.ts`, скрытая команда
+ *     `__send`). `pull` забирает общее и отправляет неотправленное сразу.
  *   · Проект и продукт — только из файла `.kaiten` репозитория кода
- *     (решение 28.09): нет файла — репозиторий не подключён, команды не
- *     работают. Флага проекта нет.
+ *     (`kaiten-context.ts`); нет файла — репозиторий не подключён.
  *   · Конфиг `tracker.config.json` и настройки `kaiten.settings.json` —
- *     рядом с инструментом, не в текущей папке. `KAITEN_CONFIG`,
- *     `KAITEN_SETTINGS` и `KAITEN_STORE` подменяют их и хранилище (тесты,
- *     пробные прогоны); в сообщениях они не упоминаются.
+ *     рядом с инструментом. `KAITEN_CONFIG`, `KAITEN_SETTINGS`,
+ *     `KAITEN_STORE` и `KAITEN_SEND` (`inline`/`off`) — для тестов и пробных
+ *     прогонов; в сообщениях они не упоминаются.
  *
- * Коды выхода: 0 — ок; 1 — задача не найдена или обновить не удалось;
+ * Коды выхода: 0 — ок; 1 — задача не найдена, не записано или не отправлено;
  * 2 — ошибка аргументов, проекта или отсутствующих задач; 3 — внутренняя
  * ошибка (подробности — с `KAITEN_DEBUG=1`).
  */
@@ -32,63 +31,50 @@
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
-import { parseArgs, type ParseArgsConfig } from 'node:util';
 
-import { loadConfig, loadProject, type LoadedProject } from './config.js';
-import { localCopyDir, loadSettings, PROJECT_FILE, readProjectFile, SettingsError } from './kaiten-context.js';
 import { STATUSES, TASK_TYPES, type TaskStatus, type TaskType } from './core/schema.js';
+import { filterTasks, refOf, resolveTask, searchTasks, sortTasks, type TaskFilter, type TaskIndex, type TaskRecord } from './core/tasks-index.js';
 import {
-  belongsToProject,
-  buildIndex,
-  filterTasks,
-  refOf,
-  resolveTask,
-  searchTasks,
-  sortTasks,
-  type TaskFilter,
-  type TaskIndex,
-  type TaskRecord,
-} from './core/tasks-index.js';
-import { formatProblems, formatSearch, formatShow, formatTaskLines, presentBody, showJson, taskJson } from './kaiten-format.js';
-import {
-  cloneStore,
-  defaultStorePath,
-  isStore,
-  listEntries,
-  readBlobs,
-  readStoreTree,
-  StoreError,
-  syncCopy,
-  updateStore,
-  type StoreEntry,
-} from './task-store.js';
-
-class UsageError extends Error {
-  constructor(
-    message: string,
-    readonly code = 2,
-  ) {
-    super(message);
-  }
-}
-
-const CONFIG_PATH = process.env.KAITEN_CONFIG ?? fileURLToPath(new URL('../tracker.config.json', import.meta.url));
-const SETTINGS_PATH = process.env.KAITEN_SETTINGS ?? fileURLToPath(new URL('../kaiten.settings.json', import.meta.url));
+  findTask,
+  loadTasks,
+  parse,
+  printNotices,
+  refreshLocalCopy,
+  reportProblems,
+  resolveContext,
+  settings,
+  storeMessage,
+  TASK_REF_HELP,
+  UsageError,
+  type Context,
+  type Options,
+  type Values,
+} from './kaiten-cli.js';
+import { localCopyDir, SettingsError } from './kaiten-context.js';
+import { formatSearch, formatShow, formatTaskLines, presentBody, showJson, taskJson } from './kaiten-format.js';
+import { editableText, WRITE_COMMANDS, WRITE_HELP } from './kaiten-write.js';
+import { hasPending, sendInBackground, syncStore } from './store-write.js';
+import { cloneStore, isStore, readBlobs, StoreError, type StoreEntry } from './task-store.js';
 
 // ── справка ──────────────────────────────────────────────────────────────
 
-const TASK_REF_HELP = 'Задача — ключ карточки (PRJ-123 или 10000002), id или slug.';
-
 function mainHelp(): string {
-  return `kaiten — задачи проекта: посмотреть, найти, обновить.
+  return `kaiten — задачи проекта: посмотреть, найти, вести.
 
-Команды:
-  kaiten list                    задачи продукта, в репозитории которого вы находитесь
-  kaiten show <задача>           задача целиком: постановка, пункты, журнал, эпик
-  kaiten search <слова>          найти задачи по словам
-  kaiten files <задача> [файл]   вложения задачи
-  kaiten pull                    получить свежие задачи проекта
+Смотреть:
+  kaiten list                        задачи продукта, в репозитории которого вы находитесь
+  kaiten show <задача>               задача целиком: постановка, пункты, журнал, эпик
+  kaiten search <слова>              найти задачи по словам
+  kaiten files <задача> [файл]       вложения задачи
+  kaiten pull                        получить свежие задачи и отправить свои изменения
+
+Вести:
+  kaiten new "<заголовок>" ...       завести задачу
+  kaiten check <задача> <пункт>...   отметить пункты
+  kaiten log <задача> "<текст>"      запись в журнал задачи
+  kaiten block <задача> --reason …   задача заблокирована
+  kaiten cancel <задача> --reason …  отменить задачу
+  kaiten edit <задача>               поправить текст задачи
 
 ${TASK_REF_HELP}
 Команды работают в репозитории, подключённом к kaiten: проект и продукт
@@ -104,7 +90,7 @@ const FILTER_HELP = `  --repo <имя>        только задачи этог
   --type <список>     типы через запятую: ${TASK_TYPES.join(', ')}
   --json              вывод в JSON`;
 
-const HELP: Record<string, string> = {
+const READ_HELP: Record<string, string> = {
   list: `kaiten list — список задач.
 
 По умолчанию — открытые задачи продукта, в репозитории которого вы находитесь.
@@ -129,6 +115,7 @@ ${TASK_REF_HELP}
 
 Флаги:
   --json              вывод в JSON
+  --raw               текст задачи целиком — для kaiten edit --stdin
 
 Пример:
   kaiten show PRJ-123
@@ -158,83 +145,21 @@ ${FILTER_HELP}
   kaiten files PRJ-123
   kaiten files PRJ-123 RESEARCH.md
 `,
-  pull: `kaiten pull — получить свежие задачи проекта на эту машину.
+  pull: `kaiten pull — получить свежие задачи и отправить свои изменения.
 
-Нужен перед работой, если задачи давно не обновлялись. Первый запуск
-загружает задачи проекта целиком.
+Свои изменения kaiten отправляет сам, сразу после команды; pull нужен перед
+работой, если задачи давно не обновлялись, или если kaiten сообщил, что
+изменения не отправлены. Первый запуск загружает задачи проекта целиком.
 
 Пример:
   kaiten pull
 `,
 };
 
-// ── контекст: проект, продукт, задачи ────────────────────────────────────
+const HELP: Record<string, string> = { ...READ_HELP, ...WRITE_HELP };
 
-interface Context {
-  loaded: LoadedProject;
-  title: string;
-  /** Репозиторий кода проекта, из которого запущена команда (из `.kaiten`). */
-  currentRepo: string;
-  store: string;
-}
+// ── чтение ───────────────────────────────────────────────────────────────
 
-function resolveContext(): Context {
-  const found = readProjectFile(process.cwd());
-  if ('missing' in found) {
-    throw new UsageError(`Этот репозиторий не подключён к kaiten: в нём нет файла ${PROJECT_FILE}. Подключает репозиторий владелец проекта.`);
-  }
-  if ('error' in found) throw new UsageError(`Файл ${PROJECT_FILE} этого репозитория не читается: ${found.error}. Исправляет владелец проекта.`);
-
-  const { projects } = loadConfig(CONFIG_PATH);
-  const key = found.file.project;
-  if (!projects[key]) {
-    throw new UsageError(`Файл ${PROJECT_FILE}: проекта «${key}» в kaiten нет (есть: ${Object.keys(projects).join(', ')}). Исправляет владелец проекта.`);
-  }
-  const loaded = loadProject(CONFIG_PATH, key);
-  const repos = loaded.project.repos.map((r) => r.name);
-  if (!repos.includes(found.file.repo)) {
-    throw new UsageError(`Файл ${PROJECT_FILE}: в проекте ${loaded.project.title} нет репозитория «${found.file.repo}» (есть: ${repos.join(', ')}). Исправляет владелец проекта.`);
-  }
-  const store = defaultStorePath(loaded.project.tasksRepo?.name ?? `${key}-tasks`);
-  return { loaded, title: loaded.project.title, currentRepo: found.file.repo, store };
-}
-
-interface Loaded {
-  index: TaskIndex;
-  entries: StoreEntry[];
-}
-
-function loadTasks(ctx: Context): Loaded {
-  if (!existsSync(ctx.store)) throw new UsageError(`Задач проекта ${ctx.title} на этой машине ещё нет. Получите их: kaiten pull`);
-  if (!isStore(ctx.store)) throw new StoreError('not-store');
-  const entries = listEntries(ctx.store);
-  const tree = readStoreTree(ctx.store, entries);
-  const index = buildIndex(tree.files, tree.logs);
-  if (!belongsToProject(index.tasks, ctx.loaded.project.repos.map((r) => r.name))) {
-    throw new UsageError(`Задачи на этой машине — другого проекта, не ${ctx.title}. Сообщите тому, кто настраивал kaiten.`);
-  }
-  return { index, entries };
-}
-
-function attachmentsOf(entries: readonly StoreEntry[], task: TaskRecord): StoreEntry[] {
-  const prefix = `attachments/${task.slug}/`;
-  return entries.filter((e) => e.path.startsWith(prefix));
-}
-
-function attachmentName(entry: StoreEntry, task: TaskRecord): string {
-  return entry.path.slice(`attachments/${task.slug}/`.length);
-}
-
-function reportProblems(index: TaskIndex): void {
-  for (const line of formatProblems(index.problems)) console.error(line);
-}
-
-// ── флаги ────────────────────────────────────────────────────────────────
-
-type Options = NonNullable<ParseArgsConfig['options']>;
-type Values = Record<string, string | boolean | undefined>;
-
-const COMMON: Options = { help: { type: 'boolean', short: 'h' } };
 const FILTERS: Options = {
   repo: { type: 'string' },
   epic: { type: 'string' },
@@ -242,29 +167,6 @@ const FILTERS: Options = {
   type: { type: 'string' },
   json: { type: 'boolean' },
 };
-
-/** Ошибки `parseArgs` приходят по-английски — переводим частые. */
-function flagError(error: unknown): string {
-  const message = error instanceof Error ? error.message.split('\n')[0] : String(error);
-  const code = typeof error === 'object' && error !== null && 'code' in error ? String(error.code) : '';
-  const flag = /'([^']+)'/.exec(message)?.[1] ?? '';
-  if (code === 'ERR_PARSE_ARGS_UNKNOWN_OPTION') return `Нет флага ${flag}.`;
-  if (code === 'ERR_PARSE_ARGS_INVALID_OPTION_VALUE') return `Флагу ${flag.split(' ')[0]} нужно значение.`;
-  return message;
-}
-
-function parse(command: string, args: string[], options: Options, maxPositionals = Infinity): { values: Values; positionals: string[] } {
-  let parsed;
-  try {
-    parsed = parseArgs({ args, options: { ...COMMON, ...options }, allowPositionals: true, strict: true });
-  } catch (error) {
-    throw new UsageError(`${flagError(error)}\nСправка: kaiten ${command} --help`);
-  }
-  if (parsed.positionals.length > maxPositionals) {
-    throw new UsageError(`Лишний аргумент: ${parsed.positionals.slice(maxPositionals).join(' ')}\nСправка: kaiten ${command} --help`);
-  }
-  return { values: parsed.values as Values, positionals: parsed.positionals };
-}
 
 function listOf<T extends string>(raw: string | boolean | undefined, allowed: readonly T[], flag: string): T[] | undefined {
   if (typeof raw !== 'string') return undefined;
@@ -297,20 +199,24 @@ function buildFilter(ctx: Context, index: TaskIndex, values: Values): TaskFilter
   return filter;
 }
 
-function findTask(index: TaskIndex, ref: string): TaskRecord {
-  const found = resolveTask(index.tasks, ref);
-  if ('error' in found) {
-    const broken = index.problems.find((p) => p.path.endsWith(`/${ref}.md`));
-    throw new UsageError(broken ? `Задача ${ref} не читается: ${broken.message}` : found.error, 1);
-  }
-  return found.task;
+function readContext(): Context {
+  const ctx = resolveContext();
+  printNotices(ctx);
+  return ctx;
 }
 
-// ── команды ──────────────────────────────────────────────────────────────
+function attachmentsOf(entries: readonly StoreEntry[], task: TaskRecord): StoreEntry[] {
+  const prefix = `attachments/${task.slug}/`;
+  return entries.filter((e) => e.path.startsWith(prefix));
+}
+
+function attachmentName(entry: StoreEntry, task: TaskRecord): string {
+  return entry.path.slice(`attachments/${task.slug}/`.length);
+}
 
 function list(args: string[]): void {
   const { values } = parse('list', args, { ...FILTERS, all: { type: 'boolean' }, closed: { type: 'boolean' } }, 0);
-  const ctx = resolveContext();
+  const ctx = readContext();
   const { index } = loadTasks(ctx);
   const filter = buildFilter(ctx, index, values);
   const scope = filter.repo ?? (values.all ? null : ctx.currentRepo);
@@ -329,20 +235,21 @@ function list(args: string[]): void {
 }
 
 function show(args: string[]): void {
-  const { values, positionals } = parse('show', args, { json: { type: 'boolean' } }, 1);
+  const { values, positionals } = parse('show', args, { json: { type: 'boolean' }, raw: { type: 'boolean' } }, 1);
   if (positionals.length === 0) throw new UsageError('Укажите задачу: kaiten show PRJ-123');
-  const ctx = resolveContext();
+  const ctx = readContext();
   const { index, entries } = loadTasks(ctx);
   const task = findTask(index, positionals[0]);
   const attachments = attachmentsOf(entries, task).map((e) => attachmentName(e, task));
-  if (values.json) console.log(JSON.stringify(showJson(index.tasks, task, attachments), null, 2));
+  if (values.raw) process.stdout.write(editableText(task));
+  else if (values.json) console.log(JSON.stringify(showJson(index.tasks, task, attachments), null, 2));
   else process.stdout.write(formatShow(index.tasks, task, attachments));
 }
 
 function search(args: string[]): void {
   const { values, positionals } = parse('search', args, FILTERS);
   if (positionals.length === 0) throw new UsageError('Укажите слова для поиска: kaiten search таймаут вебхук');
-  const ctx = resolveContext();
+  const ctx = readContext();
   const { index } = loadTasks(ctx);
   const filter = { ...buildFilter(ctx, index, values), closed: true };
   const hits = searchTasks(filterTasks(index.tasks, filter), positionals.join(' '));
@@ -370,7 +277,7 @@ function isText(content: Buffer): boolean {
 function files(args: string[]): void {
   const { values, positionals } = parse('files', args, { save: { type: 'boolean' } }, 2);
   if (positionals.length === 0) throw new UsageError('Укажите задачу: kaiten files PRJ-123');
-  const ctx = resolveContext();
+  const ctx = readContext();
   const { index, entries } = loadTasks(ctx);
   const task = findTask(index, positionals[0]);
   const own = attachmentsOf(entries, task);
@@ -416,66 +323,54 @@ function files(args: string[]): void {
 
 function pull(args: string[]): void {
   parse('pull', args, {}, 0);
-  const ctx = resolveContext();
+  const ctx = readContext();
   // Настройки — до загрузки: битые настройки не должны обнаружиться после неё.
-  const copyDir = localCopyDir(loadSettings(SETTINGS_PATH), ctx.loaded.key);
-  let changed = true;
+  const copyDir = localCopyDir(settings(), ctx.loaded.key);
   // Испорченное хранилище (оборванная загрузка, чужая папка) человек удалить не
-  // может: где оно лежит, CLI не говорит. Поэтому `pull` загружает заново.
-  // Безопасно, пока команды только читают: локальных коммитов нет. Командам
-  // записи так делать нельзя — там могут быть неотправленные изменения.
-  if (existsSync(ctx.store) && !isStore(ctx.store)) rmSync(ctx.store, { recursive: true, force: true });
+  // может: где оно лежит, CLI не говорит. Поэтому `pull` загружает заново —
+  // но только если в нём нет неотправленных изменений.
+  if (existsSync(ctx.store) && !isStore(ctx.store)) {
+    if (hasPending(ctx.store)) throw new StoreError('other');
+    rmSync(ctx.store, { recursive: true, force: true });
+  }
+  let changed = true;
+  let sent = 0;
   if (!existsSync(ctx.store)) {
     const url = ctx.loaded.project.tasksRepo?.url;
     if (!url) throw new UsageError(`Задачи проекта ${ctx.title} ещё негде взять: хранилище задач не подключено. Это вопрос к владельцу проекта.`);
     cloneStore(url, ctx.store);
   } else {
-    changed = updateStore(ctx.store);
+    const result = syncStore(ctx.store);
+    changed = result.changed;
+    sent = result.sent;
+    for (const f of result.failed) console.error(`Не применено: ${f.what} — ${f.reason}.`);
   }
-  const { index, entries } = loadTasks(ctx);
+  const { index } = loadTasks(ctx);
   const open = index.tasks.filter((t) => !t.closed).length;
   console.log(`Задачи проекта ${ctx.title} ${changed ? 'обновлены' : 'уже свежие'}: открытых ${open}, всего ${index.tasks.length}.`);
+  if (sent > 0) console.log(`Отправлено изменений: ${sent}.`);
   reportProblems(index);
-  if (copyDir) refreshLocalCopy(ctx, entries, copyDir);
+  refreshLocalCopy(ctx, copyDir);
 }
 
-/**
- * Копия для чтения из настроек. Её путь человек задал сам, поэтому в
- * сообщениях он есть; но пишем только когда что-то не так — обычный `pull`
- * о копии молчит.
- */
-function refreshLocalCopy(ctx: Context, entries: readonly StoreEntry[], target: string): void {
-  const result = syncCopy(ctx.store, entries, target, ctx.loaded.key);
-  if (result.refused === 'foreign-folder') console.error(`\nКопию для чтения не обновить: папка ${target} не пуста и не похожа на копию задач. Укажите в настройках kaiten другую папку.`);
-  if (result.refused === 'inside-repo') console.error(`\nКопию для чтения не обновить: папка ${target} внутри репозитория git. Укажите в настройках kaiten папку вне репозиториев.`);
-  if (result.refused === 'other-project') console.error(`\nКопию для чтения не обновить: в папке ${target} копия другого проекта.`);
-  if (result.modified.length > 0) {
-    console.error(`\nВ копии для чтения изменены вручную и не обновлены (${result.modified.length}):`);
-    for (const p of result.modified.slice(0, 10)) console.error(`  ${join(target, p)}`);
-    if (result.modified.length > 10) console.error(`  …и ещё ${result.modified.length - 10}`);
-    console.error('Правки в копии никуда не уходят. Удалите эти файлы — при следующем обновлении они вернутся как в задачах.');
+/** Скрытая команда: фоновая отправка, её запускают команды записи. Молчит. */
+function send(): void {
+  const ctx = resolveContext();
+  try {
+    sendInBackground(ctx.store);
+  } catch {
+    // Вид ошибки записан в журнал — о нём скажет следующая команда.
   }
 }
 
-const COMMANDS: Record<string, (args: string[]) => void> = { list, show, search, files, pull };
-
-function storeMessage(error: StoreError): string {
-  switch (error.kind) {
-    case 'no-access':
-      return 'Нет доступа к задачам проекта. Попросите владельца проекта добавить вас в команду проекта на GitHub.';
-    case 'offline':
-      return 'Не удалось связаться с хранилищем задач. Проверьте интернет и повторите.';
-    case 'not-found':
-      return 'Хранилище задач проекта не найдено. Это вопрос к владельцу проекта.';
-    case 'diverged':
-      return 'Задачи на этой машине разошлись с общими. Сообщите тому, кто настраивал kaiten.';
-    default:
-      return 'Задачи проекта на этой машине недоступны. Повторите kaiten pull; если не поможет — сообщите тому, кто настраивал kaiten.';
-  }
-}
+const COMMANDS: Record<string, (args: string[]) => void> = { list, show, search, files, pull, ...WRITE_COMMANDS };
 
 function main(): void {
   const [command, ...args] = process.argv.slice(2);
+  if (command === '__send') {
+    send();
+    return;
+  }
   if (!command || command === 'help' || command === '--help' || command === '-h') {
     const topic = command === 'help' ? args[0] : undefined;
     process.stdout.write(topic && HELP[topic] ? HELP[topic] : mainHelp());
@@ -502,7 +397,7 @@ try {
     process.exit(2);
   }
   if (error instanceof StoreError) {
-    console.error(storeMessage(error));
+    console.error(storeMessage(error.kind));
     process.exit(1);
   }
   // Трассировка стека называет пути хранилища и исходников — только по запросу.
