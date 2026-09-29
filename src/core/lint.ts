@@ -49,7 +49,8 @@ const CODE_TERMS: Array<[RegExp, string]> = [
   [/`/, 'обратные кавычки'],
   [/\b[\w-]+\.(?:ts|tsx|js|mjs|json|md|py|sql|ya?ml|env)\b/, 'имя файла'],
   [/(?:^|\s)[\w.-]*\/[\w./-]+/, 'путь'],
-  [/\b[a-z]+[A-Z][A-Za-z0-9]*\b/, 'camelCase'],
+  // Названия продуктов (iPhone, iOS, macOS, eSIM) — не код.
+  [/\b(?!(?:iPhone|iPad|iPod|iOS|iPadOS|macOS|watchOS|tvOS|iCloud|iMessage|eSIM)\b)[a-z]+[A-Z][A-Za-z0-9]*\b/, 'camelCase'],
   [/\b[a-z0-9]+_[a-z0-9_]+\b/, 'snake_case'],
 ];
 

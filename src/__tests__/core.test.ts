@@ -214,6 +214,11 @@ describe('линтер', () => {
     expect(warnings[1]).toContain('«Формат»');
   });
 
+  it('iPhone и iOS — названия продуктов, не camelCase', () => {
+    expect(messages(lint(frontmatter({ summary: 'На iPhone с iOS 18 не было звука — исправлено.' })), 'warning')).toEqual([]);
+    expect(messages(lint(frontmatter({ summary: 'Правим iPhoneHandler.' })), 'warning')[0]).toContain('camelCase');
+  });
+
   it('возвратный глагол — тоже глагол', () => {
     expect(messages(lint(frontmatter({ title: 'Разобраться с ретраями' })), 'warning')).toEqual([]);
   });
