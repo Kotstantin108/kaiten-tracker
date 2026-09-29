@@ -6,3 +6,4 @@ tmp/
 *.log
 .playwright-mcp/
 kaiten.settings.json
+src/__*.tmp.ts
