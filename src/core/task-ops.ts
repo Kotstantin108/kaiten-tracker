@@ -17,7 +17,7 @@
 
 import { contentHash, foreignFieldChanges, parseTaskDocument, serializeTaskDocument, TaskParseError } from './document.js';
 import { lintTask, SLUG_RE } from './lint.js';
-import { FrontmatterSchema, type Frontmatter, type TaskStatus, type TaskType } from './schema.js';
+import { CLOSED_STATUSES, FrontmatterSchema, type Frontmatter, type Priority, type TaskStatus, type TaskType } from './schema.js';
 import { renderSkeleton } from './skeleton.js';
 import { buildIndex, refOf, type TaskRecord } from './tasks-index.js';
 
@@ -34,7 +34,26 @@ export type Op =
    * а не на задачу (первая заливка — сотни карточек). Меняет только поля CLI
    * и не трогает `updated`: иначе учёт синхронизации сам выглядел бы правкой.
    */
-  | { kind: 'synced'; items: SyncedItem[] };
+  | { kind: 'synced'; items: SyncedItem[] }
+  /**
+   * Поля, которыми владеет Kaiten (решение 9, Q30), — в файл: статус, тип,
+   * приоритет, команда, срок. Пакетом на проход. Закрылась задача — файл
+   * переезжает в `archive/<месяц закрытия>/`, открылась снова — обратно в
+   * `active/` (Q42: двигает только синхронизатор), вместе с журналом.
+   */
+  | { kind: 'mirror'; items: MirrorItem[] };
+
+/** Что поменять в файле по карточке; `null` — в карточке поле пустое. */
+export interface MirrorItem {
+  id: string;
+  status?: TaskStatus;
+  type?: TaskType;
+  priority?: Priority | null;
+  team?: string | null;
+  due?: string | null;
+  /** Месяц закрытия (YYYY-MM) — по времени переноса карточки в колонку. */
+  closedMonth?: string;
+}
 
 export interface SyncedItem {
   id: string;
@@ -288,6 +307,7 @@ export function applyOp(op: Op, texts: TaskTexts, ctx: OpContext): OpResult {
   }
 
   if (op.kind === 'synced') return applySynced(op.items, texts);
+  if (op.kind === 'mirror') return applyMirror(op.items, texts, ctx);
 
   const task = byId(texts, op.id);
   if ('error' in task) return task;
@@ -363,6 +383,50 @@ export function applyOp(op: Op, texts: TaskTexts, ctx: OpContext): OpResult {
  * Отметки синхронизации пакетом. Задача, которой уже нет (отменили и
  * удалили — не бывает, но и не повод терять остальные), пропускается.
  */
+/**
+ * Поля Kaiten — в файлы пакетом. Задача, для которой зеркало дало бы битый
+ * файл (например, эпик с полем `epic`), пропускается с подсказкой — остальные
+ * записываются.
+ */
+function applyMirror(items: readonly MirrorItem[], texts: TaskTexts, ctx: OpContext): OpResult {
+  const all = records(texts);
+  const changes: FileChange[] = [];
+  const warnings: string[] = [];
+  let count = 0;
+  for (const item of items) {
+    const task = all.find((x) => x.fm.id === item.id);
+    if (!task) continue;
+    const fm: Frontmatter = { ...task.fm };
+    if (item.status !== undefined) fm.status = item.status;
+    if (item.type !== undefined) fm.type = item.type;
+    if (item.priority !== undefined) fm.priority = item.priority ?? undefined;
+    if (item.team !== undefined) fm.team = item.team ?? undefined;
+    if (item.due !== undefined) {
+      const planning = { ...(fm.planning ?? {}), due: item.due ?? undefined };
+      if (planning.due === undefined) delete planning.due;
+      fm.planning = Object.values(planning).some((v) => v !== undefined && v !== null) ? planning : undefined;
+    }
+    const closed = CLOSED_STATUSES.includes(fm.status);
+    const inArchive = task.path.startsWith('archive/');
+    let path = task.path;
+    if (closed && !inArchive) path = `archive/${item.closedMonth ?? ctx.date.slice(0, 7)}/${task.slug}.md`;
+    if (!closed && inArchive) path = `active/${task.slug}.md`;
+    const out = write(task, fm, task.body, ctx, path);
+    if ('error' in out) {
+      warnings.push(`${refOf(task)}: поля из Kaiten не записаны — ${out.error}`);
+      continue;
+    }
+    count += 1;
+    if (path === task.path) {
+      changes.push({ path, text: out.text });
+      continue;
+    }
+    changes.push({ path: task.path, text: null }, { path, text: out.text });
+    if (task.log !== null) changes.push({ path: logPath(task.path), text: null }, { path: logPath(path), text: task.log });
+  }
+  return { changes, summary: `из Kaiten: задач ${count}`, warnings };
+}
+
 function applySynced(items: readonly SyncedItem[], texts: TaskTexts): OpResult {
   const all = records(texts);
   const changes: FileChange[] = [];

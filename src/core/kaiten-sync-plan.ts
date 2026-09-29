@@ -1,5 +1,11 @@
 /**
- * План синхронизации задач с Kaiten — чистая часть (этап 2a: файл → Kaiten).
+ * План синхронизации задач с Kaiten — чистая часть: файл → Kaiten (этап 2a)
+ * и Kaiten → файл (этап 2b, `mirrorFromCard`).
+ *
+ * ЧТО ПИШЕТ KAITEN В ФАЙЛ (решение 9, Q30): статус (колонка), тип,
+ * приоритет, команда, срок — всегда, Kaiten здесь владелец. Исполнителя пока
+ * нет: список карточек не отдаёт участников, а читать каждую карточку на
+ * каждом проходе дорого (`planning.assignee` — этап с кешем по `version`).
  *
  * ЧТО ПИШЕТ ФАЙЛ В КАРТОЧКУ (Q1, решение 9): заголовок, «Суть», «Репозиторий»,
  * описание (первая строка — пометка Q41), чек-листы «Агент · <раздел>»
@@ -37,6 +43,8 @@ import { createHash } from 'node:crypto';
 
 import { extractChecklists, type Checklist, type ChecklistItem } from '../checklists.js';
 import type { ConfigMapping } from '../config.js';
+import type { MirrorItem } from './task-ops.js';
+import { PRIORITIES, STATUSES, TASK_TYPES, type Priority, type TaskStatus, type TaskType } from './schema.js';
 import { contentHash } from './document.js';
 import { epicOf, type TaskRecord } from './tasks-index.js';
 
@@ -52,6 +60,12 @@ export interface CardView {
   properties: Record<string, unknown>;
   /** Список доски отдаёт и архивные карточки (живьём 23.09). */
   archived: boolean;
+  columnId?: number;
+  typeId?: number;
+  /** `due_date` карточки, ISO; `null` — срока нет. */
+  dueDate?: string | null;
+  /** Когда карточку перенесли в текущую колонку, ISO — месяц закрытия для архива. */
+  columnChangedAt?: string;
 }
 
 export interface RenderedContent {
@@ -252,10 +266,16 @@ export interface SyncReport {
   firstLoadCandidates: number;
   /** Закрытые задачи CLI без карточки — не создаём. */
   closedWithoutCard: string[];
+  /** Карточка в колонке, которой нет в конфиге, — статус не переносим. */
+  unknownColumns: string[];
 }
 
 export interface SyncPlan {
   actions: SyncAction[];
+  /** Поля Kaiten, разошедшиеся с файлами, — в файлы. */
+  mirror: MirrorItem[];
+  /** Как назвать задачу в выводе: id → ключ карточки. */
+  names: Record<string, string>;
   report: SyncReport;
 }
 
@@ -276,6 +296,68 @@ export interface PlanInput {
   only?: ReadonlySet<string>;
 }
 
+function reverse<T extends string>(values: Partial<Record<T, number>> | Record<string, number> | undefined, allowed: readonly T[]): Map<number, T> {
+  const out = new Map<number, T>();
+  for (const [k, v] of Object.entries(values ?? {})) if ((allowed as readonly string[]).includes(k) && typeof v === 'number') out.set(v, k as T);
+  return out;
+}
+
+function firstId(value: unknown): number | null {
+  return Array.isArray(value) && typeof value[0] === 'number' ? value[0] : null;
+}
+
+/**
+ * Что Kaiten знает о задаче иначе, чем файл: только поля Kaiten. Пусто —
+ * `item: null`. Колонка не из конфига — статус не трогаем и сообщаем.
+ */
+export function mirrorFromCard(task: TaskRecord, card: CardView, mapping: ConfigMapping): { item: MirrorItem | null; unknownColumn: boolean } {
+  const item: MirrorItem = { id: task.fm.id };
+  let changed = false;
+  let unknownColumn = false;
+
+  if (card.columnId !== undefined) {
+    const status = reverse<TaskStatus>(mapping.columns, STATUSES).get(card.columnId);
+    if (status === undefined) unknownColumn = true;
+    else if (status !== task.fm.status) {
+      item.status = status;
+      if (card.columnChangedAt) item.closedMonth = card.columnChangedAt.slice(0, 7);
+      changed = true;
+    }
+  }
+  if (card.typeId !== undefined) {
+    const type = reverse<TaskType>(mapping.types, TASK_TYPES).get(card.typeId);
+    if (type !== undefined && type !== task.fm.type) {
+      item.type = type;
+      changed = true;
+    }
+  }
+  if (mapping.priorityProperty) {
+    const id = firstId(card.properties[key(mapping.priorityProperty.id)]);
+    const priority: Priority | null = id === null ? null : (reverse<Priority>(mapping.priorityProperty.values, PRIORITIES).get(id) ?? null);
+    if (priority !== (task.fm.priority ?? null)) {
+      item.priority = priority;
+      changed = true;
+    }
+  }
+  if (mapping.teamProperty) {
+    const id = firstId(card.properties[key(mapping.teamProperty.id)]);
+    const names = new Map(Object.entries(mapping.teamProperty.values).map(([name, value]) => [value, name]));
+    const team = id === null ? null : (names.get(id) ?? null);
+    if (team !== (task.fm.team ?? null)) {
+      item.team = team;
+      changed = true;
+    }
+  }
+  if (card.dueDate !== undefined) {
+    const due = card.dueDate ? card.dueDate.slice(0, 10) : null;
+    if (due !== (task.fm.planning?.due ?? null)) {
+      item.due = due;
+      changed = true;
+    }
+  }
+  return { item: changed ? item : null, unknownColumn };
+}
+
 function cardIdOf(tracker: string | undefined): number | null {
   return tracker !== undefined && /^\d+$/.test(tracker) ? Number(tracker) : null;
 }
@@ -284,7 +366,9 @@ export function planKaitenSync(input: PlanInput): SyncPlan {
   const { tasks, mapping } = input;
   const cards = new Map(input.cards.map((c) => [c.id, c]));
   const ignore = new Set(input.ignore);
-  const report: SyncReport = { missingCards: [], unknownTrackers: [], ignored: [], archivedCards: [], firstLoadCandidates: 0, closedWithoutCard: [] };
+  const report: SyncReport = { missingCards: [], unknownTrackers: [], ignored: [], archivedCards: [], firstLoadCandidates: 0, closedWithoutCard: [], unknownColumns: [] };
+  const mirror: MirrorItem[] = [];
+  const names: Record<string, string> = {};
   const creates: SyncAction[] = [];
   const others: SyncAction[] = [];
 
@@ -336,6 +420,13 @@ export function planKaitenSync(input: PlanInput): SyncPlan {
       continue;
     }
 
+    const fromKaiten = mirrorFromCard(task, card, mapping);
+    if (fromKaiten.unknownColumn) report.unknownColumns.push(`${task.slug} (${cardId})`);
+    if (fromKaiten.item) {
+      mirror.push(fromKaiten.item);
+      names[task.fm.id] = `${task.fm.tracker} (${task.slug})`;
+    }
+
     const patch: { title?: string; properties?: Record<string, unknown> } = {};
     if (!sameValue(card.title, task.fm.title)) patch.title = task.fm.title;
     const wanted = fileProperties(task, mapping);
@@ -363,5 +454,5 @@ export function planKaitenSync(input: PlanInput): SyncPlan {
 
   // Эпики — раньше задач: новой задаче нужна уже существующая карточка эпика.
   creates.sort((a, b) => Number(b.task.fm.type === 'epic') - Number(a.task.fm.type === 'epic'));
-  return { actions: [...creates, ...others], report };
+  return { actions: [...creates, ...others], mirror, names, report };
 }

@@ -150,3 +150,48 @@ describe('одновременные шаги', { timeout: 60_000 }, () => {
     expect([...fake.cards.values()].filter((c) => c.title === 'Проверить гонку')).toHaveLength(1);
   });
 });
+
+describe('статус — сначала карточка', { timeout: 30_000 }, () => {
+  async function setup(sync: boolean) {
+    writeFileSync(settingsPath, JSON.stringify({ sync: { kaiten: sync } }));
+    const { moveCardFirst, loadTasks } = await import('../kaiten-cli.js');
+    const withColumns = {
+      ...ctx,
+      loaded: {
+        ...ctx.loaded,
+        project: { ...ctx.loaded.project, ignoreCards: [123], mapping: { ...ctx.loaded.project.mapping, columns: { inbox: 101, blocked: 105, cancelled: 108 } } },
+      },
+    } as Context;
+    const task = loadTasks(withColumns).index.tasks.find((t) => t.slug === 'step');
+    if (!task) throw new Error('нет задачи');
+    const fake = fakeKaiten();
+    const cardId = Number(task.fm.tracker);
+    fake.cards.set(cardId, { id: cardId, title: task.fm.title, board_id: 10, column_id: 101, external_id: null, description: '', properties: {}, parents_ids: null, checklists: [], comments: [], archived: false });
+    return { moveCardFirst, ctx: withColumns, task, fake, cardId };
+  }
+
+  it('синхронизация выключена — карточку не трогаем', async () => {
+    const s = await setup(false);
+    await s.moveCardFirst(s.ctx, s.task, 'cancelled', s.fake.client);
+    expect(s.fake.writes).toEqual([]);
+  });
+
+  it('включена — карточка в нужной колонке до записи файла', async () => {
+    const s = await setup(true);
+    await s.moveCardFirst(s.ctx, s.task, 'blocked', s.fake.client);
+    expect(s.fake.cards.get(s.cardId)?.column_id).toBe(105);
+  });
+
+  it('ограничение доски — команда останавливается словами владельца', async () => {
+    const s = await setup(true);
+    s.fake.failOn = () => ({ status: 400, body: { error_text: 'Из «В работе» — не в «Отменено»' } });
+    await expect(s.moveCardFirst(s.ctx, s.task, 'cancelled', s.fake.client)).rejects.toThrow('Kaiten не разрешил — Из «В работе» — не в «Отменено»');
+  });
+
+  it('карточка из списка владельца — не трогаем', async () => {
+    const s = await setup(true);
+    const ignored = { ...s.task, fm: { ...s.task.fm, tracker: '123' } };
+    await s.moveCardFirst(s.ctx, ignored, 'cancelled', s.fake.client);
+    expect(s.fake.writes).toEqual([]);
+  });
+});

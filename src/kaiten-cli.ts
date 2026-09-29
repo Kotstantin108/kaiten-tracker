@@ -13,6 +13,7 @@ import { parseArgs, type ParseArgsConfig } from 'node:util';
 import { z } from 'zod';
 
 import { loadConfig, loadProject, type LoadedProject } from './config.js';
+import type { TaskStatus } from './core/schema.js';
 import { buildIndex, belongsToProject, resolveTask, type TaskIndex, type TaskRecord } from './core/tasks-index.js';
 import { localCopyDir, loadSettings, PROJECT_FILE, readProjectFile, type KaitenSettings } from './kaiten-context.js';
 import { formatProblems } from './kaiten-format.js';
@@ -258,6 +259,29 @@ export async function syncWithKaiten(ctx: Context, client?: KaitenClient): Promi
     );
     return run;
   });
+}
+
+/**
+ * `cancel`/`block` при включённой синхронизации: сначала карточка — статусом
+ * владеет Kaiten (Q30), файл — его зеркало. Отказ Kaiten (ограничение доски:
+ * 400 с `error_text`, который написал владелец) останавливает команду, и
+ * файл не меняется. Без карточки, без синхронизации или для карточки из
+ * `ignoreCards` — ничего не делаем: статус меняет только файл.
+ */
+export async function moveCardFirst(ctx: Context, task: TaskRecord, status: TaskStatus, client?: KaitenClient): Promise<void> {
+  const current = settings();
+  if (!current.sync.kaiten) return;
+  const cardId = task.fm.tracker !== undefined && /^\d+$/.test(task.fm.tracker) ? Number(task.fm.tracker) : null;
+  const column = ctx.loaded.project.mapping?.columns[status];
+  if (cardId === null || column === undefined || ctx.loaded.project.ignoreCards.includes(cardId)) return;
+  const login = current.kaiten;
+  if (!login && !client) throw new UsageError('Не настроен вход в Kaiten: kaiten.domain и kaiten.token в настройках kaiten.', 2);
+  const kaiten = client ?? new KaitenClient({ domain: login?.domain ?? '', token: login?.token ?? '' });
+  try {
+    await kaiten.updateCard(cardId, { column_id: column });
+  } catch (error) {
+    throw new UsageError(`Не записано: Kaiten не разрешил — ${apiErrorText(error)}`, 1);
+  }
 }
 
 /** Отправить общим и обновить Kaiten. Ошибки записаны в журнал — о них скажет следующая команда. */

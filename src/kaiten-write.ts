@@ -18,13 +18,14 @@ import { join } from 'node:path';
 import { contentHash, serializeTaskDocument } from './core/document.js';
 import { SLUG_RE } from './core/lint.js';
 import { TASK_TYPES, type TaskType } from './core/schema.js';
-import { matchItem, newTaskText, slugify, uniqueSlug, type Op } from './core/task-ops.js';
+import { BLOCKABLE, CANCELLABLE, matchItem, newTaskText, slugify, uniqueSlug, type Op } from './core/task-ops.js';
 import { refOf, type TaskRecord } from './core/tasks-index.js';
 import { ulid } from './core/ulid.js';
 import {
   currentPerson,
   findTask,
   loadTasks,
+  moveCardFirst,
   parse,
   printNotices,
   refreshLocalCopy,
@@ -233,6 +234,13 @@ async function withReason(command: 'block' | 'cancel', args: string[]): Promise<
   const ctx = begin();
   const task = findTask(loadTasks(ctx).index, ref);
   const what = command === 'block' ? `блокировка ${refOf(task)}` : `отмена ${refOf(task)}`;
+  // Проверить у себя до карточки: карточку не двигаем, если задачу всё равно не записать.
+  const allowed = command === 'block' ? BLOCKABLE : CANCELLABLE;
+  if (!allowed.includes(task.fm.status)) {
+    const hint = command === 'block' ? 'заблокировать можно только открытую' : `отменить можно только из ${CANCELLABLE.join(', ')}`;
+    throw new UsageError(`Не записано: задача ${refOf(task)} в статусе ${task.fm.status}: ${hint}`, 1);
+  }
+  await moveCardFirst(ctx, task, command === 'block' ? 'blocked' : 'cancelled');
   await commit(ctx, { kind: command, id: task.fm.id, reason }, what);
 }
 

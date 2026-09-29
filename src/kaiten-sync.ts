@@ -70,6 +70,10 @@ export function toCardView(card: Card): CardView {
     parents: card.parents_ids ?? [],
     properties: card.properties ?? {},
     archived: card.archived === true,
+    columnId: card.column_id,
+    typeId: card.type_id,
+    dueDate: card.due_date,
+    columnChangedAt: card.column_changed_at ?? undefined,
   };
 }
 
@@ -144,6 +148,9 @@ export async function runKaitenSync(client: KaitenClient, input: RunInput, mode:
     }
     return run;
   }
+
+  // Сначала поля Kaiten в файлы — они не зависят от записи в Kaiten.
+  if (plan.mirror.length > 0) run.ops.push({ op: { kind: 'mirror', items: plan.mirror }, what: `поля из Kaiten (${plan.mirror.length})` });
 
   const synced: SyncedItem[] = [];
   const syncedNames: string[] = [];
@@ -229,7 +236,7 @@ export function formatPlan(run: Pick<SyncRun, 'plan' | 'checklists'>): string[] 
   const { plan } = run;
   const out: string[] = [];
   const count = (kind: SyncAction['kind']): number => plan.actions.filter((a) => a.kind === kind).length;
-  out.push(`Создать карточек: ${count('create')}, обновить: ${count('update')}, связать с эпиком: ${count('link')}`);
+  out.push(`Создать карточек: ${count('create')}, обновить: ${count('update')}, связать с эпиком: ${count('link')}; из Kaiten в задачи: ${plan.mirror.length}`);
   for (const a of plan.actions) {
     const lists = checklistLine(run.checklists.get(a.task.fm.id));
     if (a.kind === 'create') out.push(`  + ${a.task.slug}: «${a.task.fm.title}» (${a.task.fm.type}, ${a.task.fm.status})${lists}`);
@@ -240,7 +247,18 @@ export function formatPlan(run: Pick<SyncRun, 'plan' | 'checklists'>): string[] 
       out.push(`  ~ ${refOf(a.task)} (${a.task.slug}): ${what}${a.content ? lists : ''}${a.firstDelivery && a.content ? ' [первая доставка]' : ''}`);
     } else out.push(`  → ${refOf(a.task)} в эпик ${a.parentId}`);
   }
+  for (const m of plan.mirror) {
+    const fields = [
+      m.status !== undefined ? `статус → ${m.status}` : '',
+      m.type !== undefined ? `тип → ${m.type}` : '',
+      m.priority !== undefined ? `приоритет → ${m.priority ?? 'нет'}` : '',
+      m.team !== undefined ? `команда → ${m.team ?? 'нет'}` : '',
+      m.due !== undefined ? `срок → ${m.due ?? 'нет'}` : '',
+    ].filter(Boolean);
+    out.push(`  ← ${plan.names[m.id] ?? m.id}: ${fields.join(', ')}`);
+  }
   const r = plan.report;
+  if (r.unknownColumns.length > 0) out.push(`Карточка в колонке не из конфига — статус не переносим: ${r.unknownColumns.join(', ')}`);
   if (r.firstLoadCandidates > 0) out.push(`Перенесённых открытых задач без карточки: ${r.firstLoadCandidates} — только первой заливкой (--first-load).`);
   if (r.missingCards.length > 0) out.push(`Карточки нет на доске — не создаём заново: ${r.missingCards.join(', ')}`);
   if (r.archivedCards.length > 0) out.push(`Карточка в архиве Kaiten — не трогаем: ${r.archivedCards.join(', ')}`);

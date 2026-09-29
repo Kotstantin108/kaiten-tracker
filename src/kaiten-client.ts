@@ -46,6 +46,10 @@ export const CardSchema = z
     lane_id: z.number().optional(),
     type_id: z.number().optional(),
     archived: z.boolean().optional(),
+    /** Срок карточки, ISO; `null` — нет (живьём 28.09: в списке есть). */
+    due_date: z.string().nullable().optional(),
+    /** Когда карточку перенесли в текущую колонку (живьём 28.09: в списке есть). */
+    column_changed_at: z.string().nullable().optional(),
     /** Родители карточки; `null` — родителей нет (снято с живого аккаунта 23.09.2026). */
     parents_ids: z.array(z.number()).nullable().optional(),
     children_ids: z.array(z.number()).nullable().optional(),
