@@ -9,10 +9,13 @@
  * задачей». Перед записью результат проходит схему и линтер (ошибки
  * блокируют) и проверку, что поля не-файла не тронуты (`foreignFieldChanges`).
  *
- * Статусы. CLI ставит только `cancelled` и `blocked` (и `inbox` новой
- * задаче); `in-progress`/`review`/`done` двигает интеграция Kaiten ↔ GitHub
- * (решение 5, Q30, Q33). Отмена — только из «Входящих», «Бэклога» и «Готово к
- * работе»: так же, как ограничение на доске (28.09).
+ * Статусы работы ставит CLI (владелец 29.09: интеграция Kaiten ↔ GitHub
+ * не нужна — в прод вливаем сами): `start` → `in-progress`, `review`, `done`,
+ * а ещё `cancelled`, `blocked` и `inbox` новой задаче. Переходы — те же, что
+ * ограничения доски (28.09): «В работе» — из «Готово к работе»,
+ * «Заблокировано», «Ревью»; «Ревью» — из «В работе»; «Сделано» — из «Ревью»;
+ * отмена — из «Входящих», «Бэклога», «Готово к работе». Эпик так не
+ * закрывают: его закрывают в Kaiten, когда закрыты его задачи (решение 7).
  */
 
 import { contentHash, foreignFieldChanges, parseTaskDocument, serializeTaskDocument, TaskParseError } from './document.js';
@@ -27,6 +30,8 @@ export type Op =
   | { kind: 'log'; id: string; text: string }
   | { kind: 'cancel'; id: string; reason: string }
   | { kind: 'block'; id: string; reason: string }
+  /** Статус работы: `kaiten start` (в работу), `review`, `done`. Заметка — в журнал. */
+  | { kind: 'move'; id: string; status: WorkStatus; note?: string }
   | { kind: 'edit'; id: string; text: string; baseHash: string }
   /**
    * Служебная операция синхронизации: карточки получили содержимое с этим
@@ -94,6 +99,22 @@ export interface FileChange {
 export type OpResult = { changes: FileChange[]; summary: string; warnings: string[] } | { error: string };
 
 export const CANCELLABLE: readonly TaskStatus[] = ['inbox', 'backlog', 'ready'];
+
+export type WorkStatus = 'in-progress' | 'review' | 'done';
+/** Откуда можно перейти в статус работы — как ограничения доски. */
+export const MOVES: Record<WorkStatus, readonly TaskStatus[]> = {
+  'in-progress': ['ready', 'blocked', 'review'],
+  review: ['in-progress'],
+  done: ['review'],
+};
+const MOVE_WORDS: Record<WorkStatus, string> = { 'in-progress': 'в работе', review: 'на ревью', done: 'сделана' };
+
+/** Что мешает перевести задачу в статус работы; `null` — ничего (или она уже там). */
+export function moveProblem(task: TaskRecord, status: WorkStatus): string | null {
+  if (task.fm.type === 'epic') return 'это эпик: его закрывают в Kaiten, когда закрыты его задачи';
+  if (task.fm.status === status || MOVES[status].includes(task.fm.status)) return null;
+  return `задача в статусе ${task.fm.status}: ${MOVE_WORDS[status]} — только из ${MOVES[status].join(', ')}`;
+}
 export const BLOCKABLE: readonly TaskStatus[] = ['inbox', 'backlog', 'ready', 'in-progress', 'review'];
 
 // ── чтение состояния ─────────────────────────────────────────────────────
@@ -356,6 +377,23 @@ export function applyOp(op: Op, texts: TaskTexts, ctx: OpContext): OpResult {
       if (task.log !== null) changes.push({ path: logPath(task.path), text: null });
       changes.push({ path: archived, text: out.text }, { path: logPath(archived), text: appendLog(task.log, ctx.date, `отменена: ${op.reason.trim()}`) });
       return { changes, summary: `задача ${ref} отменена`, warnings: [] };
+    }
+    case 'move': {
+      const problem = moveProblem(task, op.status);
+      if (problem) return { error: problem };
+      if (task.fm.status === op.status) return { changes: [], summary: `задача ${ref} уже ${MOVE_WORDS[op.status]}`, warnings: [] };
+      const entry = `${MOVE_WORDS[op.status]}${op.note?.trim() ? `: ${op.note.trim()}` : ''}`;
+      const target = op.status === 'done' ? `archive/${ctx.date.slice(0, 7)}/${task.slug}.md` : task.path;
+      const out = write(task, { ...task.fm, status: op.status }, task.body, ctx, target);
+      if ('error' in out) return out;
+      const changes: FileChange[] = [];
+      // Сделанная задача переезжает в архив вместе с журналом (Q42).
+      if (target !== task.path) {
+        changes.push({ path: task.path, text: null });
+        if (task.log !== null) changes.push({ path: logPath(task.path), text: null });
+      }
+      changes.push({ path: target, text: out.text }, { path: logPath(target), text: appendLog(task.log, ctx.date, entry) });
+      return { changes, summary: `задача ${ref} ${MOVE_WORDS[op.status]}`, warnings: [] };
     }
     case 'block': {
       if (!BLOCKABLE.includes(task.fm.status)) return { error: `задача ${ref} в статусе ${task.fm.status}: заблокировать можно только открытую` };

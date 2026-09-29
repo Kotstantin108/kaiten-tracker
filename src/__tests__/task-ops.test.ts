@@ -110,6 +110,43 @@ describe('отмена и блокировка', () => {
   });
 });
 
+describe('статусы работы', () => {
+  it('в работу → на ревью → сделана: журнал, сделанная — в архив месяца операции', () => {
+    const state = new Map(texts());
+    const step = (op: Op): FileChange[] => {
+      const changes = ok(applyOp(op, state, CTX));
+      for (const c of changes) if (c.text === null) state.delete(c.path);
+      else state.set(c.path, c.text);
+      return changes;
+    };
+    step({ kind: 'move', id: ID, status: 'in-progress' });
+    expect(fmOf(state.get('active/webhook-timeout.md') ?? null).status).toBe('in-progress');
+    step({ kind: 'move', id: ID, status: 'review', note: 'PR #45' });
+    const done = step({ kind: 'move', id: ID, status: 'done', note: 'влито в main' });
+    expect(done.map((c) => [c.path, c.text === null])).toEqual([
+      ['active/webhook-timeout.md', true],
+      ['active/webhook-timeout.log.md', true],
+      ['archive/2026-09/webhook-timeout.md', false],
+      ['archive/2026-09/webhook-timeout.log.md', false],
+    ]);
+    expect(fmOf(state.get('archive/2026-09/webhook-timeout.md') ?? null).status).toBe('done');
+    expect(state.get('archive/2026-09/webhook-timeout.log.md')).toBe(
+      '## [2026-09-28] в работе\n\n## [2026-09-28] на ревью: PR #45\n\n## [2026-09-28] сделана: влито в main\n',
+    );
+  });
+
+  it('переходы — как ограничения доски; повтор — без изменений; эпик — не так', () => {
+    const r = applyOp({ kind: 'move', id: ID, status: 'done' }, texts(), CTX);
+    expect('error' in r && r.error).toBe('задача в статусе ready: сделана — только из review');
+    expect(applyOp({ kind: 'move', id: ID, status: 'review' }, texts(), CTX)).toMatchObject({ error: 'задача в статусе ready: на ревью — только из in-progress' });
+    expect(ok(applyOp({ kind: 'move', id: ID, status: 'in-progress' }, new Map([['active/webhook-timeout.md', task({ status: 'in-progress' })]]), CTX))).toEqual([]);
+    // С ревью вернули на доработку.
+    expect(ok(applyOp({ kind: 'move', id: ID, status: 'in-progress' }, new Map([['active/webhook-timeout.md', task({ status: 'review' })]]), CTX))).toHaveLength(2);
+    const epic = new Map([['active/webhook-timeout.md', task({ type: 'epic', status: 'review', repo: undefined })]]);
+    expect(applyOp({ kind: 'move', id: ID, status: 'done' }, epic, CTX)).toMatchObject({ error: 'это эпик: его закрывают в Kaiten, когда закрыты его задачи' });
+  });
+});
+
 describe('правка текста', () => {
   const current = texts().get('active/webhook-timeout.md') ?? '';
   const { data, body } = parseTaskDocument(current);

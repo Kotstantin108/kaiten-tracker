@@ -1,38 +1,37 @@
 /**
- * `kaiten start <задача>` — ветка задачи в текущем репозитории кода (этап 3).
+ * `kaiten start <задача>` — взять задачу в работу: ветка задачи в текущем
+ * репозитории кода и статус «В работе» (этап 3).
  *
- * Правила и имя ветки — `core/start.ts`. Команда только заводит ветку (или
- * переключает на уже заведённую для этой карточки) — в задачи и в Kaiten она
- * не пишет: карточку двигает интеграция Kaiten ↔ GitHub, когда ветку
- * отправят на GitHub. Отправку делает человек или агент обычным `git push`:
- * код — не забота kaiten.
+ * Правила и имя ветки — `core/start.ts`. Порядок: проверки → ветка → карточка
+ * (при `sync.kaiten`, отказ доски останавливает запись) → файл. Ветка — первой:
+ * её ошибка (например, незакоммиченные правки мешают переключиться) не
+ * должна оставить задачу «в работе» без ветки. Ветку на GitHub отправляет
+ * человек или агент обычным `git push`: код — не забота kaiten.
  *
  * Git здесь — репозиторий кода, из которого запущена команда, а не хранилище
  * задач, поэтому первая строка ошибки git показывается как есть: она про код
- * человека (например, «ваши изменения будут перезаписаны»).
+ * человека.
  */
 
 import { spawnSync } from 'node:child_process';
 
-import { branchName, cardNumber, startProblem } from './core/start.js';
-import { refOf } from './core/tasks-index.js';
-import { findTask, loadTasks, parse, printNotices, resolveContext, TASK_REF_HELP, UsageError } from './kaiten-cli.js';
+import { branchName, startProblem } from './core/start.js';
+import { refOf, type TaskRecord } from './core/tasks-index.js';
+import { findTask, loadTasks, moveCardFirst, parse, printNotices, resolveContext, TASK_REF_HELP, UsageError } from './kaiten-cli.js';
+import { commit } from './kaiten-write.js';
 
-export const START_HELP = `kaiten start <задача> — взять задачу в работу: ветка задачи в этом репозитории.
+export const START_HELP = `kaiten start <задача> — взять задачу в работу.
 
-Заводит ветку feature/<номер карточки>-<имя задачи> от текущей и
-переключается на неё; если ветка задачи уже есть — просто переключается.
-Когда ветка появится на GitHub (git push), карточка перейдёт в «В работе»,
-PR — в «Ревью», слияние — в «Сделано». В сообщениях коммитов указывайте
-#<номер карточки> — коммит появится в карточке.
+Ставит задаче «В работе» и заводит ветку feature/<ключ>-<имя задачи> от
+текущей; если ветка задачи уже есть — переключается на неё. Дальше:
+kaiten review — работа готова, kaiten done — влито в прод.
 
-В работу берут задачу из «Готово к работе» или «Заблокировано»; задачу в
-работе или на ревью — продолжают.
+В работу берут задачу из «Готово к работе», «Заблокировано» или «Ревью»
+(вернули на доработку); задачу в работе — продолжают.
 ${TASK_REF_HELP}
 
 Пример:
   kaiten start PRJ-123
-  git push -u origin HEAD
 `;
 
 function git(cwd: string, args: string[]): { ok: boolean; out: string; err: string } {
@@ -48,16 +47,22 @@ export interface BranchResult {
   from: string | null;
 }
 
+/** Ветки, которые уже могли быть заведены для задачи: по ключу (в том числе под старым именем) и по slug. */
+function taskBranchRefs(task: TaskRecord): string[] {
+  const refs = [`refs/heads/feature/${task.slug}`];
+  if (task.fm.tracker !== undefined) refs.unshift(`refs/heads/feature/${task.fm.tracker}`, `refs/heads/feature/${task.fm.tracker}-*`);
+  return refs;
+}
+
 /**
- * Завести ветку задачи или переключиться на уже заведённую для этой
- * карточки — в том числе под старым именем (заголовок задачи с тех пор
- * поменяли). Ошибка — словами для человека.
+ * Завести ветку задачи или переключиться на уже заведённую — в том числе под
+ * старым именем (заголовок задачи сменили, ключ появился позже). Ошибка —
+ * словами для человека.
  */
-export function switchToTaskBranch(workDir: string, cardId: string, wanted: string): BranchResult | { error: string } {
+export function switchToTaskBranch(workDir: string, task: TaskRecord): BranchResult | { error: string } {
   if (!git(workDir, ['rev-parse', '--is-inside-work-tree']).ok) return { error: 'эта папка — не репозиторий git' };
-  const existing = git(workDir, ['for-each-ref', '--format=%(refname:short)', `refs/heads/feature/${cardId}`, `refs/heads/feature/${cardId}-*`])
-    .out.split('\n')
-    .filter(Boolean);
+  const wanted = branchName(task);
+  const existing = git(workDir, ['for-each-ref', '--format=%(refname:short)', ...taskBranchRefs(task)]).out.split('\n').filter(Boolean);
   const current = git(workDir, ['branch', '--show-current']).out || null;
   const branch = current !== null && existing.includes(current) ? current : existing.includes(wanted) ? wanted : (existing[0] ?? wanted);
   if (current === branch) return { branch, how: 'already', from: null };
@@ -75,15 +80,25 @@ async function start(args: string[]): Promise<void> {
   const task = findTask(loadTasks(ctx).index, positionals[0]);
   const problem = startProblem(task, ctx.currentRepo);
   if (problem) throw new UsageError(`Задачу ${refOf(task)} не взять в работу: ${problem}.`, 1);
-  const cardId = cardNumber(task) ?? '';
-  const result = switchToTaskBranch(ctx.workDir, cardId, branchName(cardId, task.slug));
+  const result = switchToTaskBranch(ctx.workDir, task);
   if ('error' in result) throw new UsageError(`Задачу ${refOf(task)} не взять в работу: ${result.error}.`, 1);
 
   if (result.how === 'created') console.log(`Ветка ${result.branch} — новая${result.from ? `, от ${result.from}` : ''}.`);
   else if (result.how === 'switched') console.log(`Ветка ${result.branch} — у задачи уже была, переключился на неё.`);
   else console.log(`Вы уже на ветке задачи ${result.branch}.`);
-  console.log(`Карточка перейдёт в «В работе», когда ветка появится на GitHub: git push -u origin ${result.branch}`);
-  console.log(`В сообщениях коммитов указывайте #${cardId}, например: feat(#${cardId}): что сделано`);
+
+  if (task.fm.status === 'in-progress') {
+    console.log(`Задача ${refOf(task)} уже в работе.`);
+    return;
+  }
+  try {
+    await moveCardFirst(ctx, task, 'in-progress');
+  } catch (error) {
+    // Ветка уже заведена — так и сказать, иначе человек решит, что не сделано ничего.
+    if (error instanceof UsageError) throw new UsageError(`${error.message}\nВетка ${result.branch} заведена, задача осталась в прежнем статусе.`, error.code);
+    throw error;
+  }
+  await commit(ctx, { kind: 'move', id: task.fm.id, status: 'in-progress' }, `в работу ${refOf(task)}`);
 }
 
 export const START_COMMANDS: Record<string, (args: string[]) => Promise<void>> = { start };

@@ -2,27 +2,24 @@
  * `kaiten start` — чистая часть: можно ли взять задачу в работу и как
  * назвать ветку.
  *
- * СТАТУСЫ В РАБОТУ ДВИГАЕТ НЕ CLI (решение 5, Q30): карточку в «В работе»
- * переносит интеграция Kaiten ↔ GitHub, когда ветка с id карточки появляется
- * на GitHub; PR → «Ревью», merge → «Сделано». CLI только заводит ветку с
- * ключом. Поэтому проверки повторяют ограничения доски (28.09): в «В работе»
- * — только из «Готово к работе» и «Заблокировано» (и обратно из «Ревью»), и
- * ветка задачи из «Бэклога» интеграцию не сдвинула бы — лучше сказать сразу.
+ * Статус «В работе» ставит сама команда (владелец 29.09: интеграция
+ * Kaiten ↔ GitHub не нужна — её пришлось бы подключать в каждом репозитории
+ * кода, а в прод вливаем сами). Переход — как ограничение доски: из «Готово к
+ * работе», «Заблокировано» или «Ревью» (`MOVES` в `task-ops.ts`); задачу,
+ * которая уже в работе, команда продолжает.
  *
- * ИМЯ ВЕТКИ. Q24 называл ветку по эпику; решение 7 (эпик → задача = один PR)
- * и PROMPT сильнее: ветка — по задаче, `feature/<id карточки>-<slug>`.
- * Интеграция ищет в имени ветки числовой id карточки где угодно («как
- * называть ветку — неважно, главное, чтобы там был ID карточки», FAQ Kaiten
- * «GitHub», 29.09) — поэтому части slug с цифрами выбрасываются: в имени
- * ровно одно число, и «…-posle-503» не сдвинет карточку 503. Коммит
- * связывается с карточкой по `#<id>` в сообщении.
+ * ИМЯ ВЕТКИ — `feature/<ключ карточки>-<slug>`, по задаче, а не по эпику
+ * (решение 7 «эпик → задача = один PR» сильнее Q24). По ветке видно, чья это
+ * работа, и повторный `start` на неё переключает. Карточки ещё нет
+ * (синхронизация с Kaiten выключена) — `feature/<slug>`.
  */
 
 import type { TaskStatus } from './schema.js';
+import { moveProblem } from './task-ops.js';
 import { refOf, type TaskRecord } from './tasks-index.js';
 
-/** Из этих статусов задачу берут в работу; из последних двух — продолжают. */
-export const STARTABLE: readonly TaskStatus[] = ['ready', 'blocked', 'in-progress', 'review'];
+/** Из этих статусов задачу берут в работу; из «В работе» — продолжают. */
+export const STARTABLE: readonly TaskStatus[] = ['ready', 'blocked', 'review', 'in-progress'];
 
 const STATUS_WORDS: Record<TaskStatus, string> = {
   inbox: '«Входящих»',
@@ -35,14 +32,8 @@ const STATUS_WORDS: Record<TaskStatus, string> = {
   cancelled: '«Отменено»',
 };
 
-/** Число из ключа карточки, которое интеграция найдёт в ветке; `null` — ключа нет или он не числовой. */
-export function cardNumber(task: TaskRecord): string | null {
-  return task.fm.tracker !== undefined && /^\d+$/.test(task.fm.tracker) ? task.fm.tracker : null;
-}
-
-export function branchName(cardId: string, slug: string): string {
-  const words = slug.split('-').filter((w) => w !== '' && !/\d/.test(w));
-  return `feature/${cardId}${words.length > 0 ? `-${words.join('-')}` : ''}`;
+export function branchName(task: TaskRecord): string {
+  return task.fm.tracker !== undefined ? `feature/${task.fm.tracker}-${task.slug}` : `feature/${task.slug}`;
 }
 
 /** Что мешает взять задачу в работу из этого репозитория — словами задачи; `null` — ничего. */
@@ -53,7 +44,5 @@ export function startProblem(task: TaskRecord, currentRepo: string): string | nu
     return `задача во ${STATUS_WORDS[task.fm.status]}: в работу берут из «Готово к работе» — её переводят туда в Kaiten при разборе`;
   }
   if (task.fm.repo !== currentRepo) return `задача для репозитория ${task.fm.repo ?? '(не указан)'}, а вы в ${currentRepo}`;
-  if (task.fm.tracker === undefined) return 'у задачи ещё нет карточки в Kaiten — повторите после kaiten pull';
-  if (cardNumber(task) === null) return `ключ ${task.fm.tracker} без номера карточки — ветку по нему Kaiten не узнает`;
-  return null;
+  return moveProblem(task, 'in-progress');
 }

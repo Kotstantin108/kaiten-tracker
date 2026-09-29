@@ -1,13 +1,13 @@
 /**
  * Команды записи CLI `kaiten`: `new`, `check`, `log`, `block`, `cancel`,
- * `edit`. Каждая: проверить задачу → записать операцию локально (журнал +
+ * `review`, `done`, `edit` (`start` — в `kaiten-start.ts`). Каждая: проверить задачу → записать операцию локально (журнал +
  * коммит, `store-write.ts`) → обновить копию для чтения → отправить общим в
  * фоне. Агент не ждёт сеть; что не применилось при отправке, скажет
  * следующая команда.
  *
- * Kaiten эти команды пока не трогают: карточки догоняют файлы на этапе
- * синхронизации с Kaiten, и он включается в настройках (AGENTS.md: без явного
- * «да» в живой аккаунт не пишем).
+ * Kaiten обновляется при включённой синхронизации (`sync.kaiten`): текст —
+ * в фоне, статус — сразу и сначала в карточке (`moveCardFirst`): отказ доски
+ * останавливает команду.
  */
 
 import { spawnSync } from 'node:child_process';
@@ -18,7 +18,7 @@ import { join } from 'node:path';
 import { contentHash, serializeTaskDocument } from './core/document.js';
 import { SLUG_RE } from './core/lint.js';
 import { TASK_TYPES, type TaskType } from './core/schema.js';
-import { BLOCKABLE, CANCELLABLE, matchItem, newTaskText, slugify, uniqueSlug, type Op } from './core/task-ops.js';
+import { BLOCKABLE, CANCELLABLE, matchItem, moveProblem, newTaskText, slugify, uniqueSlug, type Op } from './core/task-ops.js';
 import { refOf, type TaskRecord } from './core/tasks-index.js';
 import { ulid } from './core/ulid.js';
 import {
@@ -100,6 +100,27 @@ ${TASK_REF_HELP}
 Пример:
   kaiten cancel PRJ-130 --reason "дубль PRJ-123"
 `,
+  review: `kaiten review <задача> — работа готова, задача на ревью.
+
+Из «В работе». Эпик так не закрывают: его закрывают в Kaiten, когда закрыты
+его задачи.
+
+Флаги:
+  --note <текст>      что смотреть на ревью (ссылка на PR и т. п.) — в журнал
+
+Пример:
+  kaiten review PRJ-123 --note "PR #45"
+`,
+  done: `kaiten done <задача> — задача сделана (влито в прод).
+
+Из «Ревью». Задача уходит в архив, в «Сделано».
+
+Флаги:
+  --note <текст>      что влито и куда — в журнал
+
+Пример:
+  kaiten done PRJ-123 --note "влито в main, выкатано"
+`,
   edit: `kaiten edit <задача> — поправить текст задачи.
 
 Открывает задачу в вашем редакторе; после сохранения задача проверяется и
@@ -124,7 +145,7 @@ function readStdin(): string {
 }
 
 /** Записать операцию и сказать, что получилось. */
-async function commit(ctx: Context, op: Op, what: string): Promise<void> {
+export async function commit(ctx: Context, op: Op, what: string): Promise<void> {
   const result = recordOp(ctx.store, op, what, today());
   if ('error' in result) throw new UsageError(`Не записано: ${result.error}`, 1);
   const first = result.summary.charAt(0).toUpperCase() + result.summary.slice(1);
@@ -244,6 +265,18 @@ async function withReason(command: 'block' | 'cancel', args: string[]): Promise<
   await commit(ctx, { kind: command, id: task.fm.id, reason }, what);
 }
 
+async function move(command: 'review' | 'done', args: string[]): Promise<void> {
+  const { values, positionals } = parse(command, args, { note: { type: 'string' } }, 1);
+  const ref = taskArg(positionals, command);
+  const ctx = begin();
+  const task = findTask(loadTasks(ctx).index, ref);
+  const status = command === 'review' ? 'review' : 'done';
+  const problem = moveProblem(task, status);
+  if (problem) throw new UsageError(`Не записано: ${problem}.`, 1);
+  if (task.fm.status !== status) await moveCardFirst(ctx, task, status);
+  await commit(ctx, { kind: 'move', id: task.fm.id, status, note: stringFlag(values, 'note') }, `${command === 'review' ? 'ревью' : 'закрытие'} ${refOf(task)}`);
+}
+
 /** Текст задачи для правки — канонический: так его и запишет любая команда. */
 export function editableText(task: TaskRecord): string {
   return serializeTaskDocument(task.fm, task.body);
@@ -301,6 +334,8 @@ export const WRITE_COMMANDS: Record<string, (args: string[]) => Promise<void>> =
   log,
   block: (args) => withReason('block', args),
   cancel: (args) => withReason('cancel', args),
+  review: (args) => move('review', args),
+  done: (args) => move('done', args),
   edit,
 };
 

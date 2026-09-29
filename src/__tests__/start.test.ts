@@ -38,15 +38,15 @@ function task(fm: Partial<Frontmatter> = {}): TaskRecord {
 }
 
 describe('имя ветки', () => {
-  it('номер карточки и имя задачи без цифр — в ветке ровно одно число', () => {
-    expect(branchName('71226133', 'povtor-vebkhuka-posle-503')).toBe('feature/71226133-povtor-vebkhuka-posle');
-    expect(branchName('71226133', 'v2-migratsiya-b24')).toBe('feature/71226133-migratsiya');
-    expect(branchName('71226133', '2026')).toBe('feature/71226133');
+  it('ключ карточки и имя задачи; карточки ещё нет — имя задачи', () => {
+    expect(branchName(task())).toBe('feature/71226133-povtor-vebkhuka-posle-503');
+    expect(branchName(task({ tracker: 'PRJ-123' }))).toBe('feature/PRJ-123-povtor-vebkhuka-posle-503');
+    expect(branchName(task({ tracker: undefined }))).toBe('feature/povtor-vebkhuka-posle-503');
   });
 });
 
 describe('можно ли взять в работу', () => {
-  it('из «Готово к работе» и «Заблокировано» — да; в работе и на ревью — продолжить', () => {
+  it('из «Готово к работе», «Заблокировано», «Ревью» — да; в работе — продолжить', () => {
     for (const status of ['ready', 'blocked', 'in-progress', 'review'] as const) expect(startProblem(task({ status }), 'acme-app')).toBeNull();
   });
 
@@ -54,8 +54,8 @@ describe('можно ли взять в работу', () => {
     expect(startProblem(task({ status: 'backlog' }), 'acme-app')).toContain('в работу берут из «Готово к работе»');
     expect(startProblem(task({ status: 'done' }), 'acme-app')).toBe('задача уже в «Сделано»');
     expect(startProblem(task(), 'acme-site')).toBe('задача для репозитория acme-app, а вы в acme-site');
-    expect(startProblem(task({ tracker: undefined }), 'acme-app')).toContain('ещё нет карточки');
-    expect(startProblem(task({ tracker: 'PRJ-123' }), 'acme-app')).toContain('без номера карточки');
+    // Без карточки (синхронизация выключена) — можно: ветка по имени задачи.
+    expect(startProblem(task({ tracker: undefined }), 'acme-app')).toBeNull();
     expect(startProblem(task({ type: 'epic', repo: undefined }), 'acme-app')).toBe('это эпик: в работу берут его задачи — kaiten list --epic 71226133');
   });
 });
@@ -76,31 +76,43 @@ describe('ветка в репозитории кода', { timeout: 30_000 }, (
     g('-c', 'user.name=t', '-c', 'user.email=t@local', 'commit', '-qm', 'init');
     return dir;
   }
+  const t700 = (slug: string): TaskRecord => {
+    const [record] = tasksOf(new Map([[`active/${slug}.md`, serializeTaskDocument({ ...task().fm, tracker: '700' }, '\nТекст.\n')]]));
+    return record;
+  };
   const current = (dir: string): string => execFileSync('git', ['branch', '--show-current'], { cwd: dir, encoding: 'utf8' }).trim();
+
+  it('ветка, заведённая до появления карточки, находится по имени задачи', () => {
+    const dir = repo();
+    const noCard = task({ tracker: undefined });
+    expect(switchToTaskBranch(dir, noCard)).toMatchObject({ branch: 'feature/povtor-vebkhuka-posle-503', how: 'created' });
+    execFileSync('git', ['switch', '-q', 'main'], { cwd: dir });
+    expect(switchToTaskBranch(dir, task())).toMatchObject({ branch: 'feature/povtor-vebkhuka-posle-503', how: 'switched' });
+  });
 
   it('новая ветка от текущей; повтор — уже на ней; с другой ветки — переключает обратно', () => {
     const dir = repo();
-    expect(switchToTaskBranch(dir, '700', 'feature/700-pochinit')).toEqual({ branch: 'feature/700-pochinit', how: 'created', from: 'main' });
+    expect(switchToTaskBranch(dir, t700('pochinit'))).toEqual({ branch: 'feature/700-pochinit', how: 'created', from: 'main' });
     expect(current(dir)).toBe('feature/700-pochinit');
-    expect(switchToTaskBranch(dir, '700', 'feature/700-pochinit')).toEqual({ branch: 'feature/700-pochinit', how: 'already', from: null });
+    expect(switchToTaskBranch(dir, t700('pochinit'))).toEqual({ branch: 'feature/700-pochinit', how: 'already', from: null });
     execFileSync('git', ['switch', '-q', 'main'], { cwd: dir });
-    expect(switchToTaskBranch(dir, '700', 'feature/700-pochinit')).toEqual({ branch: 'feature/700-pochinit', how: 'switched', from: null });
+    expect(switchToTaskBranch(dir, t700('pochinit'))).toEqual({ branch: 'feature/700-pochinit', how: 'switched', from: null });
   });
 
   it('заголовок задачи поменяли — ветка карточки находится по номеру, вторая не заводится', () => {
     const dir = repo();
-    switchToTaskBranch(dir, '700', 'feature/700-staroe-imya');
+    switchToTaskBranch(dir, t700('staroe-imya'));
     execFileSync('git', ['switch', '-q', 'main'], { cwd: dir });
-    expect(switchToTaskBranch(dir, '700', 'feature/700-novoe-imya')).toMatchObject({ branch: 'feature/700-staroe-imya', how: 'switched' });
+    expect(switchToTaskBranch(dir, t700('novoe-imya'))).toMatchObject({ branch: 'feature/700-staroe-imya', how: 'switched' });
     // Ветка другой карточки с тем же началом номера — не её.
     execFileSync('git', ['branch', 'feature/7001-drugaya'], { cwd: dir });
     execFileSync('git', ['switch', '-q', 'main'], { cwd: dir });
-    expect(switchToTaskBranch(dir, '700', 'feature/700-novoe-imya')).toMatchObject({ branch: 'feature/700-staroe-imya' });
+    expect(switchToTaskBranch(dir, t700('novoe-imya'))).toMatchObject({ branch: 'feature/700-staroe-imya' });
   });
 
   it('не репозиторий git — понятная ошибка', () => {
     const dir = mkdtempSync(join(tmpdir(), 'kaiten-start-nogit-'));
     dirs.push(dir);
-    expect(switchToTaskBranch(dir, '700', 'feature/700-x')).toEqual({ error: 'эта папка — не репозиторий git' });
+    expect(switchToTaskBranch(dir, t700('x'))).toEqual({ error: 'эта папка — не репозиторий git' });
   });
 });
