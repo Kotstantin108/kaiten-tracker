@@ -172,13 +172,13 @@ describe('статус — сначала карточка', { timeout: 30_000 }
 
   it('синхронизация выключена — карточку не трогаем', async () => {
     const s = await setup(false);
-    await s.moveCardFirst(s.ctx, s.task, 'cancelled', s.fake.client);
+    expect(await s.moveCardFirst(s.ctx, s.task, 'cancelled', s.fake.client)).toBe('off');
     expect(s.fake.writes).toEqual([]);
   });
 
   it('включена — карточка в нужной колонке до записи файла', async () => {
     const s = await setup(true);
-    await s.moveCardFirst(s.ctx, s.task, 'blocked', s.fake.client);
+    expect(await s.moveCardFirst(s.ctx, s.task, 'blocked', s.fake.client)).toBe('moved');
     expect(s.fake.cards.get(s.cardId)?.column_id).toBe(105);
   });
 
@@ -191,7 +191,7 @@ describe('статус — сначала карточка', { timeout: 30_000 }
   it('карточка из списка владельца — не трогаем', async () => {
     const s = await setup(true);
     const ignored = { ...s.task, fm: { ...s.task.fm, tracker: '123' } };
-    await s.moveCardFirst(s.ctx, ignored, 'cancelled', s.fake.client);
+    expect(await s.moveCardFirst(s.ctx, ignored, 'cancelled', s.fake.client)).toBe('none');
     expect(s.fake.writes).toEqual([]);
   });
 });

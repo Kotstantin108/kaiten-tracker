@@ -270,18 +270,23 @@ export async function syncWithKaiten(ctx: Context, client?: KaitenClient): Promi
 }
 
 /**
- * `cancel`/`block` при включённой синхронизации: сначала карточка — статусом
- * владеет Kaiten (Q30), файл — его зеркало. Отказ Kaiten (ограничение доски:
- * 400 с `error_text`, который написал владелец) останавливает команду, и
- * файл не меняется. Без карточки, без синхронизации или для карточки из
- * `ignoreCards` — ничего не делаем: статус меняет только файл.
+ * Команды статуса (`start/review/done/block/cancel`) при включённой
+ * синхронизации: сначала карточка — статусом владеет Kaiten (Q30), файл — его
+ * зеркало. Отказ Kaiten (ограничение доски: 400 с `error_text`, который
+ * написал владелец) останавливает команду, и файл не меняется. Без карточки
+ * или для карточки из `ignoreCards` — ничего не делаем: статус меняет только
+ * файл.
+ *
+ * `'off'` — карточка есть, но синхронизация выключена: статус меняется только в
+ * файле, а при включении синхронизации сверка вернёт в файл колонку карточки.
+ * Команда говорит об этом человеку (`cardNotMovedNote`), а не молчит.
  */
-export async function moveCardFirst(ctx: Context, task: TaskRecord, status: TaskStatus, client?: KaitenClient): Promise<void> {
+export async function moveCardFirst(ctx: Context, task: TaskRecord, status: TaskStatus, client?: KaitenClient): Promise<'moved' | 'off' | 'none'> {
   const current = settings();
-  if (!current.sync.kaiten) return;
   const cardId = task.fm.tracker !== undefined && /^\d+$/.test(task.fm.tracker) ? Number(task.fm.tracker) : null;
   const column = ctx.loaded.project.mapping?.columns[status];
-  if (cardId === null || column === undefined || ctx.loaded.project.ignoreCards.includes(cardId)) return;
+  if (cardId === null || column === undefined || ctx.loaded.project.ignoreCards.includes(cardId)) return 'none';
+  if (!current.sync.kaiten) return 'off';
   const login = current.kaiten;
   if (!login && !client) throw new UsageError('Не настроен вход в Kaiten: kaiten.domain и kaiten.token в настройках kaiten.', 2);
   const kaiten = client ?? new KaitenClient({ domain: login?.domain ?? '', token: login?.token ?? '' });
@@ -290,6 +295,13 @@ export async function moveCardFirst(ctx: Context, task: TaskRecord, status: Task
   } catch (error) {
     throw new UsageError(`Не записано: Kaiten не разрешил — ${apiErrorText(error)}`, 1);
   }
+  return 'moved';
+}
+
+/** Карточка не сдвинута, потому что обновление Kaiten выключено, — что сделать человеку. */
+export function cardNotMovedNote(result: 'moved' | 'off' | 'none'): void {
+  if (result !== 'off') return;
+  console.log('  Карточка в Kaiten не сдвинута: обновление Kaiten выключено в настройках kaiten. Переставьте её в Kaiten руками — иначе задача вернётся в прежний статус.');
 }
 
 /** Отправить общим и обновить Kaiten. Ошибки записаны в журнал — о них скажет следующая команда. */

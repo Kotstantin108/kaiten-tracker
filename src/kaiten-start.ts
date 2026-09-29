@@ -17,7 +17,7 @@ import { spawnSync } from 'node:child_process';
 
 import { branchName, startProblem } from './core/start.js';
 import { refOf, type TaskRecord } from './core/tasks-index.js';
-import { findTask, loadTasks, moveCardFirst, parse, printNotices, resolveContext, TASK_REF_HELP, UsageError } from './kaiten-cli.js';
+import { cardNotMovedNote, findTask, loadTasks, moveCardFirst, parse, printNotices, resolveContext, TASK_REF_HELP, UsageError } from './kaiten-cli.js';
 import { commit } from './kaiten-write.js';
 
 export const START_HELP = `kaiten start <задача> — взять задачу в работу.
@@ -91,14 +91,16 @@ async function start(args: string[]): Promise<void> {
     console.log(`Задача ${refOf(task)} уже в работе.`);
     return;
   }
+  let card: Awaited<ReturnType<typeof moveCardFirst>>;
   try {
-    await moveCardFirst(ctx, task, 'in-progress');
+    card = await moveCardFirst(ctx, task, 'in-progress');
   } catch (error) {
     // Ветка уже заведена — так и сказать, иначе человек решит, что не сделано ничего.
     if (error instanceof UsageError) throw new UsageError(`${error.message}\nВетка ${result.branch} заведена, задача осталась в прежнем статусе.`, error.code);
     throw error;
   }
   await commit(ctx, { kind: 'move', id: task.fm.id, status: 'in-progress' }, `в работу ${refOf(task)}`);
+  cardNotMovedNote(card);
 }
 
 export const START_COMMANDS: Record<string, (args: string[]) => Promise<void>> = { start };

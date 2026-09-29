@@ -25,6 +25,7 @@ import {
   currentPerson,
   findTask,
   loadTasks,
+  cardNotMovedNote,
   moveCardFirst,
   parse,
   printNotices,
@@ -261,8 +262,9 @@ async function withReason(command: 'block' | 'cancel', args: string[]): Promise<
     const hint = command === 'block' ? 'заблокировать можно только открытую' : `отменить можно только из ${CANCELLABLE.join(', ')}`;
     throw new UsageError(`Не записано: задача ${refOf(task)} в статусе ${task.fm.status}: ${hint}`, 1);
   }
-  await moveCardFirst(ctx, task, command === 'block' ? 'blocked' : 'cancelled');
+  const card = await moveCardFirst(ctx, task, command === 'block' ? 'blocked' : 'cancelled');
   await commit(ctx, { kind: command, id: task.fm.id, reason }, what);
+  cardNotMovedNote(card);
 }
 
 async function move(command: 'review' | 'done', args: string[]): Promise<void> {
@@ -273,8 +275,9 @@ async function move(command: 'review' | 'done', args: string[]): Promise<void> {
   const status = command === 'review' ? 'review' : 'done';
   const problem = moveProblem(task, status);
   if (problem) throw new UsageError(`Не записано: ${problem}.`, 1);
-  if (task.fm.status !== status) await moveCardFirst(ctx, task, status);
+  const card = task.fm.status !== status ? await moveCardFirst(ctx, task, status) : 'none';
   await commit(ctx, { kind: 'move', id: task.fm.id, status, note: stringFlag(values, 'note') }, `${command === 'review' ? 'ревью' : 'закрытие'} ${refOf(task)}`);
+  cardNotMovedNote(card);
 }
 
 /** Текст задачи для правки — канонический: так его и запишет любая команда. */
