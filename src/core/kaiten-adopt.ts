@@ -42,9 +42,14 @@ import { slugify, type AdoptItem } from './task-ops.js';
 import type { TaskRecord } from './tasks-index.js';
 import { deriveId } from './ulid.js';
 
-/** id задачи из карточки: одинаковый при каждом вычислении. */
+/**
+ * id задачи из карточки: одинаковый при каждом вычислении и на любой машине —
+ * дата создания по UTC, а не по местному времени (иначе у разработчиков в
+ * разных часовых поясах одна карточка дала бы две задачи).
+ */
 export function adoptId(cardId: number, createdAt: string): string {
-  return deriveId(`kaiten-card:${cardId}`, localDate(createdAt));
+  const d = new Date(createdAt);
+  return deriveId(`kaiten-card:${cardId}`, Number.isNaN(d.getTime()) ? createdAt.slice(0, 10) : d.toISOString().slice(0, 10));
 }
 
 export interface AdoptCandidate {

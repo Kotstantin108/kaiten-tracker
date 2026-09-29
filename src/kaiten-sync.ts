@@ -189,7 +189,8 @@ export async function runKaitenSync(client: KaitenClient, input: RunInput, mode:
         run.errors.push({ what: `перенести карточку ${label(candidate.card)} в задачи`, message: built.problem });
         continue;
       }
-      if (!candidate.recovery) {
+      // Пометка появилась после чтения доски — карточку переносит другой разработчик: без второго комментария.
+      if (!candidate.recovery && (card.external_id === null || card.external_id === undefined)) {
         const description = card.description?.trim();
         if (description) await client.addComment(candidate.card.id, originalComment(description));
         await client.updateCard(candidate.card.id, { external_id: candidate.id });

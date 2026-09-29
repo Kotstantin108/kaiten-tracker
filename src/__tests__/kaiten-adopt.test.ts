@@ -8,6 +8,7 @@ import { describe, expect, it } from 'vitest';
 import type { ConfigMapping } from '../config.js';
 import { parseTaskDocument, serializeTaskDocument } from '../core/document.js';
 import { adoptId, originalComment } from '../core/kaiten-adopt.js';
+import { deriveId } from '../core/ulid.js';
 import { Q41_NOTICE } from '../core/kaiten-sync-plan.js';
 import { FrontmatterSchema, type Frontmatter } from '../core/schema.js';
 import { applyOp, tasksOf } from '../core/task-ops.js';
@@ -168,6 +169,13 @@ describe('карточка из интерфейса', () => {
   });
 });
 
+describe('id задачи из карточки', () => {
+  it('по дате создания в UTC — одинаковый в любом часовом поясе', () => {
+    expect(adoptId(700, '2026-09-20T21:30:00.000Z')).toBe(deriveId('kaiten-card:700', '2026-09-20'));
+    expect(adoptId(700, '2026-09-20T21:30:00.000Z')).not.toBe(adoptId(701, '2026-09-20T21:30:00.000Z'));
+  });
+});
+
 describe('чего перенос не делает', () => {
   it('не трогает карточки с чужим ключом, архивные и из списка владельца', async () => {
     const w = world();
@@ -210,6 +218,23 @@ describe('чего перенос не делает', () => {
     expect(w.fake.writes).toEqual([]);
     expect(w.fake.cards.get(715)?.comments).toEqual(['уже оставлен']);
     expect(fmOf(w.texts.get('active/pochinit-vkhod-po-ssylke.md')).tracker).toBe('715');
+  });
+
+  it('карточку пометил другой разработчик между чтением доски и переносом — без второго комментария', async () => {
+    const w = world();
+    seedCard(w.fake, uiCard({ id: 719 }));
+    const plan = await runKaitenSync(w.fake.client, w.input(), 'plan');
+    expect(plan.adopt.candidates).toHaveLength(1);
+    const original = w.fake.client.getCard.bind(w.fake.client);
+    w.fake.client.getCard = async (cardId: number) => {
+      const card = w.fake.cards.get(cardId);
+      if (card) card.external_id = adoptId(719, CREATED);
+      return original(cardId);
+    };
+    const run = await w.sync();
+    expect(run.errors).toEqual([]);
+    expect(w.fake.writes).toEqual([]);
+    expect(fmOf(w.texts.get('active/pochinit-vkhod-po-ssylke.md')).tracker).toBe('719');
   });
 
   it('одну карточку перенесли двое — одна задача', () => {
