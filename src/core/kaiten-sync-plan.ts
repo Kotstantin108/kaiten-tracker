@@ -107,10 +107,27 @@ export function linkify(text: string, all: readonly TaskRecord[], base: string |
 }
 
 /** Описание карточки и её чек-листы «Агент · …» из тела задачи. */
+/**
+ * Предел описания карточки: Kaiten отвечает 400 «Card.description should NOT
+ * be longer than 32768 characters» (живьём 30.09, первая заливка). Запас — под
+ * строку о продолжении.
+ */
+export const DESCRIPTION_LIMIT = 32_000;
+
+/** Длинное описание — обрезать по абзацу и сказать, где полный текст. */
+function fitDescription(text: string, task: TaskRecord, base: string | null): string {
+  if (text.length <= DESCRIPTION_LIMIT) return text;
+  const cut = text.slice(0, DESCRIPTION_LIMIT);
+  const paragraph = cut.lastIndexOf('\n\n');
+  const kept = (paragraph > DESCRIPTION_LIMIT / 2 ? cut.slice(0, paragraph) : cut).trimEnd();
+  const where = base ? `[в репозитории задач](${base}/blob/main/${task.path})` : `в репозитории задач (${task.path})`;
+  return `${kept}\n\n…Текст задачи длиннее, чем помещается в карточку. Полностью — ${where}.\n`;
+}
+
 export function renderContent(task: TaskRecord, all: readonly TaskRecord[], base: string | null): RenderedContent {
   const { body, checklists } = extractChecklists(task.body.trim());
   return {
-    description: `${Q41_NOTICE}\n\n${linkify(body, all, base).trim()}\n`,
+    description: fitDescription(`${Q41_NOTICE}\n\n${linkify(body, all, base).trim()}\n`, task, base),
     checklists: checklists.map((c) => ({ ...c, items: c.items.map((i) => ({ ...i, text: linkify(i.text, all, base) })) })),
   };
 }

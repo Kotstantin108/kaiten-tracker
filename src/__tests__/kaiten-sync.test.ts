@@ -7,7 +7,7 @@ import { describe, expect, it } from 'vitest';
 
 import type { ConfigMapping } from '../config.js';
 import { serializeTaskDocument } from '../core/document.js';
-import { linkify, Q41_NOTICE, repoWebBase } from '../core/kaiten-sync-plan.js';
+import { DESCRIPTION_LIMIT, linkify, Q41_NOTICE, repoWebBase } from '../core/kaiten-sync-plan.js';
 import { FrontmatterSchema, type Frontmatter } from '../core/schema.js';
 import { applyOp, tasksOf } from '../core/task-ops.js';
 import { formatPlan, runKaitenSync, type RunInput } from '../kaiten-sync.js';
@@ -321,5 +321,19 @@ describe('ссылки в описании', () => {
     expect(repoWebBase('git@github.com:org/acme-tasks.git')).toBe('https://github.com/org/acme-tasks');
     expect(repoWebBase('https://github.com/org/acme-tasks')).toBe('https://github.com/org/acme-tasks');
     expect(repoWebBase('C:/tmp/remote.git')).toBeNull();
+  });
+});
+
+describe('длинное описание', () => {
+  it('больше предела Kaiten — обрезается по абзацу со ссылкой на полный текст', async () => {
+    const long = Array.from({ length: 800 }, (_, i) => `Абзац ${i}: ${'текст '.repeat(10)}`).join('\n\n');
+    const [path, text] = task('active/long.md', { created_via: 'agent', status: 'inbox' }, `${long}\n`);
+    const w = world([[path, text]]);
+    const run = await w.sync();
+    expect(run.errors).toEqual([]);
+    const card = [...w.fake.cards.values()][0];
+    expect(card.description.length).toBeLessThanOrEqual(DESCRIPTION_LIMIT + 300);
+    expect(card.description).toContain('Полностью — [в репозитории задач](https://github.com/org/acme-tasks/blob/main/active/long.md)');
+    expect(card.description).not.toMatch(/Абзац \d+: текст $/m);
   });
 });
