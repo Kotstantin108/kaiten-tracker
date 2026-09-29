@@ -180,7 +180,7 @@ export async function runKaitenSync(client: KaitenClient, input: RunInput, mode:
         created.set(action.task.fm.id, card.id);
         const parentId = parentCardId(action, input.tasks, created);
         if (parentId !== null) await client.addChild(parentId, card.id);
-        synced.push({ id: action.task.fm.id, contentHash: action.contentHash, tracker: String(card.id) });
+        synced.push({ id: action.task.fm.id, contentHash: action.contentHash, tracker: String(card.id), team: action.fields.team });
         syncedNames.push(action.task.slug);
       } else if (action.kind === 'update') {
         if (action.patch.title !== undefined || action.patch.properties !== undefined) await client.updateCard(action.cardId, action.patch);

@@ -245,6 +245,8 @@ export async function syncWithKaiten(ctx: Context, client?: KaitenClient): Promi
     for (const { op, what } of run.ops) {
       const recorded = recordOp(ctx.store, op, what, today());
       if ('error' in recorded) run.errors.push({ what, message: recorded.error });
+      // Пропущенное зеркалом (файл стал бы битым) — тоже человеку, иначе молча каждый проход.
+      else for (const w of recorded.warnings) run.errors.push({ what: 'поля из Kaiten', message: w });
     }
     if (run.ops.length > 0) {
       try {
@@ -292,7 +294,9 @@ export async function sendAll(ctx: Context, client?: KaitenClient): Promise<void
     if (!(error instanceof StoreError)) throw error;
     return;
   }
-  await syncWithKaiten(ctx, client);
+  const run = await syncWithKaiten(ctx, client);
+  // Поля из Kaiten могли переложить задачи (закрытая — в архив): копия для чтения — следом.
+  if (run && run.ops.length > 0) refreshLocalCopy(ctx);
 }
 
 /**

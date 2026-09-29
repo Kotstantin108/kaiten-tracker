@@ -202,7 +202,11 @@ describe('новые задачи', () => {
     expect(card.external_id).toMatch(/^01K5/);
     expect(w.texts.get(path)).toContain(`tracker: "${card.id}"`);
     const writes = w.fake.writes.length;
-    expect((await w.sync()).plan.actions).toEqual([]);
+    // Второй проход пустой целиком: ни записей в Kaiten, ни коммитов (команда карточки уже в файле).
+    const second = await w.sync();
+    expect(second.plan.actions).toEqual([]);
+    expect(second.ops).toEqual([]);
+    expect(w.texts.get(path)).toContain('team: Разработка');
     expect(w.fake.writes.length).toBe(writes);
   });
 

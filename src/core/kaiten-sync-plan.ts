@@ -205,6 +205,8 @@ export function fileProperties(task: TaskRecord, mapping: ConfigMapping): Record
 }
 
 export interface CreateFields {
+  /** Команда, с которой создаётся карточка. */
+  team?: string;
   title: string;
   external_id: string;
   column_id?: number;
@@ -221,6 +223,7 @@ export function createFields(task: TaskRecord, mapping: ConfigMapping, defaultTe
   const team = selectValue(mapping.teamProperty?.values, task.fm.team ?? defaultTeam);
   if (mapping.teamProperty && team) props[key(mapping.teamProperty.id)] = team;
   return {
+    team: team ? (task.fm.team ?? defaultTeam) : undefined,
     title: task.fm.title,
     // Ключ идемпотентности v2 — вечный id задачи: повтор после обрыва найдёт карточку, а не создаст вторую.
     external_id: task.fm.id,
@@ -302,6 +305,20 @@ function reverse<T extends string>(values: Partial<Record<T, number>> | Record<s
   return out;
 }
 
+/**
+ * Дата Kaiten в местном времени: `column_changed_at` приходит в UTC (живьём
+ * 29.09), и закрытие в ночь на 1-е иначе ушло бы в прошлый месяц. Строка
+ * без времени (`YYYY-MM-DD`) — как есть. Формат `due_date` живьём не
+ * проверен: сроков на досках пока нет.
+ */
+export function localDate(value: string): string {
+  if (/^\d{4}-\d{2}-\d{2}$/.test(value)) return value;
+  const d = new Date(value);
+  if (Number.isNaN(d.getTime())) return value.slice(0, 10);
+  const pad = (n: number): string => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+}
+
 function firstId(value: unknown): number | null {
   return Array.isArray(value) && typeof value[0] === 'number' ? value[0] : null;
 }
@@ -320,7 +337,7 @@ export function mirrorFromCard(task: TaskRecord, card: CardView, mapping: Config
     if (status === undefined) unknownColumn = true;
     else if (status !== task.fm.status) {
       item.status = status;
-      if (card.columnChangedAt) item.closedMonth = card.columnChangedAt.slice(0, 7);
+      if (card.columnChangedAt) item.closedMonth = localDate(card.columnChangedAt).slice(0, 7);
       changed = true;
     }
   }
@@ -349,7 +366,7 @@ export function mirrorFromCard(task: TaskRecord, card: CardView, mapping: Config
     }
   }
   if (card.dueDate !== undefined) {
-    const due = card.dueDate ? card.dueDate.slice(0, 10) : null;
+    const due = card.dueDate ? localDate(card.dueDate) : null;
     if (due !== (task.fm.planning?.due ?? null)) {
       item.due = due;
       changed = true;

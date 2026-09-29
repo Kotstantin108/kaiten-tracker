@@ -59,6 +59,8 @@ export interface SyncedItem {
   id: string;
   contentHash: string;
   tracker?: string;
+  /** Команда, с которой создана карточка (по умолчанию проекта), — чтобы следующая сверка не переносила её отдельным коммитом. */
+  team?: string;
 }
 
 export interface OpContext {
@@ -433,8 +435,8 @@ function applySynced(items: readonly SyncedItem[], texts: TaskTexts): OpResult {
   for (const item of items) {
     const task = all.find((x) => x.fm.id === item.id);
     if (!task) continue;
-    const fm: Frontmatter = { ...task.fm, content_hash: item.contentHash, ...(item.tracker ? { tracker: item.tracker } : {}) };
-    if (fm.content_hash === task.fm.content_hash && fm.tracker === task.fm.tracker) continue;
+    const fm: Frontmatter = { ...task.fm, content_hash: item.contentHash, ...(item.tracker ? { tracker: item.tracker } : {}), ...(item.team ? { team: item.team } : {}) };
+    if (fm.content_hash === task.fm.content_hash && fm.tracker === task.fm.tracker && fm.team === task.fm.team) continue;
     changes.push({ path: task.path, text: serializeTaskDocument(fm, task.body) });
   }
   return { changes, summary: `отметки Kaiten: ${changes.length}`, warnings: [] };

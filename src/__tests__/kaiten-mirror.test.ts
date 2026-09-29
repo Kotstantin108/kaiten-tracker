@@ -7,10 +7,10 @@ import { describe, expect, it } from 'vitest';
 
 import type { ConfigMapping } from '../config.js';
 import { parseTaskDocument, serializeTaskDocument } from '../core/document.js';
-import { mirrorFromCard, type CardView } from '../core/kaiten-sync-plan.js';
+import { localDate, mirrorFromCard, type CardView } from '../core/kaiten-sync-plan.js';
 import { FrontmatterSchema, type Frontmatter } from '../core/schema.js';
 import { applyOp, tasksOf, type TaskTexts } from '../core/task-ops.js';
-import { runKaitenSync } from '../kaiten-sync.js';
+import { formatPlan, runKaitenSync } from '../kaiten-sync.js';
 import { fakeKaiten, seedCard } from './fake-kaiten.js';
 
 const MAPPING: ConfigMapping = {
@@ -80,7 +80,7 @@ describe('что Kaiten знает иначе', () => {
   });
 
   it('колонка, тип, приоритет, команда, срок', () => {
-    const { item } = mirrorFromCard(task, card({ columnId: 107, columnChangedAt: '2026-08-31T20:00:00Z', typeId: 4, properties: { id_1: [], id_3: [32] }, dueDate: '2026-10-05T00:00:00Z' }), MAPPING);
+    const { item } = mirrorFromCard(task, card({ columnId: 107, columnChangedAt: '2026-08-15T12:00:00Z', typeId: 4, properties: { id_1: [], id_3: [32] }, dueDate: '2026-10-05T12:00:00Z' }), MAPPING);
     expect(item).toEqual({ id: ID, status: 'done', closedMonth: '2026-08', type: 'bug', priority: null, team: 'Менеджмент', due: '2026-10-05' });
   });
 
@@ -130,7 +130,22 @@ describe('поля Kaiten в файле', () => {
   });
 });
 
+describe('даты Kaiten', () => {
+  it('дата без времени — как есть', () => {
+    expect(localDate('2026-10-05')).toBe('2026-10-05');
+  });
+});
+
 describe('сверка целиком', () => {
+  it('задачу отменили при выключенной синхронизации — откат виден в сухом прогоне', async () => {
+    const texts = new Map([['archive/2026-09/t.md', file({ status: 'cancelled' })]]);
+    const fake = fakeKaiten();
+    seedCard(fake, { id: 600, title: 'Сделать задачу', board_id: 10, column_id: 102, type_id: 2, properties: { id_1: [12], id_3: [31], id_4: 'Коротко.', id_2: [21] } });
+    const run = await runKaitenSync(fake.client, { tasks: tasksOf(texts), mapping: MAPPING, ignore: [], repoWebBase: null, boardId: 10 }, 'details');
+    expect(formatPlan(run).join('\n')).toContain('← 600 (t): статус → backlog');
+    expect(fake.writes).toEqual([]);
+  });
+
   it('карточку закрыли в Kaiten — задача в архиве; второй прогон пустой', async () => {
     const texts = new Map([['active/t.md', file()]]);
     const fake = fakeKaiten();
