@@ -28,6 +28,8 @@ concurrency:
 
 jobs:
   backup:
+    # Пока не заведён доступ к kaiten-tracker (переменная и секрет) — не запускаться, а не падать на каждой записи.
+    if: vars.KAITEN_TRACKER_REPO != ''
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
