@@ -1,0 +1,61 @@
+# Проверка формата задач в репозитории задач проекта (acme-tasks, globex-tasks).
+#
+# Шаблон лежит в kaiten-tracker, пока репозиториев задач нет; при их создании
+# копируется в .github/workflows/ репозитория задач.
+#
+# НЕБЛОКИРУЮЩАЯ (решение 16): запускается на push в main — уже после записи.
+# Запись CLI — прямой push, защита main — только от force-push и удаления, так
+# что упавшая проверка ничего не останавливает: GitHub присылает письмо тому,
+# кто отправил изменения (настройка уведомлений Actions по умолчанию), а
+# ошибка видна во вкладке Actions. Барьер от ручного обхода CLI, не замок.
+#
+# Нужно в настройках репозитория задач (Settings → Secrets and variables → Actions):
+#   vars.KAITEN_TRACKER_REPO    — репозиторий kaiten-tracker, например owner/kaiten-tracker
+#   vars.KAITEN_PROJECT         — ключ проекта из tracker.config.json: acme или globex
+#   secrets.KAITEN_TRACKER_TOKEN — fine-grained токен только на чтение kaiten-tracker
+#                                  (Contents: read-only); токенов Kaiten здесь нет
+
+name: Формат задач
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tasks-lint
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Задачи
+        uses: actions/checkout@v4
+        with:
+          path: tasks
+
+      - name: kaiten-tracker
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ vars.KAITEN_TRACKER_REPO }}
+          token: ${{ secrets.KAITEN_TRACKER_TOKEN }}
+          path: kaiten-tracker
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: kaiten-tracker/package-lock.json
+
+      - name: Зависимости
+        working-directory: kaiten-tracker
+        run: npm ci --no-audit --no-fund
+
+      - name: Проверка формата
+        working-directory: kaiten-tracker
+        run: npm run --silent tasks:lint -- "$GITHUB_WORKSPACE/tasks" --project "${{ vars.KAITEN_PROJECT }}"

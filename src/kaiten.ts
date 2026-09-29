@@ -54,6 +54,7 @@ import {
 } from './kaiten-cli.js';
 import { localCopyDir, SettingsError } from './kaiten-context.js';
 import { formatSearch, formatShow, formatTaskLines, presentBody, showJson, taskJson } from './kaiten-format.js';
+import { START_COMMANDS, START_HELP } from './kaiten-start.js';
 import { editableText, WRITE_COMMANDS, WRITE_HELP } from './kaiten-write.js';
 import { hasPending, syncStore } from './store-write.js';
 import { cloneStore, isStore, readBlobs, StoreError, type StoreEntry } from './task-store.js';
@@ -77,6 +78,9 @@ function mainHelp(): string {
   kaiten block <задача> --reason …   задача заблокирована
   kaiten cancel <задача> --reason …  отменить задачу
   kaiten edit <задача>               поправить текст задачи
+
+Работать:
+  kaiten start <задача>              взять задачу в работу: ветка задачи в этом репозитории
 
 ${TASK_REF_HELP}
 Команды работают в репозитории, подключённом к kaiten: проект и продукт
@@ -158,7 +162,7 @@ ${FILTER_HELP}
 `,
 };
 
-const HELP: Record<string, string> = { ...READ_HELP, ...WRITE_HELP };
+const HELP: Record<string, string> = { ...READ_HELP, ...WRITE_HELP, start: START_HELP };
 
 // ── чтение ───────────────────────────────────────────────────────────────
 
@@ -363,7 +367,7 @@ async function send(): Promise<void> {
   await sendAll(resolveContext());
 }
 
-const COMMANDS: Record<string, (args: string[]) => void | Promise<void>> = { list, show, search, files, pull, ...WRITE_COMMANDS };
+const COMMANDS: Record<string, (args: string[]) => void | Promise<void>> = { list, show, search, files, pull, ...WRITE_COMMANDS, ...START_COMMANDS };
 
 async function main(): Promise<void> {
   const [command, ...args] = process.argv.slice(2);
