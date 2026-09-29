@@ -3,7 +3,8 @@
  * вызова. Повторяет то, что проверено живьём: список карточек без описания и
  * пунктов чек-листов (они — только в `GET /cards/{id}`), свойства — `id_<поле>`,
  * выбор — массив id, ограничение доски «без «Сути» не создать» — 400 с
- * `error_text`. Пути связи, пунктов и комментариев — по документации.
+ * `error_text`. Пути связи и пунктов проверены живьём 29.09, комментариев —
+ * по документации.
  */
 
 import { KaitenClient } from '../kaiten-client.js';
@@ -34,6 +35,11 @@ export interface FakeCard {
   checklists: FakeChecklist[];
   comments: string[];
   archived: boolean;
+  /** Как живьём 29.09: дата создания и автор есть и в списке, и в карточке. */
+  created?: string;
+  owner?: { email: string | null; full_name: string | null };
+  column_changed_at?: string;
+  text_format_type_id?: number;
 }
 
 export interface FakeKaiten {
@@ -109,6 +115,7 @@ export function fakeKaiten(options: { requiredSummaryKey?: string | null; firstI
         checklists: [],
         comments: [],
         archived: false,
+        created: '2026-09-28T10:00:00.000Z',
       };
       fake.cards.set(card.id, card);
       return json(200, card);

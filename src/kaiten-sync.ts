@@ -21,14 +21,20 @@
  * ошибки берётся из ответа Kaiten (для ограничений доски это `error_text`,
  * который написал владелец).
  *
- * НЕ ПРОВЕРЕНО ЖИВЬЁМ (по документации): связь эпик → задача (`addChild`),
- * отметка и текст пункта (`updateChecklistItem`), создание карточки сразу в
- * «Сделано» при ограничениях доски. Первый живой вызов — на одной тестовой
- * карточке (`npm run kaiten-sync -- --only <задача>`) с перечитыванием.
+ * Карточки, заведённые в интерфейсе, становятся задачами (`core/kaiten-adopt.ts`):
+ * комментарий с исходной постановкой, пометка `external_id`, операция
+ * `adopt`. Описание перерисует следующий проход.
+ *
+ * НЕ ПРОВЕРЕНО ЖИВЬЁМ (по документации): создание карточки сразу в «Сделано»
+ * при ограничениях доски, комментарий (`addComment`), запись `external_id`
+ * существующей карточке. Первый живой вызов — на одной тестовой карточке
+ * (`npm run kaiten-sync -- --only <задача или id карточки>`) с перечитыванием.
  */
 
+import { adoptedTask, label, originalComment, planAdoption, type AdoptPlan, type FullCard } from './core/kaiten-adopt.js';
 import {
   diffChecklists,
+  localDate,
   emptyDiff,
   planKaitenSync,
   type CardView,
@@ -38,7 +44,7 @@ import {
   type SyncAction,
   type SyncPlan,
 } from './core/kaiten-sync-plan.js';
-import type { Op, SyncedItem } from './core/task-ops.js';
+import type { AdoptItem, Op, SyncedItem } from './core/task-ops.js';
 import { refOf, type TaskRecord } from './core/tasks-index.js';
 import { KaitenApiError, type Card, type KaitenClient } from './kaiten-client.js';
 
@@ -54,6 +60,10 @@ export interface SyncError {
 
 export interface SyncRun {
   plan: SyncPlan;
+  /** Карточки без файла — в задачи. */
+  adopt: AdoptPlan;
+  /** Что получилось из карточки (сухой прогон с подробностями и запись): имя задачи или что поправить. */
+  adopted: Map<number, { item: AdoptItem } | { problem: string }>;
   /** Что станет с чек-листами карточек (по id задачи) — в сухом прогоне с подробностями и при записи. */
   checklists: Map<string, ChecklistDiff>;
   ops: SyncOp[];
@@ -74,6 +84,7 @@ export function toCardView(card: Card): CardView {
     typeId: card.type_id,
     dueDate: card.due_date,
     columnChangedAt: card.column_changed_at ?? undefined,
+    createdAt: card.created,
   };
 }
 
@@ -123,6 +134,21 @@ function describe(action: SyncAction): string {
 
 export interface RunInput extends Omit<PlanInput, 'cards'> {
   boardId: number;
+  /** Почта → человек (`convert/people.json`): автор задачи из карточки. */
+  people?: Readonly<Record<string, string>>;
+  /** Только эти карточки переносить в задачи; при `only` без него — ни одной. */
+  onlyCards?: ReadonlySet<number>;
+  /** Дата операции `YYYY-MM-DD`; по умолчанию сегодня. */
+  date?: string;
+}
+
+function fullOf(card: Card): FullCard {
+  return {
+    description: card.description ?? null,
+    ownerEmail: card.owner?.email,
+    ownerName: card.owner?.full_name,
+    textFormat: card.text_format_type_id,
+  };
 }
 
 export type RunMode = 'plan' | 'details' | 'apply';
@@ -134,10 +160,13 @@ export type RunMode = 'plan' | 'details' | 'apply';
 export async function runKaitenSync(client: KaitenClient, input: RunInput, mode: RunMode): Promise<SyncRun> {
   const cards = (await client.listCards({ boardId: input.boardId })).map(toCardView);
   const plan = planKaitenSync({ ...input, cards });
-  const run: SyncRun = { plan, checklists: new Map(), ops: [], errors: [], done: 0 };
+  const adopt = planAdoption({ ...input, cards, onlyCards: input.onlyCards ?? (input.only ? new Set() : undefined) });
+  const run: SyncRun = { plan, adopt, adopted: new Map(), checklists: new Map(), ops: [], errors: [], done: 0 };
   if (mode === 'plan') return run;
+  const adoptCtx = { mapping: input.mapping, people: input.people ?? {}, date: input.date ?? localDate(new Date().toISOString()) };
 
   if (mode === 'details') {
+    for (const candidate of adopt.candidates) run.adopted.set(candidate.card.id, adoptedTask(candidate, fullOf(await client.getCard(candidate.card.id)), adoptCtx));
     for (const action of plan.actions) {
       if (action.kind === 'update' && action.content) {
         const card = await client.getCard(action.cardId);
@@ -149,7 +178,31 @@ export async function runKaitenSync(client: KaitenClient, input: RunInput, mode:
     return run;
   }
 
-  // Сначала поля Kaiten в файлы — они не зависят от записи в Kaiten.
+  // Карточки без файла: комментарий → пометка → файл (порядок и обрывы — в kaiten-adopt.ts).
+  const adoptItems: AdoptItem[] = [];
+  for (const candidate of adopt.candidates) {
+    try {
+      const card = await client.getCard(candidate.card.id);
+      const built = adoptedTask(candidate, fullOf(card), adoptCtx);
+      run.adopted.set(candidate.card.id, built);
+      if ('problem' in built) {
+        run.errors.push({ what: `перенести карточку ${label(candidate.card)} в задачи`, message: built.problem });
+        continue;
+      }
+      if (!candidate.recovery) {
+        const description = card.description?.trim();
+        if (description) await client.addComment(candidate.card.id, originalComment(description));
+        await client.updateCard(candidate.card.id, { external_id: candidate.id });
+      }
+      adoptItems.push(built.item);
+      run.done += 1;
+    } catch (error) {
+      run.errors.push({ what: `перенести карточку ${label(candidate.card)} в задачи`, message: apiErrorText(error) });
+    }
+  }
+  if (adoptItems.length > 0) run.ops.push({ op: { kind: 'adopt', items: adoptItems }, what: `задачи из карточек Kaiten (${adoptItems.length})` });
+
+  // Поля Kaiten в файлы — они не зависят от записи в Kaiten.
   if (plan.mirror.length > 0) run.ops.push({ op: { kind: 'mirror', items: plan.mirror }, what: `поля из Kaiten (${plan.mirror.length})` });
 
   const synced: SyncedItem[] = [];
@@ -232,11 +285,19 @@ function checklistLine(diff: ChecklistDiff | undefined): string {
 }
 
 /** План для владельца: что будет сделано и чего не будет. */
-export function formatPlan(run: Pick<SyncRun, 'plan' | 'checklists'>): string[] {
+export function formatPlan(run: Pick<SyncRun, 'plan' | 'checklists'> & Partial<Pick<SyncRun, 'adopt' | 'adopted'>>): string[] {
   const { plan } = run;
   const out: string[] = [];
   const count = (kind: SyncAction['kind']): number => plan.actions.filter((a) => a.kind === kind).length;
-  out.push(`Создать карточек: ${count('create')}, обновить: ${count('update')}, связать с эпиком: ${count('link')}; из Kaiten в задачи: ${plan.mirror.length}`);
+  const adopt = run.adopt?.candidates ?? [];
+  out.push(
+    `Создать карточек: ${count('create')}, обновить: ${count('update')}, связать с эпиком: ${count('link')}; из Kaiten в задачи: ${plan.mirror.length}; новых задач из карточек: ${adopt.length}`,
+  );
+  for (const c of adopt) {
+    const built = run.adopted?.get(c.card.id);
+    const result = built === undefined ? '' : 'problem' in built ? ` — не перенести: ${built.problem}` : ` → ${built.item.slug}`;
+    out.push(`  → файл: ${label(c.card)} (${c.type}, ${c.status}${c.epic ? `, эпик ${c.epic}` : ''})${c.recovery ? ' [повтор после обрыва]' : ''}${result}`);
+  }
   for (const a of plan.actions) {
     const lists = checklistLine(run.checklists.get(a.task.fm.id));
     if (a.kind === 'create') out.push(`  + ${a.task.slug}: «${a.task.fm.title}» (${a.task.fm.type}, ${a.task.fm.status})${lists}`);
@@ -258,6 +319,8 @@ export function formatPlan(run: Pick<SyncRun, 'plan' | 'checklists'>): string[] 
     out.push(`  ← ${plan.names[m.id] ?? m.id}: ${fields.join(', ')}`);
   }
   const r = plan.report;
+  if (run.adopt && run.adopt.problems.length > 0) out.push(`Карточки без задачи, которые не перенести — поправьте в Kaiten: ${run.adopt.problems.join('; ')}`);
+  if (run.adopt && run.adopt.foreign.length > 0) out.push(`Карточки с чужим внешним ключом — не трогаем: ${run.adopt.foreign.join('; ')}`);
   if (r.unknownColumns.length > 0) out.push(`Карточка в колонке не из конфига — статус не переносим: ${r.unknownColumns.join(', ')}`);
   if (r.firstLoadCandidates > 0) out.push(`Перенесённых открытых задач без карточки: ${r.firstLoadCandidates} — только первой заливкой (--first-load).`);
   if (r.missingCards.length > 0) out.push(`Карточки нет на доске — не создаём заново: ${r.missingCards.join(', ')}`);

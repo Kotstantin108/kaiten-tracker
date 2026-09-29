@@ -41,7 +41,13 @@ export type Op =
    * переезжает в `archive/<месяц закрытия>/`, открылась снова — обратно в
    * `active/` (Q42: двигает только синхронизатор), вместе с журналом.
    */
-  | { kind: 'mirror'; items: MirrorItem[] };
+  | { kind: 'mirror'; items: MirrorItem[] }
+  /**
+   * Карточки, заведённые в интерфейсе Kaiten, — новыми файлами (этап 2c,
+   * `kaiten-adopt.ts`). Пакетом на проход. id выведен из карточки: задача с
+   * таким id уже есть (перенёс другой разработчик) — пропускается.
+   */
+  | { kind: 'adopt'; items: AdoptItem[] };
 
 /** Что поменять в файле по карточке; `null` — в карточке поле пустое. */
 export interface MirrorItem {
@@ -52,6 +58,14 @@ export interface MirrorItem {
   team?: string | null;
   due?: string | null;
   /** Месяц закрытия (YYYY-MM) — по времени переноса карточки в колонку. */
+  closedMonth?: string;
+}
+
+/** Готовый файл задачи из карточки; путь выбирает применение (занятое имя — следующее свободное). */
+export interface AdoptItem {
+  slug: string;
+  text: string;
+  /** Закрытая карточка — в `archive/<месяц>/`. */
   closedMonth?: string;
 }
 
@@ -310,6 +324,7 @@ export function applyOp(op: Op, texts: TaskTexts, ctx: OpContext): OpResult {
 
   if (op.kind === 'synced') return applySynced(op.items, texts);
   if (op.kind === 'mirror') return applyMirror(op.items, texts, ctx);
+  if (op.kind === 'adopt') return applyAdopt(op.items, texts);
 
   const task = byId(texts, op.id);
   if ('error' in task) return task;
@@ -427,6 +442,29 @@ function applyMirror(items: readonly MirrorItem[], texts: TaskTexts, ctx: OpCont
     if (task.log !== null) changes.push({ path: logPath(task.path), text: null }, { path: logPath(path), text: task.log });
   }
   return { changes, summary: `из Kaiten: задач ${count}`, warnings };
+}
+
+function applyAdopt(items: readonly AdoptItem[], texts: TaskTexts): OpResult {
+  const ids = new Set(records(texts).map((t) => t.fm.id));
+  const taken = takenSlugs(texts);
+  const changes: FileChange[] = [];
+  const warnings: string[] = [];
+  for (const item of items) {
+    const { id } = parseTaskDocument(item.text).data as { id?: string };
+    // Сначала id, потом имя: иначе повтор той же карточки стал бы задачей «slug-2».
+    if (id === undefined || ids.has(id)) continue;
+    const slug = uniqueSlug(item.slug, taken);
+    const path = item.closedMonth ? `archive/${item.closedMonth}/${slug}.md` : `active/${slug}.md`;
+    const result = checked(item.text, path);
+    if ('error' in result) {
+      warnings.push(`${slug}: карточка не перенесена — ${result.error}`);
+      continue;
+    }
+    ids.add(id);
+    taken.add(slug);
+    changes.push({ path, text: item.text });
+  }
+  return { changes, summary: `из Kaiten новых задач: ${changes.length}`, warnings };
 }
 
 function applySynced(items: readonly SyncedItem[], texts: TaskTexts): OpResult {

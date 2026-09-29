@@ -175,6 +175,13 @@ export function refreshLocalCopy(ctx: Context, target: string | null = localCopy
 
 const PeopleSchema = z.object({ emails: z.record(z.string(), z.string()) }).passthrough();
 
+/** Реестр людей: почта (в нижнем регистре) → человек. Нет файла — пусто. */
+export function loadPeople(): Record<string, string> {
+  if (!existsSync(PEOPLE_PATH)) return {};
+  const { emails } = PeopleSchema.parse(JSON.parse(readFileSync(PEOPLE_PATH, 'utf8')));
+  return Object.fromEntries(Object.entries(emails).map(([email, person]) => [email.toLowerCase(), person]));
+}
+
 /**
  * Кто создаёт задачу (`created_by`): `person` из настроек, иначе человек по
  * git-почте из `convert/people.json` — тот же реестр, что у конвертера.
@@ -188,11 +195,8 @@ export function currentPerson(): string {
   } catch {
     email = '';
   }
-  if (email && existsSync(PEOPLE_PATH)) {
-    const people = PeopleSchema.parse(JSON.parse(readFileSync(PEOPLE_PATH, 'utf8')));
-    const key = people.emails[email];
-    if (key) return key;
-  }
+  const key = email ? loadPeople()[email] : undefined;
+  if (key) return key;
   throw new UsageError('Не знаю, кто вы: укажите себя (person) в настройках kaiten.');
 }
 
@@ -235,6 +239,8 @@ export async function syncWithKaiten(ctx: Context, client?: KaitenClient): Promi
           repoWebBase: repoWebBase(ctx.loaded.project.tasksRepo?.url),
           defaultTeam: ctx.loaded.config.defaultTeam,
           boardId: mapping.boardId,
+          people: loadPeople(),
+          date: today(),
         },
         'apply',
       );

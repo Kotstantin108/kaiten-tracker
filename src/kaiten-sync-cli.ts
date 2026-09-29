@@ -16,8 +16,9 @@
  *                          месяца» — текущий и два предыдущих)
  *   --closed-since YYYY-MM
  *   --with-cancelled       в первую заливку — и отменённые за тот же срок
- *   --only <задача>        только одна задача (ключ, id или slug) — пробный
- *                          прогон на безвредной карточке перед всеми
+ *   --only <задача>        только одна задача (ключ, id или slug) или карточка
+ *                          без задачи (её id) — пробный прогон на безвредной
+ *                          карточке перед всеми
  *   --apply                выполнить; без него — план с подробностями по
  *                          каждой карточке (читаются только обновляемые)
  *
@@ -33,7 +34,7 @@ import { loadProject } from './config.js';
 import { repoWebBase } from './core/kaiten-sync-plan.js';
 import { buildIndex, resolveTask } from './core/tasks-index.js';
 import { KaitenClient } from './kaiten-client.js';
-import { SETTINGS_PATH, today } from './kaiten-cli.js';
+import { loadPeople, SETTINGS_PATH, today } from './kaiten-cli.js';
 import { loadSettings } from './kaiten-context.js';
 import { formatPlan, runKaitenSync } from './kaiten-sync.js';
 import { KAITEN_LOCK, recordOp, syncStore, withLockAsync } from './store-write.js';
@@ -87,10 +88,13 @@ async function main(): Promise<void> {
     : undefined;
   const onlyRef = argValue(argv, '--only');
   let only: Set<string> | undefined;
+  let onlyCards: Set<number> | undefined;
   if (onlyRef) {
     const found = resolveTask(index.tasks, onlyRef);
-    if ('error' in found) fail(found.error);
-    only = new Set([found.task.fm.id]);
+    // Номер карточки, у которой ещё нет задачи, — пробный перенос карточки в задачи.
+    if ('error' in found && !/^\d+$/.test(onlyRef)) fail(found.error);
+    only = new Set('error' in found ? [] : [found.task.fm.id]);
+    onlyCards = new Set('error' in found ? [Number(onlyRef)] : []);
   }
   const input = {
     tasks: index.tasks,
@@ -101,6 +105,9 @@ async function main(): Promise<void> {
     boardId: mapping.boardId,
     firstLoad,
     only,
+    onlyCards,
+    people: loadPeople(),
+    date: today(),
   };
   // Запись — под тем же замком, что фон и pull: иначе две карточки одной задаче.
   const run = apply ? await withLockAsync(store, KAITEN_LOCK, () => runKaitenSync(client, input, 'apply')) : await runKaitenSync(client, input, 'details');
@@ -119,7 +126,7 @@ async function main(): Promise<void> {
     if ('error' in r) console.error(`Не записано в задачи: ${what} — ${r.error}`);
   }
   if (run.ops.length > 0) syncStore(store);
-  console.log(`\nВыполнено действий: ${run.done} из ${run.plan.actions.length}; ключей и отметок в задачах: ${run.ops.length}.`);
+  console.log(`\nВыполнено действий: ${run.done} из ${run.plan.actions.length + run.adopt.candidates.length}; ключей и отметок в задачах: ${run.ops.length}.`);
   for (const e of run.errors) console.error(`Ошибка: ${e.what} — ${e.message}`);
   if (run.errors.length > 0) process.exit(1);
 }

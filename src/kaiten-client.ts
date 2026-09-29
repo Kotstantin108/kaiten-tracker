@@ -55,6 +55,14 @@ export const CardSchema = z
     children_ids: z.array(z.number()).nullable().optional(),
     /** Значения полей: `id_<поле>` → значение (селект — массив id вариантов). */
     properties: z.record(z.string(), z.unknown()).nullable().optional(),
+    /** Описание — только в `GET /cards/{id}`; у пустой карточки `null` (живьём 29.09). */
+    description: z.string().nullable().optional(),
+    /** Формат описания; живьём 29.09 в ответе карточки поля нет — markdown по умолчанию API. */
+    text_format_type_id: z.number().optional(),
+    /** Когда карточку завели, UTC ISO (живьём 29.09: и в списке, и в карточке). */
+    created: z.string().optional(),
+    /** Кто завёл карточку (живьём 29.09: и в списке, и в карточке). */
+    owner: z.object({ email: z.string().nullable().optional(), full_name: z.string().nullable().optional() }).passthrough().nullable().optional(),
     /** Чек-листы приходят в карточке целиком (`GET /cards/{id}`); читаем только имена. */
     checklists: z
       .array(
@@ -375,6 +383,15 @@ export class KaitenClient {
    */
   async updateChecklistItem(cardId: number, checklistId: number, itemId: number, patch: { checked?: boolean; text?: string }): Promise<unknown> {
     return this.request('PATCH', `/cards/${cardId}/checklists/${checklistId}/items/${itemId}`, { body: patch, schema: z.unknown() });
+  }
+
+  /**
+   * Комментарий к карточке: `POST /cards/{card_id}/comments {text}` — по
+   * документации. НЕ ПРОВЕРЕНО ЖИВЬЁМ: первый вызов — на тестовой карточке
+   * (`npm run kaiten-sync -- --only <id карточки>`) с перечитыванием.
+   */
+  async addComment(cardId: number, text: string): Promise<unknown> {
+    return this.request('POST', `/cards/${cardId}/comments`, { body: { text }, schema: z.unknown() });
   }
 
   // ── Структура аккаунта: чтение и создание для `setup` ─────────────────────

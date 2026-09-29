@@ -22,13 +22,12 @@
  *     причиной — молча не теряется ничего.
  */
 
-import { createHash } from 'node:crypto';
 import { posix } from 'node:path';
 
 import { serializeTaskDocument } from '../core/document.js';
 import { SLUG_RE } from '../core/lint.js';
 import { CLOSED_STATUSES, FrontmatterSchema, type Frontmatter, type Priority, type TaskStatus, type TaskType } from '../core/schema.js';
-import { ulid } from '../core/ulid.js';
+import { deriveId } from '../core/ulid.js';
 import type { TaskFile } from '../task-source.js';
 import type { TaskHistory } from './git-history.js';
 
@@ -131,12 +130,7 @@ export interface ConvertResult {
 
 export const SUMMARY_LIMIT = 300;
 
-/** ULID из даты создания и хеша ключа: одинаковый при каждом прогоне. */
-export function deriveId(externalId: string, created: string): string {
-  const [y, m, d] = created.split('-').map(Number);
-  const random = createHash('sha256').update(externalId).digest().subarray(0, 10);
-  return ulid(Date.UTC(y, m - 1, d), random);
-}
+export { deriveId };
 
 function isoDate(yyyymmdd: string): string {
   return `${yyyymmdd.slice(0, 4)}-${yyyymmdd.slice(4, 6)}-${yyyymmdd.slice(6, 8)}`;

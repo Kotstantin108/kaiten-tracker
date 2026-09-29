@@ -7,7 +7,7 @@
  * внутри одной миллисекунды не нужна: id сравнивают на равенство, не сортируют.
  */
 
-import { randomBytes } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 
 const ALPHABET = '0123456789ABCDEFGHJKMNPQRSTVWXYZ';
 
@@ -31,4 +31,16 @@ export function ulid(now: number = Date.now(), random: Uint8Array = randomBytes(
     bits >>= 5n;
   }
   return time + rand;
+}
+
+/**
+ * ULID из даты создания и хеша ключа: одинаковый при каждом вычислении. Им
+ * пользуются конвертер (ключ — `external_id` старой школы) и перенос карточек
+ * из Kaiten (ключ — `kaiten-card:<id>`): повтор после обрыва и второй
+ * разработчик получают ту же задачу, а не вторую.
+ */
+export function deriveId(key: string, created: string): string {
+  const [y, m, d] = created.split('-').map(Number);
+  const random = createHash('sha256').update(key).digest().subarray(0, 10);
+  return ulid(Date.UTC(y, m - 1, d), random);
 }
