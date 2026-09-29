@@ -103,3 +103,20 @@ const SECTION_HINTS: Record<string, string> = {
 export function kaitenTemplate(type: TaskType): string {
   return `${SKELETONS[type].sections.map((name) => `## ${name}\n\n${SECTION_HINTS[name] ?? ''}\n`).join('\n')}`;
 }
+
+/**
+ * Описание карточки без незаполненных подсказок шаблона: Kaiten подставляет
+ * шаблон типа и в карточку, созданную без описания (живьём 29.09), а
+ * подсказка, которую не стёрли, — не текст задачи. Подсказки любого типа:
+ * тип карточки могли сменить после создания.
+ */
+export function stripTemplateHints(text: string): string {
+  const hints = new Set(Object.values(SECTION_HINTS));
+  const lines = text.split('\n').filter((line) => !hints.has(line.trim()));
+  return lines.join('\n').replace(/\n{3,}/g, '\n\n').trim();
+}
+
+/** В тексте есть что-то кроме заголовков. */
+export function hasContent(text: string): boolean {
+  return text.split('\n').some((line) => line.trim() !== '' && !HEADING_RE.test(line));
+}

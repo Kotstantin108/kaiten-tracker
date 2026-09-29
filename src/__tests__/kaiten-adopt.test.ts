@@ -11,6 +11,7 @@ import { adoptId, originalComment } from '../core/kaiten-adopt.js';
 import { deriveId } from '../core/ulid.js';
 import { Q41_NOTICE } from '../core/kaiten-sync-plan.js';
 import { FrontmatterSchema, type Frontmatter } from '../core/schema.js';
+import { kaitenTemplate } from '../core/skeleton.js';
 import { applyOp, tasksOf } from '../core/task-ops.js';
 import { formatPlan, runKaitenSync, type RunInput } from '../kaiten-sync.js';
 import { fakeKaiten, seedCard, type FakeCard } from './fake-kaiten.js';
@@ -145,6 +146,19 @@ describe('карточка из интерфейса', () => {
     await w.sync();
     expect(w.fake.cards.get(701)?.comments).toEqual([]);
     expect(fmOf(w.texts.get('archive/2026-08/pochinit-vkhod-po-ssylke.md')).status).toBe('done');
+  });
+
+  it('незаполненный шаблон типа — не текст задачи: подсказки вырезаны, комментария нет', async () => {
+    const w = world();
+    // Как живьём 29.09: карточке без описания Kaiten подставляет шаблон типа.
+    seedCard(w.fake, uiCard({ id: 705, description: kaitenTemplate('bug') }));
+    seedCard(w.fake, uiCard({ id: 706, title: 'Добавить экспорт', description: kaitenTemplate('bug').replace('Ожидаемое поведение.', 'Вход с первого раза.') }));
+    await w.sync();
+    expect(w.fake.cards.get(705)?.comments).toEqual([]);
+    const body = parseTaskDocument(w.texts.get('active/pochinit-vkhod-po-ssylke.md') ?? '').body;
+    expect(body.trim()).toBe('## Что происходит\n\n## Как воспроизвести\n\n## Как должно быть\n\n## Критерии');
+    expect(w.fake.cards.get(706)?.comments).toHaveLength(1);
+    expect(parseTaskDocument(w.texts.get('active/dobavit-eksport.md') ?? '').body).toContain('## Как должно быть\n\nВход с первого раза.');
   });
 
   it('автор не из реестра людей — его имя в Kaiten', async () => {

@@ -25,13 +25,14 @@
  * комментарий с исходной постановкой, пометка `external_id`, операция
  * `adopt`. Описание перерисует следующий проход.
  *
- * НЕ ПРОВЕРЕНО ЖИВЬЁМ (по документации): создание карточки сразу в «Сделано»
- * при ограничениях доски, комментарий (`addComment`), запись `external_id`
- * существующей карточке. Первый живой вызов — на одной тестовой карточке
- * (`npm run kaiten-sync -- --only <задача или id карточки>`) с перечитыванием.
+ * Проверено живьём 29.09 на тестовых карточках: создание (в том числе сразу
+ * в «Сделано»/«Отменено» — ограничения доски создание не запрещают), связь с
+ * эпиком, пункты чек-листов, комментарий, запись `external_id`, перенос
+ * карточек из интерфейса и перерисовка их описания. Новую конструкцию API —
+ * сначала на одной тестовой карточке (`--only`) с перечитыванием.
  */
 
-import { adoptedTask, label, originalComment, planAdoption, type AdoptPlan, type FullCard } from './core/kaiten-adopt.js';
+import { adoptedTask, label, planAdoption, type AdoptPlan, type FullCard } from './core/kaiten-adopt.js';
 import {
   diffChecklists,
   localDate,
@@ -63,7 +64,7 @@ export interface SyncRun {
   /** Карточки без файла — в задачи. */
   adopt: AdoptPlan;
   /** Что получилось из карточки (сухой прогон с подробностями и запись): имя задачи или что поправить. */
-  adopted: Map<number, { item: AdoptItem } | { problem: string }>;
+  adopted: Map<number, ReturnType<typeof adoptedTask>>;
   /** Что станет с чек-листами карточек (по id задачи) — в сухом прогоне с подробностями и при записи. */
   checklists: Map<string, ChecklistDiff>;
   ops: SyncOp[];
@@ -82,7 +83,8 @@ export function toCardView(card: Card): CardView {
     archived: card.archived === true,
     columnId: card.column_id,
     typeId: card.type_id,
-    dueDate: card.due_date,
+    // Срок без времени — полночь UTC: берём дату как есть, иначе западнее UTC он съехал бы на день назад.
+    dueDate: card.due_date && card.due_date_time_present !== true ? card.due_date.slice(0, 10) : card.due_date,
     columnChangedAt: card.column_changed_at ?? undefined,
     createdAt: card.created,
   };
@@ -191,8 +193,7 @@ export async function runKaitenSync(client: KaitenClient, input: RunInput, mode:
       }
       // Пометка появилась после чтения доски — карточку переносит другой разработчик: без второго комментария.
       if (!candidate.recovery && (card.external_id === null || card.external_id === undefined)) {
-        const description = card.description?.trim();
-        if (description) await client.addComment(candidate.card.id, originalComment(description));
+        if (built.comment !== null) await client.addComment(candidate.card.id, built.comment);
         await client.updateCard(candidate.card.id, { external_id: candidate.id });
       }
       adoptItems.push(built.item);

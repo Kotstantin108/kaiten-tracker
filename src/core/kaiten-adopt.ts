@@ -37,6 +37,7 @@ import type { ConfigMapping } from '../config.js';
 import { serializeTaskDocument } from './document.js';
 import { localDate, type CardView } from './kaiten-sync-plan.js';
 import { lintTask } from './lint.js';
+import { hasContent, stripTemplateHints } from './skeleton.js';
 import { CLOSED_STATUSES, FrontmatterSchema, PRIORITIES, STATUSES, TASK_TYPES, type TaskStatus, type TaskType } from './schema.js';
 import { slugify, type AdoptItem } from './task-ops.js';
 import type { TaskRecord } from './tasks-index.js';
@@ -171,8 +172,12 @@ export interface AdoptContext {
   date: string;
 }
 
-/** Файл задачи из карточки — или что поправить в карточке. */
-export function adoptedTask(candidate: AdoptCandidate, full: FullCard, ctx: AdoptContext): { item: AdoptItem } | { problem: string } {
+/**
+ * Файл задачи из карточки — или что поправить в карточке. `comment` —
+ * исходная постановка для первого комментария; `null`, если в описании нет
+ * ничего, кроме заголовков и подсказок шаблона.
+ */
+export function adoptedTask(candidate: AdoptCandidate, full: FullCard, ctx: AdoptContext): { item: AdoptItem; comment: string | null } | { problem: string } {
   const { card, type, status } = candidate;
   const { mapping } = ctx;
   if (full.textFormat !== undefined && full.textFormat !== 1) return { problem: 'описание карточки не в markdown — перенесите вручную' };
@@ -202,7 +207,8 @@ export function adoptedTask(candidate: AdoptCandidate, full: FullCard, ctx: Adop
   });
   if (!parsed.success) return { problem: parsed.error.issues.map((i) => `${i.path.join('.')}: ${i.message}`).join('; ') };
 
-  const description = (full.description ?? '').replace(/\r\n/g, '\n').trim();
+  const original = (full.description ?? '').replace(/\r\n/g, '\n').trim();
+  const description = stripTemplateHints(original);
   const text = serializeTaskDocument(parsed.data, description ? `\n${description}\n` : '');
   const slug = slugify(card.title) || `card-${card.id}`;
   const closed = CLOSED_STATUSES.includes(status);
@@ -210,7 +216,7 @@ export function adoptedTask(candidate: AdoptCandidate, full: FullCard, ctx: Adop
   const path = closed ? `archive/${closedMonth}/${slug}.md` : `active/${slug}.md`;
   const errors = lintTask(text, { path }).issues.filter((i) => i.level === 'error');
   if (errors.length > 0) return { problem: errors.map((i) => i.message).join('; ') };
-  return { item: { slug, text, ...(closedMonth ? { closedMonth } : {}) } };
+  return { item: { slug, text, ...(closedMonth ? { closedMonth } : {}) }, comment: hasContent(description) ? originalComment(original) : null };
 }
 
 /** Первый комментарий карточки — исходная постановка (Q41). */

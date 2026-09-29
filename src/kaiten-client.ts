@@ -46,8 +46,13 @@ export const CardSchema = z
     lane_id: z.number().optional(),
     type_id: z.number().optional(),
     archived: z.boolean().optional(),
-    /** Срок карточки, ISO; `null` — нет (живьём 28.09: в списке есть). */
+    /**
+     * Срок карточки; `null` — нет (живьём 28.09: в списке есть). Срок без
+     * времени приходит полночью UTC: `2026-10-15T00:00:00.000Z` при
+     * `due_date_time_present: false` (живьём 29.09).
+     */
     due_date: z.string().nullable().optional(),
+    due_date_time_present: z.boolean().optional(),
     /** Когда карточку перенесли в текущую колонку (живьём 28.09: в списке есть). */
     column_changed_at: z.string().nullable().optional(),
     /** Родители карточки; `null` — родителей нет (снято с живого аккаунта 23.09.2026). */
@@ -376,10 +381,9 @@ export class KaitenClient {
   }
 
   /**
-   * Отметка пункта чек-листа. НЕ ПРОВЕРЕНО ЖИВЬЁМ: путь и тело — по
-   * документации (`PATCH /cards/{card_id}/checklists/{checklist_id}/items/{id}`).
-   * Первый живой вызов — на безвредной тестовой карточке с перечитыванием
-   * (грабли PROMPT: API молча выбрасывает незнакомое).
+   * Отметка и текст пункта чек-листа:
+   * `PATCH /cards/{card_id}/checklists/{checklist_id}/items/{id}` — проверено
+   * живьём 29.09 (перечитыванием: и `checked`, и `text`).
    */
   async updateChecklistItem(cardId: number, checklistId: number, itemId: number, patch: { checked?: boolean; text?: string }): Promise<unknown> {
     return this.request('PATCH', `/cards/${cardId}/checklists/${checklistId}/items/${itemId}`, { body: patch, schema: z.unknown() });
@@ -387,8 +391,8 @@ export class KaitenClient {
 
   /**
    * Комментарий к карточке: `POST /cards/{card_id}/comments {text}` — по
-   * документации. НЕ ПРОВЕРЕНО ЖИВЬЁМ: первый вызов — на тестовой карточке
-   * (`npm run kaiten-sync -- --only <id карточки>`) с перечитыванием.
+   * документации, проверено живьём 29.09: комментарий `type` 1, текст
+   * сохраняется как отправлен. Как он отображается (markdown ли) — не смотрели.
    */
   async addComment(cardId: number, text: string): Promise<unknown> {
     return this.request('POST', `/cards/${cardId}/comments`, { body: { text }, schema: z.unknown() });

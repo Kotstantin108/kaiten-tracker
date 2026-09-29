@@ -312,8 +312,8 @@ function reverse<T extends string>(values: Partial<Record<T, number>> | Record<s
 /**
  * Дата Kaiten в местном времени: `column_changed_at` приходит в UTC (живьём
  * 29.09), и закрытие в ночь на 1-е иначе ушло бы в прошлый месяц. Строка
- * без времени (`YYYY-MM-DD`) — как есть. Формат `due_date` живьём не
- * проверен: сроков на досках пока нет.
+ * без времени (`YYYY-MM-DD`) — как есть: так приходит срок без времени
+ * (`toCardView` отрезает полночь UTC, живьём 29.09).
  */
 export function localDate(value: string): string {
   if (/^\d{4}-\d{2}-\d{2}$/.test(value)) return value;

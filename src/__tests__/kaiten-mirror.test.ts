@@ -10,7 +10,7 @@ import { parseTaskDocument, serializeTaskDocument } from '../core/document.js';
 import { localDate, mirrorFromCard, type CardView } from '../core/kaiten-sync-plan.js';
 import { FrontmatterSchema, type Frontmatter } from '../core/schema.js';
 import { applyOp, tasksOf, type TaskTexts } from '../core/task-ops.js';
-import { formatPlan, runKaitenSync } from '../kaiten-sync.js';
+import { formatPlan, runKaitenSync, toCardView } from '../kaiten-sync.js';
 import { fakeKaiten, seedCard } from './fake-kaiten.js';
 
 const MAPPING: ConfigMapping = {
@@ -157,5 +157,14 @@ describe('сверка целиком', () => {
     const second = await runKaitenSync(fake.client, input(), 'apply');
     expect(second.plan.mirror).toEqual([]);
     expect(second.ops.filter((o) => o.op.kind === 'mirror')).toEqual([]);
+  });
+});
+
+describe('срок из Kaiten', () => {
+  it('без времени — дата как есть в любом часовом поясе; со временем — по местному', () => {
+    expect(toCardView({ id: 1, due_date: '2026-10-15T00:00:00.000Z', due_date_time_present: false }).dueDate).toBe('2026-10-15');
+    expect(toCardView({ id: 1, due_date: '2026-10-15T00:00:00.000Z' }).dueDate).toBe('2026-10-15');
+    expect(toCardView({ id: 1, due_date: '2026-10-15T20:30:00.000Z', due_date_time_present: true }).dueDate).toBe('2026-10-15T20:30:00.000Z');
+    expect(toCardView({ id: 1, due_date: null }).dueDate).toBeNull();
   });
 });
