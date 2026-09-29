@@ -18,7 +18,8 @@
     "tasks:lint": "tsx --env-file-if-exists=.env src/tasks-lint.ts",
     "convert": "tsx --env-file-if-exists=.env src/convert.ts",
     "kaiten": "tsx src/kaiten.ts",
-    "kaiten-sync": "tsx --env-file-if-exists=.env src/kaiten-sync-cli.ts"
+    "kaiten-sync": "tsx --env-file-if-exists=.env src/kaiten-sync-cli.ts",
+    "backup": "tsx --env-file-if-exists=.env src/kaiten-backup.ts"
   },
   "dependencies": {
     "yaml": "^2.9.1",

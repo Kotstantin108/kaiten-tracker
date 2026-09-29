@@ -406,6 +406,18 @@ export class KaitenClient {
   // {name, letter, color 2–25}; POST /company/custom-properties {name, type};
   // POST /company/custom-properties/{id}/select-values {value}.
 
+  // ── Только чтение для ночного бэкапа (`kaiten-backup.ts`): ответ — как есть ─
+
+  /** Комментарии карточки (живьём 29.09: массив, у комментария `text`, `author`, `created`). */
+  async listComments(cardId: number): Promise<unknown[]> {
+    return this.request('GET', `/cards/${cardId}/comments`, { schema: z.array(z.unknown()) });
+  }
+
+  /** Ограничения пространства (не документировано, формат снят с живого аккаунта 28.09). */
+  async listRestrictions(spaceId: number): Promise<unknown[]> {
+    return this.request('GET', `/spaces/${spaceId}/restrictions`, { schema: z.array(z.unknown()) });
+  }
+
   async listSpaces(): Promise<Space[]> {
     return this.request('GET', '/spaces', { schema: z.array(SpaceSchema) });
   }

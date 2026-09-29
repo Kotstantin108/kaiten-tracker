@@ -114,6 +114,7 @@ repo: acme-app
 | `src/kaiten-sync.ts`, `src/kaiten-sync-cli.ts` | Выполнение плана и скрипт владельца `npm run kaiten-sync` (сухой прогон по умолчанию, `--apply`, `--first-load`, `--only <задача или id карточки>`) |
 | `src/core/start.ts`, `src/kaiten-start.ts` | `kaiten start`: можно ли взять задачу в работу, имя ветки, ветка в репозитории кода, «В работе» (статусы работы — операция `move` в `task-ops`) |
 | `templates/tasks-repo/.github/workflows/tasks-lint.yml` | Проверка формата в Actions репозитория задач: на push в main, неблокирующая; копируется при создании репозитория задач |
+| `src/kaiten-backup.ts`, `templates/kaiten-backup/.github/workflows/kaiten-backup.yml` | Ночной бэкап Kaiten (`npm run backup -- --out <папка>`): файл на сущность, ключи по алфавиту — коммит только при изменениях; workflow — для приватного репозитория бэкапа владельца |
 | `skills/kaiten/SKILL.md` | Скилл агента: как работать с задачами через `kaiten` |
 | `tracker.config.json` | Репозитории-источники и маппинг доски Kaiten |
 

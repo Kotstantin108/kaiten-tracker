@@ -1,0 +1,73 @@
+# Ночной бэкап Kaiten — в приватный репозиторий владельца (решение 28.09:
+# своего сервера нет, по расписанию только бэкап).
+#
+# Шаблон лежит в kaiten-tracker; копируется в .github/workflows/ отдельного
+# приватного репозитория бэкапа. Снимок — файл на сущность (company/, spaces/),
+# коммит только при изменениях: история репозитория и есть история аккаунта.
+#
+# Нужно в настройках репозитория бэкапа (Settings → Secrets and variables → Actions):
+#   vars.KAITEN_TRACKER_REPO     — репозиторий kaiten-tracker, например owner/kaiten-tracker
+#   vars.KAITEN_DOMAIN           — домен Kaiten, например company.kaiten.ru
+#   secrets.KAITEN_TOKEN         — токен Kaiten с доступом на чтение ко всем пространствам
+#   secrets.KAITEN_TRACKER_TOKEN — fine-grained токен только на чтение kaiten-tracker
+# Права workflow на запись в сам репозиторий бэкапа — permissions ниже.
+
+name: Бэкап Kaiten
+
+on:
+  schedule:
+    - cron: '30 0 * * *' # 03:30 по Москве
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: kaiten-backup
+  cancel-in-progress: false
+
+jobs:
+  backup:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Репозиторий бэкапа
+        uses: actions/checkout@v4
+        with:
+          path: backup
+
+      - name: kaiten-tracker
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ vars.KAITEN_TRACKER_REPO }}
+          token: ${{ secrets.KAITEN_TRACKER_TOKEN }}
+          path: kaiten-tracker
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: kaiten-tracker/package-lock.json
+
+      - name: Зависимости
+        working-directory: kaiten-tracker
+        run: npm ci --no-audit --no-fund
+
+      - name: Снимок
+        working-directory: kaiten-tracker
+        env:
+          KAITEN_DOMAIN: ${{ vars.KAITEN_DOMAIN }}
+          KAITEN_TOKEN: ${{ secrets.KAITEN_TOKEN }}
+        run: npm run --silent backup -- --out "$GITHUB_WORKSPACE/backup"
+
+      - name: Коммит, если что-то изменилось
+        working-directory: backup
+        run: |
+          git add -A
+          if git diff --cached --quiet; then
+            echo "Изменений нет."
+            exit 0
+          fi
+          git -c user.name="kaiten-backup" -c user.email="kaiten-backup@users.noreply.github.com" \
+            commit -q -m "Бэкап Kaiten $(date -u +%Y-%m-%d)"
+          git push -q
