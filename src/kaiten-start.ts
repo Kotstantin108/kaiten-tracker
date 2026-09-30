@@ -27,11 +27,16 @@ export const START_HELP = `kaiten start <задача> — взять задач
 kaiten review — работа готова, kaiten done — влито в прод.
 
 В работу берут задачу из «Готово к работе», «Заблокировано» или «Ревью»
-(вернули на доработку); задачу в работе — продолжают.
+(вернули на доработку); задачу в работе — продолжают. Задачу из «Бэклога»
+берут, только если человек прямо поручил именно её.
 ${TASK_REF_HELP}
 
-Пример:
+Флаги:
+  --assigned          человек прямо поручил эту задачу: взять её и из «Бэклога»
+
+Примеры:
   kaiten start PRJ-123
+  kaiten start PRJ-140 --assigned
 `;
 
 function git(cwd: string, args: string[]): { ok: boolean; out: string; err: string } {
@@ -73,33 +78,36 @@ export function switchToTaskBranch(workDir: string, task: TaskRecord): BranchRes
 }
 
 async function start(args: string[]): Promise<void> {
-  const { positionals } = parse('start', args, {}, 1);
+  const { values, positionals } = parse('start', args, { assigned: { type: 'boolean' } }, 1);
+  const assigned = values.assigned === true;
   if (positionals.length === 0) throw new UsageError('Укажите задачу: kaiten start PRJ-123');
   const ctx = resolveContext();
   printNotices(ctx);
   const task = findTask(loadTasks(ctx).index, positionals[0]);
-  const problem = startProblem(task, ctx.currentRepo);
+  const problem = startProblem(task, ctx.currentRepo, assigned);
   if (problem) throw new UsageError(`Задачу ${refOf(task)} не взять в работу: ${problem}.`, 1);
   const result = switchToTaskBranch(ctx.workDir, task);
   if ('error' in result) throw new UsageError(`Задачу ${refOf(task)} не взять в работу: ${result.error}.`, 1);
 
-  if (result.how === 'created') console.log(`Ветка ${result.branch} — новая${result.from ? `, от ${result.from}` : ''}.`);
+  if (result.how === 'created') console.log(`Ветка ${result.branch} — новая${result.from ? `, от ${result.from}` : ''}; вы на ней.`);
   else if (result.how === 'switched') console.log(`Ветка ${result.branch} — у задачи уже была, переключился на неё.`);
   else console.log(`Вы уже на ветке задачи ${result.branch}.`);
 
   if (task.fm.status === 'in-progress') {
-    console.log(`Задача ${refOf(task)} уже в работе.`);
+    console.log(`Задача ${refOf(task)} уже в работе${result.how === 'created' ? ' — в этом репозитории её ветки ещё не было' : ''}.`);
     return;
   }
   let card: Awaited<ReturnType<typeof moveCardFirst>>;
   try {
+    // Доска пускает «В работу» только из «Готово к работе»: задачу из «Бэклога» карточка проходит в два шага.
+    if (task.fm.status === 'backlog') await moveCardFirst(ctx, task, 'ready');
     card = await moveCardFirst(ctx, task, 'in-progress');
   } catch (error) {
     // Ветка уже заведена — так и сказать, иначе человек решит, что не сделано ничего.
     if (error instanceof UsageError) throw new UsageError(`${error.message}\nВетка ${result.branch} заведена, задача осталась в прежнем статусе.`, error.code);
     throw error;
   }
-  await commit(ctx, { kind: 'move', id: task.fm.id, status: 'in-progress' }, `в работу ${refOf(task)}`);
+  await commit(ctx, { kind: 'move', id: task.fm.id, status: 'in-progress', ...(assigned ? { assigned: true } : {}) }, `в работу ${refOf(task)}`);
   cardNotMovedNote(card);
 }
 

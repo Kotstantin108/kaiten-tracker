@@ -31,7 +31,7 @@ export type Op =
   | { kind: 'cancel'; id: string; reason: string }
   | { kind: 'block'; id: string; reason: string }
   /** Статус работы: `kaiten start` (в работу), `review`, `done`. Заметка — в журнал. */
-  | { kind: 'move'; id: string; status: WorkStatus; note?: string }
+  | { kind: 'move'; id: string; status: WorkStatus; note?: string; assigned?: boolean }
   | { kind: 'edit'; id: string; text: string; baseHash: string }
   /**
    * Вложение задачи: файл `attachments/<slug>/<name>`. Содержимое уже лежит в
@@ -118,9 +118,11 @@ export const MOVES: Record<WorkStatus, readonly TaskStatus[]> = {
 const MOVE_WORDS: Record<WorkStatus, string> = { 'in-progress': 'в работе', review: 'на ревью', done: 'сделана' };
 
 /** Что мешает перевести задачу в статус работы; `null` — ничего (или она уже там). */
-export function moveProblem(task: TaskRecord, status: WorkStatus): string | null {
+export function moveProblem(task: TaskRecord, status: WorkStatus, assigned = false): string | null {
   if (task.fm.type === 'epic') return 'это эпик: его закрывают в Kaiten, когда закрыты его задачи';
   if (task.fm.status === status || MOVES[status].includes(task.fm.status)) return null;
+  // По прямому поручению человека задачу берут в работу и из «Бэклога» (владелец 30.09).
+  if (assigned && status === 'in-progress' && task.fm.status === 'backlog') return null;
   return `задача в статусе ${task.fm.status}: ${MOVE_WORDS[status]} — только из ${MOVES[status].join(', ')}`;
 }
 export const BLOCKABLE: readonly TaskStatus[] = ['inbox', 'backlog', 'ready', 'in-progress', 'review'];
@@ -409,10 +411,11 @@ export function applyOp(op: Op, texts: TaskTexts, ctx: OpContext): OpResult {
       return { changes, summary: `задача ${ref} отменена`, warnings: [] };
     }
     case 'move': {
-      const problem = moveProblem(task, op.status);
+      const problem = moveProblem(task, op.status, op.assigned === true);
       if (problem) return { error: problem };
       if (task.fm.status === op.status) return { changes: [], summary: `задача ${ref} уже ${MOVE_WORDS[op.status]}`, warnings: [] };
-      const entry = `${MOVE_WORDS[op.status]}${op.note?.trim() ? `: ${op.note.trim()}` : ''}`;
+      const fromBacklog = op.status === 'in-progress' && task.fm.status === 'backlog' ? ' (из «Бэклога», по прямому поручению)' : '';
+      const entry = `${MOVE_WORDS[op.status]}${fromBacklog}${op.note?.trim() ? `: ${op.note.trim()}` : ''}`;
       const target = op.status === 'done' ? `archive/${ctx.date.slice(0, 7)}/${task.slug}.md` : task.path;
       const out = write(task, { ...task.fm, status: op.status }, task.body, ctx, target);
       if ('error' in out) return out;

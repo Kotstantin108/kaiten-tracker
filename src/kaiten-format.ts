@@ -141,12 +141,14 @@ export function formatTodo(all: readonly TaskRecord[], task: TaskRecord): string
 }
 
 /** Последние записи журнала. */
-export function formatLogTail(all: readonly TaskRecord[], task: TaskRecord, count: number): string {
+export function formatLogTail(all: readonly TaskRecord[], task: TaskRecord, count: number, attachments: readonly string[] = []): string {
   const entries = logEntries(task.log);
-  if (entries.length === 0) return `${headLine(task)}\n\nЖурнал пуст.\n`;
+  // Передача дел лежит во вложениях — тому, кто продолжает задачу, они нужны вместе с журналом.
+  const files = attachments.length > 0 ? `\nВложения (${attachments.length}): ${attachments.join(', ')} — kaiten files ${refOf(task)} <файл>\n` : '';
+  if (entries.length === 0) return `${headLine(task)}\n\nЖурнал пуст.\n${files}`;
   const shown = entries.slice(-count);
   const note = shown.length < entries.length ? ` (последние ${shown.length} из ${entries.length})` : ` (${entries.length})`;
-  return `${headLine(task)}\n\nЖурнал${note}:\n\n${presentBody(all, shown.join('\n\n'))}\n`;
+  return `${headLine(task)}\n\nЖурнал${note}:\n\n${presentBody(all, shown.join('\n\n'))}\n${files}`;
 }
 
 /** Счёт пунктов одной строкой — как в `kaiten show`. */

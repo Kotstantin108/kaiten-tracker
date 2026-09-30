@@ -17,6 +17,7 @@ import { basename, join, resolve } from 'node:path';
 
 import { contentHash, serializeTaskDocument } from './core/document.js';
 import { SLUG_RE } from './core/lint.js';
+import { criteriaText } from './core/skeleton.js';
 import { TASK_TYPES, type TaskType } from './core/schema.js';
 import { ATTACHMENT_MAX_BYTES, attachmentNameProblem, BLOCKABLE, CANCELLABLE, matchItem, moveProblem, newTaskText, slugify, uniqueSlug, type Op } from './core/task-ops.js';
 import { refOf, type TaskRecord } from './core/tasks-index.js';
@@ -64,8 +65,9 @@ export const WRITE_HELP: Record<string, string> = {
   check: `kaiten check <задача> <пункт>... — отметить пункты задачи.
 
 Пункт — его текст или слова, по которым он находится однозначно; обратные
-кавычки в тексте пункта можно не писать. Можно несколько пунктов за раз.
-Команда называет отмеченные пункты и счёт по разделам.
+кавычки в тексте пункта можно не писать. Можно несколько пунктов за раз:
+однозначные отмечаются, про остальные команда говорит, что не так, и
+завершается с ошибкой. Команда называет отмеченные пункты и счёт по разделам.
 ${TASK_REF_HELP}
 
 Флаги:
@@ -124,11 +126,14 @@ ${TASK_REF_HELP}
 `,
   review: `kaiten review <задача> — работа готова, задача на ревью.
 
-Из «В работе». Эпик так не закрывают: его закрывают в Kaiten, когда закрыты
-его задачи.
+Из «В работе», когда критерии задачи отмечены. Эпик так не закрывают: его
+закрывают в Kaiten, когда закрыты его задачи.
 
 Флаги:
-  --note <текст>      что смотреть на ревью (ссылка на PR и т. п.) — в журнал
+  --note <текст>      что смотреть на ревью (ветка, коммит, PR) — в журнал
+  --unchecked <текст> почему часть критериев осталась без отметки — в журнал;
+                      без этого флага задача с неотмеченными критериями на
+                      ревью не уходит
 
 Пример:
   kaiten review PRJ-123 --note "PR #45"
@@ -248,20 +253,28 @@ async function check(args: string[]): Promise<void> {
   if (queries.length === 0) throw new UsageError('Укажите пункт: kaiten check PRJ-123 "тест на таймаут"');
   const ctx = begin();
   const task = findTask(loadTasks(ctx).index, ref);
+  // Каждая фраза — сама по себе: однозначные отмечаются, спорные называются. Раньше одна спорная
+  // фраза отклоняла всю команду, и агент уходил дальше с нулём отметок (испытание 30.09).
   const items: string[] = [];
-  const problems: string[] = [];
+  const missed: string[] = [];
   for (const q of queries) {
     const hit = matchItem(task.body, q);
-    if ('error' in hit) problems.push(hit.error);
-    else items.push(hit.item);
+    if ('error' in hit) missed.push(q);
+    else if (!items.includes(hit.item)) items.push(hit.item);
   }
-  if (problems.length > 0) throw new UsageError(`В задаче ${refOf(task)} ${problems.join('\n')}`, 1);
-  await commit(ctx, { kind: 'check', id: task.fm.id, items, checked: !values.off }, `${values.off ? 'снятие' : 'отметка'} пунктов в ${refOf(task)}`);
-  // Что именно отмечено и сколько осталось — чтобы не проверять отдельным show.
-  for (const item of items) console.log(`  [${values.off ? ' ' : 'x'}] ${item}`);
+  if (items.length > 0) {
+    await commit(ctx, { kind: 'check', id: task.fm.id, items, checked: !values.off }, `${values.off ? 'снятие' : 'отметка'} пунктов в ${refOf(task)}`);
+    for (const item of items) console.log(`  [${values.off ? ' ' : 'x'}] ${item}`);
+  }
   const after = loadTasks(ctx).index.tasks.find((t) => t.fm.id === task.fm.id);
   const progress = after ? progressLine(after) : null;
   if (progress) console.log(progress);
+  // Причины — по состоянию после отметок: в списке неотмеченного не должно быть только что отмеченного.
+  const problems = missed.map((q) => matchItem((after ?? task).body, q)).flatMap((hit) => ('error' in hit ? [hit.error] : []));
+  if (problems.length > 0) {
+    const done = items.length > 0 ? `Отмечены не все: фраз без отметки — ${problems.length} из ${queries.length}.` : 'Ничего не отмечено: ни одна фраза не подошла однозначно.';
+    throw new UsageError(`${done}\n${problems.map((p) => `В задаче ${refOf(task)} ${p}`).join('\n')}`, 1);
+  }
 }
 
 async function attach(args: string[]): Promise<void> {
@@ -329,16 +342,35 @@ async function withReason(command: 'block' | 'cancel', args: string[]): Promise<
 }
 
 async function move(command: 'review' | 'done', args: string[]): Promise<void> {
-  const { values, positionals } = parse(command, args, { note: { type: 'string' } }, 1);
+  const { values, positionals } = parse(command, args, { note: { type: 'string' }, ...(command === 'review' ? { unchecked: { type: 'string' as const } } : {}) }, 1);
   const ref = taskArg(positionals, command);
   const ctx = begin();
   const task = findTask(loadTasks(ctx).index, ref);
   const status = command === 'review' ? 'review' : 'done';
   const problem = moveProblem(task, status);
   if (problem) throw new UsageError(`Не записано: ${problem}.`, 1);
+  // На ревью — с отмеченными критериями: неотмеченный пункт либо не сделан, либо о нём надо сказать словами.
+  const why = stringFlag(values, 'unchecked')?.trim();
+  const open = command === 'review' && task.fm.status !== 'review' ? openCriteria(task.body) : [];
+  if (open.length > 0 && !why) {
+    throw new UsageError(
+      `Не записано: в задаче ${refOf(task)} неотмеченные критерии (${open.length}):\n${open.map((i) => `  - ${i}`).join('\n')}\n` +
+        `Сделанное отметьте: kaiten check ${refOf(task)} '<слова пункта>'. Пункт не будет сделан в этой работе — скажите почему: kaiten review ${refOf(task)} --unchecked "<причина>".`,
+      1,
+    );
+  }
+  const note = [stringFlag(values, 'note')?.trim(), open.length > 0 && why ? `не отмечено пунктов ${open.length}: ${why}` : undefined].filter(Boolean).join('; ') || undefined;
   const card = task.fm.status !== status ? await moveCardFirst(ctx, task, status) : 'none';
-  await commit(ctx, { kind: 'move', id: task.fm.id, status, note: stringFlag(values, 'note') }, `${command === 'review' ? 'ревью' : 'закрытие'} ${refOf(task)}`);
+  await commit(ctx, { kind: 'move', id: task.fm.id, status, note }, `${command === 'review' ? 'ревью' : 'закрытие'} ${refOf(task)}`);
   cardNotMovedNote(card);
+}
+
+/** Неотмеченные пункты раздела критериев (первый заголовок на «Критери…»); шаги и прочие списки не считаются. */
+export function openCriteria(body: string): string[] {
+  return (criteriaText(body) ?? '')
+    .split('\n')
+    .map((line) => /^\s*(?:[-*+]|\d+[.)])[ \t]+\[ \][ \t]+(\S.*)$/.exec(line)?.[1].trim())
+    .filter((text): text is string => text !== undefined);
 }
 
 /** Текст задачи для правки — канонический: так его и запишет любая команда. */

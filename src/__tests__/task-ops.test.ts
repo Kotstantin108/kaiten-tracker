@@ -250,3 +250,20 @@ describe('вложение', () => {
     expect('error' in applyOp({ kind: 'attach', id: ID, name: 'a.md', blob: 'не sha' }, texts(), CTX)).toBe(true);
   });
 });
+
+describe('в работу из «Бэклога» по прямому поручению', () => {
+  const backlog = (): TaskTexts => new Map([['active/webhook-timeout.md', task({ status: 'backlog' })]]);
+
+  it('без поручения — отказ; с поручением — «в работе» и пометка в журнале', () => {
+    expect('error' in applyOp({ kind: 'move', id: ID, status: 'in-progress' }, backlog(), CTX)).toBe(true);
+    const changes = ok(applyOp({ kind: 'move', id: ID, status: 'in-progress', assigned: true }, backlog(), CTX));
+    expect(fmOf(changes[0].text).status).toBe('in-progress');
+    expect(changes[1].text).toContain('в работе (из «Бэклога», по прямому поручению)');
+  });
+
+  it('поручение не открывает остальные переходы', () => {
+    const inbox: TaskTexts = new Map([['active/webhook-timeout.md', task({ status: 'inbox' })]]);
+    expect('error' in applyOp({ kind: 'move', id: ID, status: 'in-progress', assigned: true }, inbox, CTX)).toBe(true);
+    expect('error' in applyOp({ kind: 'move', id: ID, status: 'review', assigned: true }, backlog(), CTX)).toBe(true);
+  });
+});

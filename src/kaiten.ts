@@ -296,7 +296,7 @@ function show(args: string[]): void {
     }
     process.stdout.write(text);
   } else if (values.todo) process.stdout.write(formatTodo(index.tasks, task));
-  else if (tail !== undefined) process.stdout.write(formatLogTail(index.tasks, task, Math.max(1, tail)));
+  else if (tail !== undefined) process.stdout.write(formatLogTail(index.tasks, task, Math.max(1, tail), attachments));
   else process.stdout.write(formatShow(index.tasks, task, attachments));
 }
 

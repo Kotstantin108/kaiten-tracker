@@ -56,7 +56,8 @@ afterAll(() => {
   rmSync(tmp, { recursive: true, force: true });
 });
 
-describe('хранилище', () => {
+// git на Windows под нагрузкой всего набора медленный: 5 с по умолчанию мало (падало 30.09).
+describe('хранилище', { timeout: 30_000 }, () => {
   it('без рабочей копии: на диске нет файлов задач', () => {
     expect(isStore(store)).toBe(true);
     expect(existsSync(join(store, 'active'))).toBe(false);
@@ -113,7 +114,7 @@ describe('хранилище', () => {
   });
 });
 
-describe('копия для людей', () => {
+describe('копия для людей', { timeout: 30_000 }, () => {
   const target = (): string => join(tmp, 'copy', 'acme');
 
   it('пишет все файлы только для чтения и помнит, что написала', () => {

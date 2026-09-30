@@ -9,6 +9,7 @@ import { serializeTaskDocument } from '../core/document.js';
 import type { TaskFileText } from '../core/lint.js';
 import { FrontmatterSchema, type Frontmatter } from '../core/schema.js';
 import { belongsToProject, buildIndex, checklistProgress, childrenOf, epicOf, filterTasks, refOf, resolveTask, SearchQueryError, searchTasks, sortTasks, stem, type TaskRecord } from '../core/tasks-index.js';
+import { openCriteria } from '../kaiten-write.js';
 import { formatLogTail, formatOutline, formatProblems, formatSearch, formatSection, formatShow, formatTaskLines, formatTodo, presentBody, progressLine } from '../kaiten-format.js';
 
 const EPIC_ID = '01K5ZQ3R8F2K9M4N7P0T5V8W2X';
@@ -274,5 +275,17 @@ describe('задача по частям', () => {
     expect(formatLogTail(index.tasks, task(), 3)).toContain('Журнал (1):');
     expect(formatLogTail(index.tasks, bySlug('android-intro'), 3)).toContain('Журнал пуст.');
     expect(progressLine(task())).toBe('Пункты: Критерии 1/2 · Шаги 0/1');
+  });
+});
+
+describe('перед ревью', () => {
+  it('неотмеченные критерии — только из раздела критериев, шаги не считаются', () => {
+    expect(openCriteria(bySlug('webhook-timeout').body)).toEqual(['Ретраи']);
+    expect(openCriteria('## Вопрос\n\nтекст\n\n## Ответ\n\n')).toEqual([]);
+    expect(openCriteria('## Критерии готовности\n\n- [x] раз\n- [X] два\n\n## Шаги\n\n- [ ] шаг\n')).toEqual([]);
+  });
+
+  it('хвост журнала называет вложения — там лежит передача дел', () => {
+    expect(formatLogTail(index.tasks, bySlug('webhook-timeout'), 1, ['HANDOFF.md'])).toContain('Вложения (1): HANDOFF.md — kaiten files 10000002 <файл>');
   });
 });

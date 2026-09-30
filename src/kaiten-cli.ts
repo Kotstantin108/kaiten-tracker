@@ -331,6 +331,8 @@ export async function startSend(ctx: Context): Promise<void> {
   }
   const child = spawn(process.execPath, [...process.execArgv, process.argv[1], '__send'], {
     cwd: ctx.workDir,
+    // «detached» обязателен и на Windows: без него отправка не переживает команду (проверено 30.09 —
+    // push не уходит). Цена: у процесса нет консоли, поэтому каждый вызов git — с `windowsHide`.
     detached: true,
     stdio: 'ignore',
     windowsHide: true,

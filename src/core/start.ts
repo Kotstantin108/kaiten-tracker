@@ -37,12 +37,18 @@ export function branchName(task: TaskRecord): string {
 }
 
 /** Что мешает взять задачу в работу из этого репозитория — словами задачи; `null` — ничего. */
-export function startProblem(task: TaskRecord, currentRepo: string): string | null {
+export function startProblem(task: TaskRecord, currentRepo: string, assigned = false): string | null {
   if (task.fm.type === 'epic') return `это эпик: в работу берут его задачи — kaiten list --epic ${refOf(task)}`;
   if (task.fm.status === 'done' || task.fm.status === 'cancelled') return `задача уже в ${STATUS_WORDS[task.fm.status]}`;
-  if (!STARTABLE.includes(task.fm.status)) {
-    return `задача во ${STATUS_WORDS[task.fm.status]}: в работу берут из «Готово к работе» — её переводят туда в Kaiten при разборе`;
+  // Прямое поручение человека на эту задачу — то же решение, что разбор (владелец 30.09): из «Бэклога» можно.
+  const allowed = STARTABLE.includes(task.fm.status) || (assigned && task.fm.status === 'backlog');
+  if (!allowed) {
+    const how =
+      task.fm.status === 'backlog'
+        ? 'её переводят туда в Kaiten при разборе. Человек прямо поручил вам именно эту задачу — kaiten start ' + refOf(task) + ' --assigned'
+        : 'её переводят туда в Kaiten при разборе';
+    return `задача во ${STATUS_WORDS[task.fm.status]}: в работу берут из «Готово к работе» — ${how}`;
   }
   if (task.fm.repo !== currentRepo) return `задача для репозитория ${task.fm.repo ?? '(не указан)'}, а вы в ${currentRepo}`;
-  return moveProblem(task, 'in-progress');
+  return moveProblem(task, 'in-progress', assigned);
 }
