@@ -30,7 +30,7 @@
 
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 
 import { STATUSES, TASK_TYPES, type TaskStatus, type TaskType } from './core/schema.js';
 import { filterTasks, refOf, resolveTask, SearchQueryError, searchTasks, sortTasks, type TaskFilter, type TaskIndex, type TaskRecord } from './core/tasks-index.js';
@@ -56,7 +56,7 @@ import { localCopyDir, SettingsError } from './kaiten-context.js';
 import { bodySections, formatLogTail, formatOutline, formatSearch, formatSection, formatShow, formatTaskLines, formatTodo, presentBody, showJson, taskJson } from './kaiten-format.js';
 import { START_COMMANDS, START_HELP } from './kaiten-start.js';
 import { editableText, WRITE_COMMANDS, WRITE_HELP } from './kaiten-write.js';
-import { hasPending, syncStore } from './store-write.js';
+import { hasPending, syncStore, withLock } from './store-write.js';
 import { cloneStore, isStore, readBlobs, StoreError, type StoreEntry } from './task-store.js';
 
 // ── справка ──────────────────────────────────────────────────────────────
@@ -417,18 +417,43 @@ async function pull(args: string[]): Promise<void> {
   }
   let changed = true;
   let sent = 0;
+  let offline = false;
   if (!existsSync(ctx.store)) {
     const url = ctx.loaded.project.tasksRepo?.url;
     if (!url) throw new UsageError(`Задачи проекта ${ctx.title} ещё негде взять: хранилище задач не подключено. Это вопрос к владельцу проекта.`);
-    cloneStore(url, ctx.store);
+    // Два агента на новой машине начинают одновременно: загружает первый, второй ждёт и находит готовое.
+    const parent = dirname(ctx.store);
+    mkdirSync(parent, { recursive: true });
+    withLock(
+      parent,
+      `${basename(ctx.store)}.clone.lock`,
+      () => {
+        if (!existsSync(ctx.store)) cloneStore(url, ctx.store);
+      },
+      { waitMs: 180_000, staleMs: 10 * 60_000 },
+    );
   } else {
-    const result = syncStore(ctx.store);
-    changed = result.changed;
-    sent = result.sent;
-    for (const f of result.failed) console.error(`Не применено: ${f.what} — ${f.reason}.`);
+    try {
+      const result = syncStore(ctx.store);
+      changed = result.changed;
+      sent = result.sent;
+      for (const f of result.failed) console.error(`Не применено: ${f.what} — ${f.reason}.`);
+    } catch (error) {
+      // Без связи работать можно: задачи на машине есть, свои изменения уйдут позже.
+      if (!(error instanceof StoreError) || error.kind !== 'offline') throw error;
+      offline = true;
+      changed = false;
+    }
   }
   const { index } = loadTasks(ctx);
   const open = index.tasks.filter((t) => !t.closed).length;
+  if (offline) {
+    console.log(`Свежие задачи не получены: нет связи с хранилищем задач (запрос повторён трижды). Задачи проекта ${ctx.title} — по состоянию на прошлое обновление: открытых ${open}, всего ${index.tasks.length}.`);
+    console.log('Работать по ним можно: ваши изменения записываются и уйдут, когда связь появится. Скажите об этом человеку.');
+    reportProblems(index);
+    refreshLocalCopy(ctx, copyDir);
+    return;
+  }
   console.log(`Задачи проекта ${ctx.title} ${changed ? 'обновлены' : 'уже свежие'}: открытых ${open}, всего ${index.tasks.length}.`);
   if (sent > 0) console.log(`Отправлено изменений: ${sent}.`);
   reportProblems(index);

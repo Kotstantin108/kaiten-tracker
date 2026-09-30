@@ -46,6 +46,10 @@ export function defaultStorePath(name: string): string {
 
 /** Вид ошибки по тексту git — сам текст наружу не выходит: в нём пути. */
 function classify(stderr: string): StoreErrorKind {
+  // Две отправки столкнулись на одной ветке: сервер отверг вторую не по правилам, а потому что
+  // ветка в этот миг менялась («failed to lock», «incorrect old value provided»). Это гонка — повторить, как
+  // и обычное «кто-то успел раньше» (тест параллельной записи, 30.09.2026).
+  if (/\[remote rejected\].*(?:failed to (?:lock|update ref)|cannot lock ref|unable to lock|but expected|reference already exists|incorrect old value)|cannot lock ref .* but expected/i.test(stderr)) return 'rejected';
   // Сервер отказал по правилам (защищённая ветка, хук) — повтор не поможет.
   if (/\[remote rejected\]|pre-receive hook declined|protected branch/i.test(stderr)) return 'refused';
   // Push отвергнут, потому что кто-то успел раньше, — не ошибка, а повод повторить.
@@ -64,7 +68,38 @@ export function git(cwd: string, args: string[], input?: Buffer | string, env?: 
     return execFileSync('git', [...GIT_BASE, ...args], { cwd, input, env: env ?? process.env, stdio: ['pipe', 'pipe', 'pipe'], maxBuffer: 1 << 30, windowsHide: true });
   } catch (error) {
     const stderr = typeof error === 'object' && error !== null && 'stderr' in error ? String(error.stderr) : '';
+    // Сырой текст git — только по запросу: в нём пути хранилища.
+    if (process.env.KAITEN_DEBUG) console.error(`git ${args[0]}: ${stderr.trim()}`);
     throw new StoreError(classify(stderr));
+  }
+}
+
+/** Паузы перед повторами сетевого вызова, мс. `KAITEN_NET_RETRY` (через запятую) — для тестов. */
+function retryDelays(): number[] {
+  const raw = process.env.KAITEN_NET_RETRY;
+  return raw === undefined ? [1500, 4000] : raw.split(',').map(Number).filter((n) => Number.isFinite(n) && n >= 0);
+}
+
+function pause(ms: number): void {
+  if (ms > 0) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
+/**
+ * Сетевой вызов git (clone, fetch, push) с повторами при обрыве связи.
+ * Живьём 30.09.2026: три агента стартовали одновременно, и у одного `fetch`
+ * оборвался, хотя соседние через секунды прошли. Повторяется только
+ * «нет связи»: отказ в доступе и отвергнутый push повтор не исправит, а
+ * повтор push безопасен — он переносит те же коммиты.
+ */
+export function gitNetwork(cwd: string, args: string[]): Buffer {
+  const delays = retryDelays();
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      return git(cwd, args);
+    } catch (error) {
+      if (!(error instanceof StoreError) || error.kind !== 'offline' || attempt >= delays.length) throw error;
+      pause(delays[attempt]);
+    }
   }
 }
 
@@ -98,10 +133,10 @@ export function isStore(dir: string): boolean {
 export function cloneStore(url: string, dir: string): void {
   mkdirSync(dirname(dir), { recursive: true });
   try {
-    git(dirname(dir), ['clone', '--quiet', '--bare', url, dir]);
+    gitNetwork(dirname(dir), ['clone', '--quiet', '--bare', url, dir]);
     // `clone --bare` не заводит refspec: без него `fetch` не обновит origin/*.
     git(dir, ['config', 'remote.origin.fetch', '+refs/heads/*:refs/remotes/origin/*']);
-    git(dir, ['fetch', '--quiet', 'origin']);
+    gitNetwork(dir, ['fetch', '--quiet', 'origin']);
   } catch (error) {
     // Полухранилище не оставляем: удалить его человеку нечем — путь не называется.
     rmSync(dir, { recursive: true, force: true });

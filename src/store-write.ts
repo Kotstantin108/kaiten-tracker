@@ -30,7 +30,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { applyOp, type Op, type OpResult, type TaskTexts } from './core/task-ops.js';
-import { git, gitText, isStore, listEntries, readBlobs, revOrNull, storeBranch, StoreError, type StoreErrorKind } from './task-store.js';
+import { git, gitNetwork, gitText, isStore, listEntries, readBlobs, revOrNull, storeBranch, StoreError, type StoreErrorKind } from './task-store.js';
 
 // ── журнал ───────────────────────────────────────────────────────────────
 
@@ -104,8 +104,10 @@ function alive(pid: number): boolean {
  */
 export function withLock<T>(store: string, name: string, fn: () => T, options: { waitMs?: number; staleMs?: number } = {}): T {
   const path = join(store, name);
-  const waitMs = options.waitMs ?? 10_000;
-  const staleMs = options.staleMs ?? 60_000;
+  // Несколько агентов на одной машине пишут в одно хранилище: под нагрузкой сосед держит замок
+  // секунды (git на Windows медленный), а 10 с ожидания давали «занято» на первой же команде.
+  const waitMs = options.waitMs ?? 30_000;
+  const staleMs = options.staleMs ?? 90_000;
   const started = Date.now();
   let fd: number | null = null;
   while (fd === null) {
@@ -356,7 +358,7 @@ function syncLocked(store: string, options: SyncOptions): SyncResult {
 
   for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt += 1) {
     try {
-      git(store, ['fetch', '--quiet', '--prune', 'origin']);
+      gitNetwork(store, ['fetch', '--quiet', '--prune', 'origin']);
     } catch (error) {
       if (error instanceof StoreError) noteProblem(store, error.kind, now());
       throw error;
@@ -399,7 +401,7 @@ function syncLocked(store: string, options: SyncOptions): SyncResult {
 
     options.beforePush?.();
     try {
-      git(store, ['push', '--quiet', 'origin', `${plan.head}:refs/heads/${branch}`]);
+      gitNetwork(store, ['push', '--quiet', 'origin', `${plan.head}:refs/heads/${branch}`]);
     } catch (error) {
       if (error instanceof StoreError && error.kind === 'rejected') continue;
       if (error instanceof StoreError) noteProblem(store, error.kind, now());

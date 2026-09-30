@@ -346,13 +346,13 @@ export function storeMessage(kind: StoreError['kind']): string {
     case 'no-access':
       return 'Нет доступа к задачам проекта. Попросите владельца проекта добавить вас в команду проекта на GitHub.';
     case 'offline':
-      return 'Не удалось связаться с хранилищем задач. Проверьте интернет и повторите.';
+      return 'Нет связи с хранилищем задач: запрос повторён трижды, ответа нет. Это сеть, а не доступ. Проверьте интернет и повторите.';
     case 'not-found':
       return 'Хранилище задач проекта не найдено. Это вопрос к владельцу проекта.';
     case 'no-identity':
       return 'Для истории изменений не задано ваше имя и почта: git config --global user.name "…" и user.email "…".';
     case 'busy':
-      return 'Задачи сейчас меняет другая команда kaiten. Повторите через несколько секунд.';
+      return 'Задачи сейчас меняет другая команда kaiten — она не закончила за полминуты. Повторите команду.';
     case 'refused':
       return 'Хранилище задач не принимает изменения по своим правилам. Это вопрос к владельцу проекта.';
     case 'rejected':
@@ -365,7 +365,14 @@ export function storeMessage(kind: StoreError['kind']): string {
 /** Что не применилось и что не отправлено — в начале любой команды. */
 export function printNotices(ctx: Context): void {
   if (!isStore(ctx.store)) return;
-  const notices = takeNotices(ctx.store);
+  let notices;
+  try {
+    notices = takeNotices(ctx.store);
+  } catch (error) {
+    // Сообщения прошлых команд — не повод отказать этой: сосед держит замок, скажем в следующий раз.
+    if (error instanceof StoreError && error.kind === 'busy') return;
+    throw error;
+  }
   for (const f of notices.failed) console.error(`Не применено: ${f.what} — ${f.reason}.`);
   // Задачи при этом записаны и отправлены — не дошло только до Kaiten.
   for (const k of notices.kaiten) console.error(`Kaiten не обновлён: ${k.what} — ${k.reason}.`);
