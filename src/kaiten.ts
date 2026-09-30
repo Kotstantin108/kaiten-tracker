@@ -54,6 +54,7 @@ import {
 } from './kaiten-cli.js';
 import { localCopyDir, SettingsError } from './kaiten-context.js';
 import { bodySections, formatLogTail, formatOutline, formatSearch, formatSection, formatShow, formatTaskLines, formatTodo, presentBody, showJson, taskJson } from './kaiten-format.js';
+import { doctor, DOCTOR_HELP } from './kaiten-doctor.js';
 import { START_COMMANDS, START_HELP } from './kaiten-start.js';
 import { editableText, WRITE_COMMANDS, WRITE_HELP } from './kaiten-write.js';
 import { hasPending, syncStore, withLock } from './store-write.js';
@@ -84,6 +85,9 @@ function mainHelp(): string {
   kaiten start <задача>              взять в работу: «В работе» и ветка задачи в этом репозитории
   kaiten review <задача>             работа готова — на ревью
   kaiten done <задача>               сделано (влито в прод)
+
+Проверить установку:
+  kaiten doctor                      всё ли готово на машине и в этом репозитории
 
 ${TASK_REF_HELP}
 Команды работают в репозитории, подключённом к kaiten: проект и продукт
@@ -186,7 +190,7 @@ ${FILTER_HELP}
 `,
 };
 
-const HELP: Record<string, string> = { ...READ_HELP, ...WRITE_HELP, start: START_HELP };
+const HELP: Record<string, string> = { ...READ_HELP, ...WRITE_HELP, start: START_HELP, doctor: DOCTOR_HELP };
 
 // ── чтение ───────────────────────────────────────────────────────────────
 
@@ -468,7 +472,7 @@ async function send(): Promise<void> {
   await sendAll(resolveContext());
 }
 
-const COMMANDS: Record<string, (args: string[]) => void | Promise<void>> = { list, show, search, files, pull, ...WRITE_COMMANDS, ...START_COMMANDS };
+const COMMANDS: Record<string, (args: string[]) => void | Promise<void>> = { list, show, search, files, pull, doctor, ...WRITE_COMMANDS, ...START_COMMANDS };
 
 async function main(): Promise<void> {
   const [command, ...args] = process.argv.slice(2);

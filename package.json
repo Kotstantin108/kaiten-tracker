@@ -19,7 +19,9 @@
     "convert": "tsx --env-file-if-exists=.env src/convert.ts",
     "kaiten": "tsx src/kaiten.ts",
     "kaiten-sync": "tsx --env-file-if-exists=.env src/kaiten-sync-cli.ts",
-    "backup": "tsx --env-file-if-exists=.env src/kaiten-backup.ts"
+    "backup": "tsx --env-file-if-exists=.env src/kaiten-backup.ts",
+    "connect-repo": "tsx src/connect-repo.ts",
+    "install-machine": "node scripts/install.mjs"
   },
   "dependencies": {
     "yaml": "^2.9.1",

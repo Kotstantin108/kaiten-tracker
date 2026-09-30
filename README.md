@@ -53,6 +53,48 @@ kaiten review PRJ-123 [--note "PR #45"]   # работа готова — на �
 kaiten done PRJ-123 [--note "…"]         # влито в прод — «Сделано», задача в архив
 ```
 
+## Установка
+
+Три слоя, у каждого свой инструмент.
+
+**Машина разработчика** — один раз:
+
+```bash
+git clone https://github.com/acme-org/kaiten-tracker.git && cd kaiten-tracker
+node scripts/install.mjs      # Node.js и git → зависимости → команда kaiten в PATH → настройки с личным входом в Kaiten
+```
+
+Скрипт спрашивает домен и личный токен Kaiten (ввод токена не показывается;
+без вопросов — `--domain`, переменная `KAITEN_TOKEN`, `--person`), проверяет
+вход и пишет `kaiten.settings.json`. Повторный запуск готовые шаги пропускает
+и настройки не перезаписывает; `--check` — только показать, что сделано;
+`--no-kaiten` — без входа в Kaiten (задачи ведутся, карточки нет). Обновление
+инструмента — `git pull` в этой папке.
+
+**Репозиторий кода** — владелец проекта, один раз и после обновления скилла:
+
+```bash
+npm run connect-repo -- <папка репозитория> --project acme --repo acme-app           # план
+npm run connect-repo -- <папка репозитория> --project acme --repo acme-app --apply   # записать
+```
+
+Кладёт `.kaiten`, копию скилла (`.claude/skills/kaiten/SKILL.md`) и блок
+правил между метками в `CLAUDE.md` (или `AGENTS.md`; `--rules <файл>`).
+`--push none|branch|pr` — что агент делает с веткой перед ревью (по умолчанию
+`branch`: отправить ветку, PR открывает человек). Не коммитит и `tasks/` не
+трогает. Команды `kaiten` для этого нет намеренно: агент не должен подключать
+репозиторий сам.
+
+**Проверка** — из репозитория кода:
+
+```bash
+kaiten doctor            # машина, репозиторий, задачи: что готово и что исправить
+kaiten doctor --offline  # без проверок, которым нужна связь
+```
+
+**Проект** (пространство и доска Kaiten, репозиторий задач, первая заливка) —
+`npm run setup` и `npm run kaiten-sync -- --first-load`, см. `PROMPT.md`.
+
 CLI — единственный путь к задачам. Хранилище на машине — git без рабочей
 копии (`%LOCALAPPDATA%\kaiten\<tasksRepo>.git`, см. `src/task-store.ts`):
 файлов задач на диске нет, и вывод CLI не называет, где они лежат.
@@ -113,6 +155,9 @@ repo: acme-app
 | `src/core/kaiten-sync-plan.ts` | План синхронизации файл → Kaiten (чистая часть): что создать, что обновить, описание с пометкой Q41, ссылки на репозиторий задач |
 | `src/core/kaiten-adopt.ts` | Карточки, заведённые в интерфейсе Kaiten, → новые задачи (чистая часть): какие карточки без задачи, id из карточки, файл из карточки, что поправить |
 | `src/kaiten-sync.ts`, `src/kaiten-sync-cli.ts` | Выполнение плана и скрипт владельца `npm run kaiten-sync` (сухой прогон по умолчанию, `--apply`, `--first-load`, `--only <задача или id карточки>`) |
+| `scripts/install.mjs` | Установка на машину разработчика: зависимости, команда в PATH, настройки с личным входом (обычный node, без зависимостей) |
+| `src/core/repo-connect.ts`, `src/connect-repo.ts` | Подключение репозитория кода: `.kaiten`, копия скилла, блок правил в `CLAUDE.md` — чистая часть и скрипт владельца `npm run connect-repo` (сухой прогон по умолчанию) |
+| `src/kaiten-doctor.ts` | `kaiten doctor`: проверка машины, репозитория и задач с подсказкой, что исправить |
 | `src/core/start.ts`, `src/kaiten-start.ts` | `kaiten start`: можно ли взять задачу в работу, имя ветки, ветка в репозитории кода, «В работе» (статусы работы — операция `move` в `task-ops`) |
 | `templates/tasks-repo/.github/workflows/tasks-lint.yml` | Проверка формата в Actions репозитория задач: на push в main, неблокирующая; копируется при создании репозитория задач |
 | `src/kaiten-backup.ts`, `templates/kaiten-backup/.github/workflows/kaiten-backup.yml` | Ночной бэкап Kaiten (`npm run backup -- --out <папка>`): файл на сущность, ключи по алфавиту — коммит только при изменениях; workflow — для приватного репозитория бэкапа владельца |

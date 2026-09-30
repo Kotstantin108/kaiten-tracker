@@ -54,8 +54,11 @@ export interface Context {
  * Откуда запустили команду. `npm run kaiten` переводит процесс в папку
  * инструмента, а исходную кладёт в `INIT_CWD` — без неё `.kaiten` не найти.
  */
-function invocationDir(): string {
-  return process.env.INIT_CWD ?? process.cwd();
+export function invocationDir(): string {
+  // INIT_CWD ставит любой `npm run`/`npx`. Верим ему только при запуске через `npm run kaiten`
+  // самого инструмента: иначе kaiten, вызванный из скрипта другого проекта, искал бы `.kaiten` не там.
+  const viaOwnScript = process.env.npm_package_name === 'kaiten-tracker' && process.env.npm_lifecycle_event === 'kaiten';
+  return viaOwnScript && process.env.INIT_CWD ? process.env.INIT_CWD : process.cwd();
 }
 
 export function resolveContext(): Context {
