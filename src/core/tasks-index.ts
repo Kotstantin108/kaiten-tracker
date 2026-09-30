@@ -180,36 +180,157 @@ function normalize(text: string): string {
   return text.toLowerCase().replace(/ё/g, 'е');
 }
 
+/** Строка задачи, показанная поиском: где она (раздел тела, запись журнала, «Суть») и совпала ли сама. */
+export interface MatchLine {
+  where: string;
+  text: string;
+  /** `false` — соседняя строка, показанная для понимания. */
+  hit: boolean;
+  /** Перед строкой — разрыв: она не продолжает предыдущую показанную. */
+  gap: boolean;
+}
+
 export interface SearchHit {
   task: TaskRecord;
   /** Строка тела или журнала с первым найденным словом; `null`, если всё нашлось в заголовке или «Сути». */
   snippet: string | null;
+  /** Все совпавшие строки с соседними — когда их просили (`lines`). */
+  lines?: MatchLine[];
+}
+
+export interface SearchOptions {
+  /** Запрос — одно регулярное выражение (без регистра, построчно), а не слова. */
+  regex?: boolean;
+  /** Слова искать как написаны, не отбрасывая окончаний. */
+  exact?: boolean;
+  /** Вернуть все совпавшие строки задачи, а не одну. */
+  lines?: boolean;
+  /** Сколько соседних строк показать вокруг совпавшей. */
+  context?: number;
+}
+
+/** Запрос не разобрать (кривое выражение) — словами для человека. */
+export class SearchQueryError extends Error {}
+
+/**
+ * Окончания, которые отбрасываются у русского слова запроса: «пустом» находит
+ * «пустого», «онбордингом» — «онбординг». Не морфология, а обрезка: ищем всё
+ * равно подстрокой, и лишняя находка дешевле пропущенной задачи.
+ */
+const ENDINGS = [
+  'иями', 'ями', 'ами', 'ого', 'его', 'ому', 'ему', 'ыми', 'ими', 'иях', 'ией', 'ием',
+  'ой', 'ей', 'ий', 'ый', 'ая', 'яя', 'ое', 'ее', 'ые', 'ие', 'ом', 'ем', 'ам', 'ям', 'ах', 'ях', 'ов', 'ев', 'ую', 'юю', 'ть',
+  'а', 'я', 'о', 'е', 'ы', 'и', 'у', 'ю', 'ь', 'й',
+];
+const STEM_MIN = 4;
+
+export function stem(word: string): string {
+  if (!/^[а-я]+$/.test(word)) return word;
+  for (const ending of ENDINGS) {
+    if (word.endsWith(ending) && word.length - ending.length >= STEM_MIN) return word.slice(0, -ending.length);
+  }
+  return word;
+}
+
+/** Проверка одной строки (или всего текста) на одно условие запроса. */
+type Term = (normalized: string) => boolean;
+
+/**
+ * Условия запроса. Слова: каждое обязательно; `a|b` внутри слова — любой из
+ * вариантов. Выражение: одно условие на весь запрос.
+ */
+function termsOf(query: string, options: SearchOptions): Term[] {
+  if (options.regex) {
+    let re: RegExp;
+    try {
+      // Текст приведён к нижнему регистру — выражение сравниваем без регистра; «ё» = «е» с обеих сторон.
+      re = new RegExp(query.replace(/ё/g, 'е').replace(/Ё/g, 'Е'), 'imu');
+    } catch (error) {
+      // Сообщение движка: «Invalid regular expression: /…/: причина» — человеку нужна причина.
+      throw new SearchQueryError(`выражение не разобрать (${(error instanceof Error ? error.message : String(error)).split(': ').at(-1)})`);
+    }
+    return [(text) => re.test(text)];
+  }
+  return normalize(query)
+    .split(/\s+/)
+    .filter(Boolean)
+    .map((word) => {
+      const variants = word.split('|').filter(Boolean).map((v) => (options.exact ? v : stem(v)));
+      return (text: string) => variants.some((v) => text.includes(v));
+    });
+}
+
+interface SourceLine {
+  where: string;
+  text: string;
+}
+
+const SEARCH_HEADING_RE = /^#{1,6}[ \t]+(.+?)[ \t]*#*[ \t]*$/;
+
+/** Строки задачи с подписью, откуда они: «Суть», раздел тела, запись журнала. */
+function sourceLines(task: TaskRecord): SourceLine[][] {
+  const summary: SourceLine[] = [{ where: 'Суть', text: task.fm.summary }];
+  const body: SourceLine[] = [];
+  let section = 'постановка';
+  for (const line of task.body.split('\n')) {
+    const heading = SEARCH_HEADING_RE.exec(line);
+    if (heading) section = heading[1].replace(/[*_`]/g, '').trim();
+    body.push({ where: section, text: line });
+  }
+  const log: SourceLine[] = [];
+  let entry = 'журнал';
+  for (const line of (task.log ?? '').split('\n')) {
+    const date = /^## \[(\d{4}-\d{2}-\d{2})\]/.exec(line);
+    if (date) entry = `журнал ${date[1]}`;
+    log.push({ where: entry, text: line });
+  }
+  return [summary, body, log];
+}
+
+function matchLines(task: TaskRecord, terms: readonly Term[], context: number): MatchLine[] {
+  const out: MatchLine[] = [];
+  for (const source of sourceLines(task)) {
+    const hits = source.map((l) => l.text.trim() !== '' && terms.some((t) => t(normalize(l.text))));
+    // Источники (суть, тело, журнал) друг друга не продолжают: первая строка каждого — после разрыва.
+    let last = -2;
+    for (let i = 0; i < source.length; i += 1) {
+      const near = hits.slice(Math.max(0, i - context), i + context + 1).some(Boolean);
+      if (!near || source[i].text.trim() === '') continue;
+      out.push({ where: source[i].where, text: source[i].text.trim(), hit: hits[i], gap: out.length > 0 && last !== i - 1 });
+      last = i;
+    }
+  }
+  return out;
 }
 
 /**
- * Все слова запроса (без регистра, «ё» = «е») должны найтись в задаче:
- * заголовок, «Суть», тело, журнал, slug, ключ. Совпавшие по заголовку — выше.
+ * Поиск по заголовку, «Сути», телу, журналу, slug и ключу; регистр и «ё» не
+ * важны. Слова: нужны все, у русских слов окончания отбрасываются, `a|b` —
+ * любой из вариантов. `regex` — одно выражение на запрос. Совпавшие по
+ * заголовку — выше.
  */
-export function searchTasks(tasks: readonly TaskRecord[], query: string): SearchHit[] {
-  const words = normalize(query).split(/\s+/).filter(Boolean);
-  if (words.length === 0) return [];
+export function searchTasks(tasks: readonly TaskRecord[], query: string, options: SearchOptions = {}): SearchHit[] {
+  const terms = termsOf(query, options);
+  if (terms.length === 0) return [];
   const hits: Array<SearchHit & { score: number }> = [];
   for (const task of tasks) {
     const head = normalize(`${task.fm.title}\n${task.fm.summary}\n${task.slug}\n${task.fm.tracker ?? ''}`);
     const rest = normalize(`${task.body}\n${task.log ?? ''}`);
-    if (!words.every((w) => head.includes(w) || rest.includes(w))) continue;
+    if (!terms.every((t) => t(head) || t(rest))) continue;
     const title = normalize(task.fm.title);
-    const score = words.filter((w) => title.includes(w)).length * 2 + words.filter((w) => head.includes(w)).length;
-    const missing = words.find((w) => !head.includes(w));
+    const score = terms.filter((t) => t(title)).length * 2 + terms.filter((t) => t(head)).length;
+    const missing = terms.find((t) => !t(head));
     let snippet: string | null = null;
     if (missing) {
       // Строка целиком: обрезает вывод — после того, как ссылки в ней заменены командами.
-      snippet = (`${task.body}\n${task.log ?? ''}`.split('\n').find((l) => normalize(l).includes(missing)) ?? '').trim();
+      snippet = (`${task.body}\n${task.log ?? ''}`.split('\n').find((l) => missing(normalize(l))) ?? '').trim();
     }
-    hits.push({ task, snippet, score });
+    const hit: SearchHit & { score: number } = { task, snippet, score };
+    if (options.lines) hit.lines = matchLines(task, terms, Math.max(0, options.context ?? 0));
+    hits.push(hit);
   }
   const order = new Map(sortTasks(hits.map((h) => h.task)).map((t, i) => [t, i]));
   return hits
     .sort((a, b) => b.score - a.score || (order.get(a.task) ?? 0) - (order.get(b.task) ?? 0))
-    .map(({ task, snippet }) => ({ task, snippet }));
+    .map(({ score: _score, ...hit }) => hit);
 }

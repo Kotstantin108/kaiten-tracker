@@ -11,14 +11,14 @@
  */
 
 import { spawnSync } from 'node:child_process';
-import { readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { basename, join, resolve } from 'node:path';
 
 import { contentHash, serializeTaskDocument } from './core/document.js';
 import { SLUG_RE } from './core/lint.js';
 import { TASK_TYPES, type TaskType } from './core/schema.js';
-import { BLOCKABLE, CANCELLABLE, matchItem, moveProblem, newTaskText, slugify, uniqueSlug, type Op } from './core/task-ops.js';
+import { ATTACHMENT_MAX_BYTES, attachmentNameProblem, BLOCKABLE, CANCELLABLE, matchItem, moveProblem, newTaskText, slugify, uniqueSlug, type Op } from './core/task-ops.js';
 import { refOf, type TaskRecord } from './core/tasks-index.js';
 import { ulid } from './core/ulid.js';
 import {
@@ -38,7 +38,8 @@ import {
   UsageError,
   type Context,
 } from './kaiten-cli.js';
-import { recordOp } from './store-write.js';
+import { progressLine } from './kaiten-format.js';
+import { recordOp, storeBlob } from './store-write.js';
 
 export const WRITE_HELP: Record<string, string> = {
   new: `kaiten new "<заголовок>" — завести задачу.
@@ -62,15 +63,35 @@ export const WRITE_HELP: Record<string, string> = {
 `,
   check: `kaiten check <задача> <пункт>... — отметить пункты задачи.
 
-Пункт — его текст или слова, по которым он находится однозначно. Можно
-несколько пунктов за раз.
+Пункт — его текст или слова, по которым он находится однозначно; обратные
+кавычки в тексте пункта можно не писать. Можно несколько пунктов за раз.
+Команда называет отмеченные пункты и счёт по разделам.
 ${TASK_REF_HELP}
 
 Флаги:
   --off               снять отметку
 
 Пример:
-  kaiten check PRJ-123 "тест на таймаут" "ретраи"
+  kaiten check PRJ-123 'тест на таймаут' 'ретраи'
+`,
+  attach: `kaiten attach <задача> <файл> — приложить файл к задаче.
+
+Отчёт, передача дел, схема, данные — всё, что относится к задаче, но не
+постановка. Файл с таким именем у задачи заменяется. Читать вложения —
+kaiten files <задача>.
+${TASK_REF_HELP}
+
+Флаги:
+  --as <имя>          имя вложения (по умолчанию — имя файла)
+  --stdin             содержимое — из стандартного ввода; тогда второй
+                      аргумент — имя вложения
+
+Примеры:
+  kaiten attach PRJ-123 report.pdf
+  kaiten attach PRJ-123 tmp/notes.md --as HANDOFF.md
+  kaiten attach PRJ-123 HANDOFF.md --stdin <<'EOF'
+  …текст…
+  EOF
 `,
   log: `kaiten log <задача> "<текст>" — запись в журнал задачи.
 
@@ -236,6 +257,46 @@ async function check(args: string[]): Promise<void> {
   }
   if (problems.length > 0) throw new UsageError(`В задаче ${refOf(task)} ${problems.join('\n')}`, 1);
   await commit(ctx, { kind: 'check', id: task.fm.id, items, checked: !values.off }, `${values.off ? 'снятие' : 'отметка'} пунктов в ${refOf(task)}`);
+  // Что именно отмечено и сколько осталось — чтобы не проверять отдельным show.
+  for (const item of items) console.log(`  [${values.off ? ' ' : 'x'}] ${item}`);
+  const after = loadTasks(ctx).index.tasks.find((t) => t.fm.id === task.fm.id);
+  const progress = after ? progressLine(after) : null;
+  if (progress) console.log(progress);
+}
+
+async function attach(args: string[]): Promise<void> {
+  const { values, positionals } = parse('attach', args, { as: { type: 'string' }, stdin: { type: 'boolean' } }, 2);
+  const ref = taskArg(positionals, 'attach');
+  const source = positionals[1];
+  if (!source) throw new UsageError(values.stdin ? 'Укажите имя вложения: kaiten attach PRJ-123 HANDOFF.md --stdin' : 'Укажите файл: kaiten attach PRJ-123 report.md');
+  let name: string;
+  let content: Buffer;
+  if (values.stdin) {
+    name = stringFlag(values, 'as')?.trim() ?? source;
+    content = readFileSync(0);
+  } else {
+    const path = resolve(source);
+    if (!existsSync(path) || !statSync(path).isFile()) throw new UsageError(`Нет файла ${source}.`, 1);
+    name = stringFlag(values, 'as')?.trim() ?? basename(path);
+    content = readFileSync(path);
+  }
+  name = name.replaceAll('\\', '/');
+  const problem = attachmentNameProblem(name);
+  if (problem) throw new UsageError(`Имя вложения «${name}» не годится: ${problem}.`);
+  if (content.length === 0) throw new UsageError('Файл пуст — прикладывать нечего.', 1);
+  if (content.length > ATTACHMENT_MAX_BYTES) {
+    throw new UsageError(`Файл больше ${ATTACHMENT_MAX_BYTES / 1024 / 1024} МБ — такие к задаче не прикладываются: положите его в общее хранилище файлов и дайте ссылку в задаче.`, 1);
+  }
+  const ctx = begin();
+  const task = findTask(loadTasks(ctx).index, ref);
+  let blob: string;
+  try {
+    blob = storeBlob(ctx.store, content);
+  } catch {
+    throw new UsageError('Не записано: вложение не сохранить. Повторите kaiten pull; если не поможет — сообщите тому, кто настраивал kaiten.', 1);
+  }
+  await commit(ctx, { kind: 'attach', id: task.fm.id, name, blob }, `вложение ${name} задачи ${refOf(task)}`);
+  console.log(`Прочитать: kaiten files ${refOf(task)} ${name}`);
 }
 
 async function log(args: string[]): Promise<void> {
@@ -334,6 +395,7 @@ async function edit(args: string[]): Promise<void> {
 export const WRITE_COMMANDS: Record<string, (args: string[]) => Promise<void>> = {
   new: newTask,
   check,
+  attach,
   log,
   block: (args) => withReason('block', args),
   cancel: (args) => withReason('cancel', args),

@@ -33,7 +33,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 
 import { STATUSES, TASK_TYPES, type TaskStatus, type TaskType } from './core/schema.js';
-import { filterTasks, refOf, resolveTask, searchTasks, sortTasks, type TaskFilter, type TaskIndex, type TaskRecord } from './core/tasks-index.js';
+import { filterTasks, refOf, resolveTask, SearchQueryError, searchTasks, sortTasks, type TaskFilter, type TaskIndex, type TaskRecord } from './core/tasks-index.js';
 import {
   findTask,
   loadTasks,
@@ -53,7 +53,7 @@ import {
   type Values,
 } from './kaiten-cli.js';
 import { localCopyDir, SettingsError } from './kaiten-context.js';
-import { formatSearch, formatShow, formatTaskLines, presentBody, showJson, taskJson } from './kaiten-format.js';
+import { bodySections, formatLogTail, formatOutline, formatSearch, formatSection, formatShow, formatTaskLines, formatTodo, presentBody, showJson, taskJson } from './kaiten-format.js';
 import { START_COMMANDS, START_HELP } from './kaiten-start.js';
 import { editableText, WRITE_COMMANDS, WRITE_HELP } from './kaiten-write.js';
 import { hasPending, syncStore } from './store-write.js';
@@ -67,7 +67,7 @@ function mainHelp(): string {
 Смотреть:
   kaiten list                        задачи продукта, в репозитории которого вы находитесь
   kaiten show <задача>               задача целиком: постановка, пункты, журнал, эпик
-  kaiten search <слова>              найти задачи по словам
+  kaiten search <слова>              найти задачи по словам или выражению
   kaiten files <задача> [файл]       вложения задачи
   kaiten pull                        получить свежие задачи и отправить свои изменения
 
@@ -75,6 +75,7 @@ function mainHelp(): string {
   kaiten new "<заголовок>" ...       завести задачу
   kaiten check <задача> <пункт>...   отметить пункты
   kaiten log <задача> "<текст>"      запись в журнал задачи
+  kaiten attach <задача> <файл>      приложить файл к задаче
   kaiten block <задача> --reason …   задача заблокирована
   kaiten cancel <задача> --reason …  отменить задачу
   kaiten edit <задача>               поправить текст задачи
@@ -121,27 +122,48 @@ ${FILTER_HELP}
 задачи. Ссылки на другие задачи и вложения показаны командами kaiten.
 ${TASK_REF_HELP}
 
+Большую задачу можно читать по частям:
+  --outline           оглавление: разделы, сколько в них строк и пунктов
+  --section <слова>   только разделы, в названии которых есть эти слова
+  --todo              только неотмеченные пункты
+  --log <N>           только N последних записей журнала
+
 Флаги:
   --json              вывод в JSON
   --raw               текст задачи целиком — для kaiten edit --stdin
 
-Пример:
+Примеры:
   kaiten show PRJ-123
+  kaiten show PRJ-100 --outline
+  kaiten show PRJ-100 --section "Критерии"
+  kaiten show PRJ-123 --log 3
 `,
   search: `kaiten search <слова> — найти задачи по словам.
 
 Ищет во всём проекте, в открытых и закрытых задачах: заголовок, «Суть»,
-постановка, журнал. Задача подходит, если в ней есть все слова; регистр и
-«ё»/«е» не важны.
+постановка, журнал. Регистр и «ё»/«е» не важны.
+
+Задача подходит, если в ней есть все слова. У русских слов окончания не
+важны: «онбордингом» найдёт «онбординг». Варианты одного слова — через «|»
+без пробелов: export|экспорт|выгрузк.
 
 Флаги:
+  --regex             запрос — одно регулярное выражение, построчно:
+                      "лимит.*месяц", "^## \\[2026-09-1[4-8]\\]"
+  --exact             слова как написаны, с окончаниями
+  --lines             показать все совпавшие строки задачи, а не одну
+  --context <N>       вместе с N соседними строками сверху и снизу
 ${FILTER_HELP}
 
 Примеры:
   kaiten search таймаут вебхук
   kaiten search оплата --status done
+  kaiten search "streak|achievement|реферал" --lines
+  kaiten search --regex "карт[аыу] (третьих|близких)" --context 2
 `,
   files: `kaiten files <задача> [файл] — вложения задачи.
+
+Приложить файл — kaiten attach.
 
 Без имени файла — список вложений. С именем — текстовый файл выводится
 целиком, остальные сохраняются во временную папку, и команда называет путь.
@@ -242,28 +264,80 @@ function list(args: string[]): void {
   reportProblems(index);
 }
 
+function count(values: Values, flag: string, max: number): number | undefined {
+  const raw = values[flag];
+  if (typeof raw !== 'string') return undefined;
+  const n = Number(raw);
+  if (!Number.isInteger(n) || n < 0 || n > max) throw new UsageError(`--${flag}: нужно целое число от 0 до ${max}`);
+  return n;
+}
+
 function show(args: string[]): void {
-  const { values, positionals } = parse('show', args, { json: { type: 'boolean' }, raw: { type: 'boolean' } }, 1);
+  const { values, positionals } = parse(
+    'show',
+    args,
+    { json: { type: 'boolean' }, raw: { type: 'boolean' }, outline: { type: 'boolean' }, section: { type: 'string' }, todo: { type: 'boolean' }, log: { type: 'string' } },
+    1,
+  );
   if (positionals.length === 0) throw new UsageError('Укажите задачу: kaiten show PRJ-123');
   const ctx = readContext();
   const { index, entries } = loadTasks(ctx);
   const task = findTask(index, positionals[0]);
   const attachments = attachmentsOf(entries, task).map((e) => attachmentName(e, task));
+  const tail = count(values, 'log', 1000);
   if (values.raw) process.stdout.write(editableText(task));
   else if (values.json) console.log(JSON.stringify(showJson(index.tasks, task, attachments), null, 2));
+  else if (values.outline) process.stdout.write(formatOutline(task, attachments));
+  else if (typeof values.section === 'string') {
+    const text = formatSection(index.tasks, task, values.section);
+    if (text === null) {
+      const names = bodySections(task.body).map((s) => s.name).filter(Boolean);
+      throw new UsageError(`В задаче ${refOf(task)} нет раздела «${values.section}». Разделы: ${names.join(', ') || 'нет'}`, 1);
+    }
+    process.stdout.write(text);
+  } else if (values.todo) process.stdout.write(formatTodo(index.tasks, task));
+  else if (tail !== undefined) process.stdout.write(formatLogTail(index.tasks, task, Math.max(1, tail)));
   else process.stdout.write(formatShow(index.tasks, task, attachments));
 }
 
 function search(args: string[]): void {
-  const { values, positionals } = parse('search', args, FILTERS);
+  const { values, positionals } = parse('search', args, {
+    ...FILTERS,
+    regex: { type: 'boolean' },
+    exact: { type: 'boolean' },
+    lines: { type: 'boolean' },
+    context: { type: 'string' },
+  });
   if (positionals.length === 0) throw new UsageError('Укажите слова для поиска: kaiten search таймаут вебхук');
   const ctx = readContext();
   const { index } = loadTasks(ctx);
   const filter = { ...buildFilter(ctx, index, values), closed: true };
-  const hits = searchTasks(filterTasks(index.tasks, filter), positionals.join(' '));
+  const context = count(values, 'context', 20);
+  let hits;
+  try {
+    hits = searchTasks(filterTasks(index.tasks, filter), positionals.join(' '), {
+      regex: values.regex === true,
+      exact: values.exact === true,
+      lines: values.lines === true || context !== undefined,
+      context,
+    });
+  } catch (error) {
+    if (error instanceof SearchQueryError) throw new UsageError(`--regex: ${error.message}`);
+    throw error;
+  }
   if (values.json) {
     const snippet = (text: string | null): string | null => (text === null ? null : presentBody(index.tasks, text));
-    console.log(JSON.stringify(hits.map((h) => ({ ...taskJson(index.tasks, h.task), snippet: snippet(h.snippet) })), null, 2));
+    console.log(
+      JSON.stringify(
+        hits.map((h) => ({
+          ...taskJson(index.tasks, h.task),
+          snippet: snippet(h.snippet),
+          ...(h.lines ? { lines: h.lines.map((l) => ({ where: l.where, text: presentBody(index.tasks, l.text), hit: l.hit })) } : {}),
+        })),
+        null,
+        2,
+      ),
+    );
   } else {
     console.log(`${ctx.title} · найдено: ${hits.length}\n`);
     if (hits.length > 0) console.log(formatSearch(index.tasks, hits, true).join('\n'));

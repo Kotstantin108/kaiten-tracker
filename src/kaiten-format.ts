@@ -34,8 +34,125 @@ export function formatSearch(all: readonly TaskRecord[], hits: readonly SearchHi
     hits.map((h) => h.task),
     withRepo,
   );
-  const cut = (text: string): string => (text.length > 140 ? `${text.slice(0, 137)}…` : text);
-  return hits.flatMap((hit, i) => (hit.snippet ? [lines[i], `    … ${cut(presentBody(all, hit.snippet))}`] : [lines[i]]));
+  const cut = (text: string, max = 140): string => (text.length > max ? `${text.slice(0, max - 3)}…` : text);
+  return hits.flatMap((hit, i) => {
+    if (hit.lines) {
+      // Совпавшая строка — «▸», соседняя — «·»; разрыв между кусками — «--».
+      const withContext = hit.lines.some((l) => !l.hit);
+      const shown = hit.lines.flatMap((l, n) => [
+        ...(withContext && l.gap && n > 0 ? ['    --'] : []),
+        `    ${l.where} ${l.hit ? '▸' : '·'} ${cut(presentBody(all, l.text), 200)}`,
+      ]);
+      return [lines[i], ...shown];
+    }
+    return hit.snippet ? [lines[i], `    … ${cut(presentBody(all, hit.snippet))}`] : [lines[i]];
+  });
+}
+
+// ── части задачи ─────────────────────────────────────────────────────────
+
+const PART_HEADING_RE = /^(#{1,6})[ \t]+(.+?)[ \t]*#*[ \t]*$/;
+const PART_FENCE_RE = /^\s*(```|~~~)/;
+const PART_ITEM_RE = /^\s*(?:[-*+]|\d+[.)])[ \t]+\[([ xX])\][ \t]+\S/;
+
+export interface BodySection {
+  level: number;
+  name: string;
+  /** Строки раздела без заголовка — до следующего заголовка любого уровня. */
+  lines: string[];
+}
+
+/** Тело по заголовкам; текст до первого заголовка — раздел без имени. Заголовки в блоках кода не считаются. */
+export function bodySections(body: string): BodySection[] {
+  const sections: BodySection[] = [{ level: 0, name: '', lines: [] }];
+  let inFence = false;
+  for (const line of body.split('\n')) {
+    if (PART_FENCE_RE.test(line)) inFence = !inFence;
+    const m = inFence ? null : PART_HEADING_RE.exec(line);
+    if (m) sections.push({ level: m[1].length, name: m[2].replace(/[*_`]/g, '').trim(), lines: [] });
+    else sections.at(-1)?.lines.push(line);
+  }
+  return sections.filter((s) => s.name !== '' || s.lines.some((l) => l.trim() !== ''));
+}
+
+function headLine(task: TaskRecord): string {
+  return `${refOf(task)} · ${task.fm.status} · ${task.fm.title}`;
+}
+
+/** Записи журнала: каждая начинается с `## [дата]`. */
+export function logEntries(log: string | null): string[] {
+  return (log ?? '')
+    .split(/^(?=## \[)/m)
+    .map((e) => e.trim())
+    .filter(Boolean);
+}
+
+/** Оглавление задачи: разделы с числом строк и пунктов, журнал, вложения. */
+export function formatOutline(task: TaskRecord, attachments: readonly string[]): string {
+  const out = [headLine(task), ''];
+  for (const s of bodySections(task.body)) {
+    const items = s.lines.filter((l) => PART_ITEM_RE.test(l));
+    const done = items.filter((l) => /\[[xX]\]/.test(l)).length;
+    const size = s.lines.filter((l) => l.trim() !== '').length;
+    const name = s.name === '' ? '(до первого заголовка)' : `${'#'.repeat(s.level)} ${s.name}`;
+    out.push(`${name} — строк ${size}${items.length > 0 ? `, пунктов ${done}/${items.length}` : ''}`);
+  }
+  const entries = logEntries(task.log);
+  if (entries.length > 0) out.push('', `Журнал: записей ${entries.length}, последняя — ${entries.at(-1)?.split('\n')[0].replace(/^## /, '')}`);
+  if (attachments.length > 0) out.push(`Вложения (${attachments.length}): ${attachments.join(', ')}`);
+  out.push('', `Раздел целиком: kaiten show ${refOf(task)} --section "<название>"`);
+  return `${out.join('\n')}\n`;
+}
+
+/**
+ * Разделы, в названии которых есть эти слова, — с вложенными подразделами.
+ * `null` — такого раздела нет.
+ */
+export function formatSection(all: readonly TaskRecord[], task: TaskRecord, query: string): string | null {
+  const sections = bodySections(task.body);
+  const q = query.trim().toLowerCase().replace(/ё/g, 'е');
+  const out: string[] = [];
+  for (let i = 0; i < sections.length; i += 1) {
+    const s = sections[i];
+    if (s.name === '' || !s.name.toLowerCase().replace(/ё/g, 'е').includes(q)) continue;
+    const part = [`${'#'.repeat(s.level)} ${s.name}`, ...s.lines];
+    let j = i + 1;
+    for (; j < sections.length && sections[j].level > s.level; j += 1) part.push(`${'#'.repeat(sections[j].level)} ${sections[j].name}`, ...sections[j].lines);
+    // Подразделы уже показаны — отдельно их не повторяем.
+    i = j - 1;
+    out.push(part.join('\n').trim());
+  }
+  if (out.length === 0) return null;
+  return `${headLine(task)}\n\n${presentBody(all, out.join('\n\n'))}\n`;
+}
+
+/** Неотмеченные пункты по разделам. */
+export function formatTodo(all: readonly TaskRecord[], task: TaskRecord): string {
+  const out = [headLine(task), ''];
+  let total = 0;
+  for (const s of bodySections(task.body)) {
+    const open = s.lines.filter((l) => PART_ITEM_RE.test(l) && /\[ \]/.test(l));
+    if (open.length === 0) continue;
+    total += open.length;
+    out.push(s.name === '' ? 'Без раздела:' : `${s.name}:`, ...open.map((l) => `  ${presentBody(all, l.trim())}`), '');
+  }
+  if (total === 0) out.push(checklistProgress(task.body).length > 0 ? 'Все пункты отмечены.' : 'В задаче нет пунктов.', '');
+  return `${out.join('\n').trimEnd()}\n`;
+}
+
+/** Последние записи журнала. */
+export function formatLogTail(all: readonly TaskRecord[], task: TaskRecord, count: number): string {
+  const entries = logEntries(task.log);
+  if (entries.length === 0) return `${headLine(task)}\n\nЖурнал пуст.\n`;
+  const shown = entries.slice(-count);
+  const note = shown.length < entries.length ? ` (последние ${shown.length} из ${entries.length})` : ` (${entries.length})`;
+  return `${headLine(task)}\n\nЖурнал${note}:\n\n${presentBody(all, shown.join('\n\n'))}\n`;
+}
+
+/** Счёт пунктов одной строкой — как в `kaiten show`. */
+export function progressLine(task: TaskRecord): string | null {
+  const progress = checklistProgress(task.body);
+  return progress.length > 0 ? `Пункты: ${progress.map((p) => `${p.name} ${p.done}/${p.total}`).join(' · ')}` : null;
 }
 
 /**

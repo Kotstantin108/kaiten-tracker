@@ -5,7 +5,7 @@ import { describe, expect, it } from 'vitest';
 
 import { contentHash, parseTaskDocument, serializeTaskDocument } from '../core/document.js';
 import { FrontmatterSchema, type Frontmatter } from '../core/schema.js';
-import { appendLog, applyOp, matchItem, newTaskText, slugify, uniqueSlug, type FileChange, type Op, type TaskTexts } from '../core/task-ops.js';
+import { appendLog, applyOp, attachmentNameProblem, matchItem, newTaskText, slugify, uniqueSlug, type FileChange, type Op, type TaskTexts } from '../core/task-ops.js';
 
 const ID = '01K5ZQ3R8F2K9M4N7P0T5V8W3A';
 const CTX = { date: '2026-09-28' };
@@ -213,5 +213,40 @@ describe('новая задача', () => {
 
   it('без «Сути» задачу не создать', () => {
     expect(typeof newTaskText({ ...input, summary: '' }, CTX.date)).toBe('object');
+  });
+});
+
+describe('пункт с обратными кавычками', () => {
+  const ITEM = '`npm run cli -- clear` убирает купленное';
+  const body = '## Критерии\n\n- [ ] ' + ITEM + '\n- [ ] Тест\n';
+
+  it('находится и без кавычек, и с ними; отмечается исходный текст', () => {
+    expect(matchItem(body, 'npm run cli -- clear убирает купленное')).toEqual({ item: ITEM });
+    expect(matchItem(body, '`npm run cli -- clear`')).toEqual({ item: ITEM });
+    const [change] = ok(applyOp({ kind: 'check', id: ID, items: [ITEM], checked: true }, new Map([['active/webhook-timeout.md', task({}, body)]]), CTX));
+    expect(change.text).toContain('- [x] ' + ITEM);
+  });
+});
+
+describe('вложение', () => {
+  const BLOB = 'a'.repeat(40);
+
+  it('ложится в папку вложений задачи готовым объектом, файл задачи не трогает', () => {
+    const changes = ok(applyOp({ kind: 'attach', id: ID, name: 'HANDOFF.md', blob: BLOB }, texts(), CTX));
+    expect(changes).toEqual([{ path: 'attachments/webhook-timeout/HANDOFF.md', text: null, blob: BLOB }]);
+    expect(ok(applyOp({ kind: 'attach', id: ID, name: 'img/схема v2.png', blob: BLOB }, texts(), CTX))[0].path).toBe('attachments/webhook-timeout/img/схема v2.png');
+  });
+
+  it('имя не выводит за папку вложений', () => {
+    for (const bad of ['../x.md', '/x.md', 'a/../../x.md', 'a\\b.md', '', 'a/b/c/d.md', '.git/config', 'x;rm.md']) {
+      expect(attachmentNameProblem(bad), bad).not.toBeNull();
+      expect('error' in applyOp({ kind: 'attach', id: ID, name: bad, blob: BLOB }, texts(), CTX), bad).toBe(true);
+    }
+    for (const good of ['HANDOFF.md', 'report (2).pdf', 'data/photos.json', '_notes.md']) expect(attachmentNameProblem(good), good).toBeNull();
+  });
+
+  it('нет задачи или объекта — ошибка', () => {
+    expect('error' in applyOp({ kind: 'attach', id: '01K5ZQ3R8F2K9M4N7P0T5V8W3Z', name: 'a.md', blob: BLOB }, texts(), CTX)).toBe(true);
+    expect('error' in applyOp({ kind: 'attach', id: ID, name: 'a.md', blob: 'не sha' }, texts(), CTX)).toBe(true);
   });
 });

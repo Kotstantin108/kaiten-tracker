@@ -34,6 +34,12 @@ export type Op =
   | { kind: 'move'; id: string; status: WorkStatus; note?: string }
   | { kind: 'edit'; id: string; text: string; baseHash: string }
   /**
+   * Вложение задачи: файл `attachments/<slug>/<name>`. Содержимое уже лежит в
+   * хранилище объектом `blob` (его кладёт команда до записи операции) — журнал
+   * хранит намерение, а не мегабайты. Файл с таким именем заменяется.
+   */
+  | { kind: 'attach'; id: string; name: string; blob: string }
+  /**
    * Служебная операция синхронизации: карточки получили содержимое с этим
    * хешем (и, при создании, — свой ключ). Пакетом — один коммит на проход,
    * а не на задачу (первая заливка — сотни карточек). Меняет только поля CLI
@@ -94,6 +100,8 @@ export interface FileChange {
   path: string;
   /** `null` — файл удаляется (перенос в архив). */
   text: string | null;
+  /** Содержимое — готовый объект хранилища (вложение); `text` при этом `null`. */
+  blob?: string;
 }
 
 export type OpResult = { changes: FileChange[]; summary: string; warnings: string[] } | { error: string };
@@ -189,8 +197,9 @@ interface BodyItem {
   checked: boolean;
 }
 
+/** Обратные кавычки не различаем: в оболочке их приходится экранировать, и пункт с `кодом` иначе не отметить. */
 function normalizeItem(text: string): string {
-  return text.replace(/\s+/g, ' ').trim().toLowerCase().replace(/ё/g, 'е');
+  return text.replace(/`/g, '').replace(/\s+/g, ' ').trim().toLowerCase().replace(/ё/g, 'е');
 }
 
 /** Пункты `- [ ]` тела с текстом, склеенным из строк-продолжений (как в чек-листах карточки). */
@@ -255,6 +264,27 @@ function setItems(body: string, texts: readonly string[], value: boolean): { bod
     changed += 1;
   }
   return { body: lines.join('\n'), changed };
+}
+
+// ── вложения ─────────────────────────────────────────────────────────────
+
+/** Вложения больше — не в задачи: репозиторий задач загружают целиком. */
+export const ATTACHMENT_MAX_BYTES = 5 * 1024 * 1024;
+
+/**
+ * Что не так с именем вложения; `null` — годится. Имя — относительный путь
+ * внутри папки вложений задачи: без выхода наружу и без знаков, которые
+ * ломают ссылки и оболочку.
+ */
+export function attachmentNameProblem(name: string): string | null {
+  if (!name.trim()) return 'пустое имя файла';
+  if (name.length > 200) return 'имя файла длиннее 200 знаков';
+  if (name.includes('\\')) return 'в имени файла — прямой слэш, не обратный';
+  const parts = name.split('/');
+  if (parts.some((p) => p === '' || p === '.' || p === '..')) return 'имя файла — без «..», «.» и слэша в начале или в конце';
+  if (parts.length > 3) return 'не больше двух вложенных папок';
+  if (!parts.every((p) => /^[\p{L}\p{N}_][\p{L}\p{N} ._()-]*$/u.test(p))) return 'в имени файла — буквы, цифры, пробел, точка, дефис, подчёркивание и скобки';
+  return null;
 }
 
 // ── slug ─────────────────────────────────────────────────────────────────
@@ -408,6 +438,12 @@ export function applyOp(op: Op, texts: TaskTexts, ctx: OpContext): OpResult {
         summary: `задача ${ref} заблокирована`,
         warnings: [],
       };
+    }
+    case 'attach': {
+      const problem = attachmentNameProblem(op.name);
+      if (problem) return { error: problem };
+      if (!/^[0-9a-f]{40,64}$/.test(op.blob)) return { error: 'содержимое вложения не найдено' };
+      return { changes: [{ path: `attachments/${task.slug}/${op.name}`, text: null, blob: op.blob }], summary: `вложение ${op.name} приложено к задаче ${ref}`, warnings: [] };
     }
     case 'edit': {
       if (contentHash(task.fm, task.body) !== op.baseHash) {

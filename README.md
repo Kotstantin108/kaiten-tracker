@@ -37,13 +37,14 @@ CLI задач для агентов и разработчиков (чтение
 ```bash
 npm link                      # команда kaiten в PATH
 kaiten list                   # открытые задачи продукта текущего репозитория
-kaiten show PRJ-123            # задача целиком, её эпик и соседние задачи
-kaiten search таймаут вебхук  # по словам, в открытых и закрытых
+kaiten show PRJ-123            # задача целиком, её эпик и соседние задачи; по частям: --outline, --section, --todo, --log N
+kaiten search таймаут вебхук  # по словам (окончания не важны, a|b — варианты), --regex, --lines
 kaiten files PRJ-123           # вложения задачи
 kaiten pull                   # свежие задачи проекта и отправка своих изменений
 kaiten new "Починить…" --type bug --summary "…" [--agent]
 kaiten check PRJ-123 "тест на таймаут"   # отметить пункты
 kaiten log PRJ-123 "что сделано"         # запись в журнал задачи
+kaiten attach PRJ-123 report.md          # приложить файл к задаче (--stdin — содержимое из ввода)
 kaiten block PRJ-123 --reason "…"        # задача заблокирована
 kaiten cancel PRJ-123 --reason "…"       # отменить (только не начатую)
 kaiten edit PRJ-123            # правка текста в своём редакторе; --stdin — для агента
@@ -106,7 +107,7 @@ repo: acme-app
 | `src/task-store.ts` | Хранилище задач без рабочей копии: загрузка, обновление, чтение одним `cat-file --batch`, копия для чтения |
 | `src/kaiten-context.ts` | Файл проекта `.kaiten` и настройки `kaiten.settings.json` (вход в Kaiten, копия для чтения) |
 | `src/kaiten.ts`, `src/kaiten-cli.ts`, `src/kaiten-format.ts`, `bin/kaiten.mjs` | CLI `kaiten`: справка, команды чтения `list`, `show`, `search`, `files`, `pull`; общее для команд |
-| `src/kaiten-write.ts` | Команды записи `new`, `check`, `log`, `block`, `cancel`, `edit` |
+| `src/kaiten-write.ts` | Команды записи `new`, `check`, `attach`, `log`, `block`, `cancel`, `edit` |
 | `src/core/task-ops.ts` | Операции записи над задачами (чистая часть): применение к свежему состоянию, пункты, журнал, slug |
 | `src/store-write.ts` | Журнал операций, коммит без рабочей копии, пересборка поверх общего и отправка (фоновая — `kaiten __send`), замки |
 | `src/core/kaiten-sync-plan.ts` | План синхронизации файл → Kaiten (чистая часть): что создать, что обновить, описание с пометкой Q41, ссылки на репозиторий задач |

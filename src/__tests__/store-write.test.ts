@@ -13,8 +13,8 @@ import * as documentModule from '../core/document.js';
 import { serializeTaskDocument } from '../core/document.js';
 import { FrontmatterSchema } from '../core/schema.js';
 import { newTaskText } from '../core/task-ops.js';
-import { readJournal, recordOp, syncStore, takeNotices, withLock } from '../store-write.js';
-import { cloneStore, listEntries, readStoreTree, StoreError } from '../task-store.js';
+import { readJournal, recordOp, storeBlob, syncStore, takeNotices, withLock } from '../store-write.js';
+import { cloneStore, listEntries, readBlobs, readStoreTree, StoreError } from '../task-store.js';
 
 const ID = '01K5ZQ3R8F2K9M4N7P0T5V8W3A';
 /** git на Windows под нагрузкой всего набора медленный: 5 с по умолчанию мало. */
@@ -254,5 +254,31 @@ describe('замки', { timeout: GIT_TIMEOUT }, () => {
     const dir = mkdtempSync(join(tmp, 'lock-'));
     writeFileSync(join(dir, 'x.lock'), `${process.pid} now`);
     expect(() => withLock(dir, 'x.lock', () => 1, { waitMs: 100 })).toThrow(StoreError);
+  });
+});
+
+describe('вложения', { timeout: GIT_TIMEOUT }, () => {
+  it('файл любого содержимого виден сразу и уходит общим; повтор с тем же именем заменяет', () => {
+    const store = join(tmp, 'attach.git');
+    cloneStore(remote, store);
+    const bytes = Buffer.from([0, 1, 2, 255, 10, 13]);
+    const first = recordOp(store, { kind: 'attach', id: ID, name: 'data/raw.bin', blob: storeBlob(store, bytes) }, 'вложение', DATE);
+    expect(first).toMatchObject({ changed: true });
+    const entry = listEntries(store).find((e) => e.path === 'attachments/webhook/data/raw.bin');
+    expect(entry?.size).toBe(bytes.length);
+    expect(readBlobs(store, [entry?.sha ?? '']).get(entry?.sha ?? '')?.equals(bytes)).toBe(true);
+    // То же содержимое ещё раз — менять нечего.
+    expect(recordOp(store, { kind: 'attach', id: ID, name: 'data/raw.bin', blob: storeBlob(store, bytes) }, 'вложение', DATE)).toMatchObject({ changed: false });
+
+    recordOp(store, { kind: 'attach', id: ID, name: 'HANDOFF.md', blob: storeBlob(store, Buffer.from('первая версия\n')) }, 'вложение', DATE);
+    recordOp(store, { kind: 'attach', id: ID, name: 'HANDOFF.md', blob: storeBlob(store, Buffer.from('вторая версия\n')) }, 'вложение', DATE);
+    expect(syncStore(store)).toMatchObject({ sent: 3, failed: [] });
+    expect(remoteText('attachments/webhook/HANDOFF.md')).toBe('вторая версия');
+    expect(git(remote, 'ls-tree', '-r', '--name-only', 'main')).toContain('attachments/webhook/data/raw.bin');
+  });
+
+  it('объекта нет в хранилище — операция не записывается', () => {
+    const store = join(tmp, 'attach.git');
+    expect(recordOp(store, { kind: 'attach', id: ID, name: 'x.md', blob: 'b'.repeat(40) }, 'вложение', DATE)).toMatchObject({ error: expect.stringContaining('приложите файл ещё раз') });
   });
 });

@@ -215,13 +215,21 @@ export function rebuild(store: string, base: string | null, entries: readonly Jo
         out.failed.push({ entry, reason: result.error });
         continue;
       }
-      out.applied.push({ entry, result });
+      // Вложение — готовый объект хранилища; пропал (хранилище загружали заново) — операция не применяется.
+      if (result.changes.some((c) => c.blob !== undefined && !hasObject(store, c.blob))) {
+        out.failed.push({ entry, reason: 'содержимое вложения не сохранилось — приложите файл ещё раз' });
+        continue;
+      }
+      const applied = { entry, result };
+      out.applied.push(applied);
       if (result.changes.length === 0) continue;
       // `--index-info` работает и без рабочей копии (`--force-remove` — нет):
       // режим 0 убирает файл из индекса. Записи через NUL — имена не экранируются.
       const records: string[] = [];
       for (const change of result.changes) {
-        if (change.text === null) {
+        if (change.blob !== undefined) {
+          records.push(`100644 ${change.blob}\t${change.path}`);
+        } else if (change.text === null) {
           records.push(`0 ${'0'.repeat(40)}\t${change.path}`);
           texts.delete(change.path);
         } else {
@@ -232,6 +240,11 @@ export function rebuild(store: string, base: string | null, entries: readonly Jo
       }
       git(store, ['update-index', '-z', '--index-info'], `${records.join('\0')}\0`, env);
       const tree = gitText(store, ['write-tree'], undefined, env);
+      // Вложение с тем же содержимым дерево не меняет: пустой коммит не нужен, и отправлять нечего.
+      if (out.head && gitText(store, ['rev-parse', `${out.head}^{tree}`]) === tree) {
+        applied.result = { ...result, changes: [] };
+        continue;
+      }
       const parent = out.head ? ['-p', out.head] : [];
       out.head = gitText(store, ['commit-tree', tree, ...parent, '-m', `kaiten: ${result.summary}`]);
     }
@@ -239,6 +252,20 @@ export function rebuild(store: string, base: string | null, entries: readonly Jo
     rmSync(tmp, { recursive: true, force: true });
   }
   return out;
+}
+
+function hasObject(store: string, sha: string): boolean {
+  try {
+    git(store, ['cat-file', '-e', sha]);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** Положить содержимое вложения в хранилище объектом; возвращает его sha. Без сети, ветку не меняет. */
+export function storeBlob(store: string, content: Buffer): string {
+  return gitText(store, ['hash-object', '-w', '--stdin'], content);
 }
 
 function setRef(store: string, ref: string, sha: string | null, expected: string | null): void {

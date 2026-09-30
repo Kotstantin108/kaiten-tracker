@@ -8,8 +8,8 @@ import { describe, expect, it } from 'vitest';
 import { serializeTaskDocument } from '../core/document.js';
 import type { TaskFileText } from '../core/lint.js';
 import { FrontmatterSchema, type Frontmatter } from '../core/schema.js';
-import { belongsToProject, buildIndex, checklistProgress, childrenOf, epicOf, filterTasks, refOf, resolveTask, searchTasks, sortTasks, type TaskRecord } from '../core/tasks-index.js';
-import { formatProblems, formatSearch, formatShow, formatTaskLines, presentBody } from '../kaiten-format.js';
+import { belongsToProject, buildIndex, checklistProgress, childrenOf, epicOf, filterTasks, refOf, resolveTask, SearchQueryError, searchTasks, sortTasks, stem, type TaskRecord } from '../core/tasks-index.js';
+import { formatLogTail, formatOutline, formatProblems, formatSearch, formatSection, formatShow, formatTaskLines, formatTodo, presentBody, progressLine } from '../kaiten-format.js';
 
 const EPIC_ID = '01K5ZQ3R8F2K9M4N7P0T5V8W2X';
 const IDS = ['01K5ZQ3R8F2K9M4N7P0T5V8W3A', '01K5ZQ3R8F2K9M4N7P0T5V8W3B', '01K5ZQ3R8F2K9M4N7P0T5V8W3C', '01K5ZQ3R8F2K9M4N7P0T5V8W3D'];
@@ -198,5 +198,81 @@ describe('вывод', () => {
     expect(presentBody(index.tasks, body)).toBe(
       'См. [старое](kaiten show old-intro), [эпик](kaiten show PRJ-100) и [отчёт](kaiten files PRJ-100 RESEARCH v2.md).',
     );
+  });
+});
+
+describe('поиск: словоформы, варианты, выражения', () => {
+  const slugs = (query: string, options = {}): string[] => searchTasks(index.tasks, query, options).map((h) => h.task.slug).sort();
+
+  it('окончания русских слов не важны; --exact — как написано', () => {
+    expect(stem('онбордингом')).toBe('онбординг');
+    expect(stem('пустом')).toBe('пуст');
+    // Короткое слово и латиница не режутся.
+    expect(stem('тест')).toBe('тест');
+    expect(stem('staging')).toBe('staging');
+    expect(slugs('онбордингом')).toEqual(['onboarding']);
+    expect(slugs('ретраями таймаутом')).toEqual(['webhook-timeout']);
+    expect(slugs('онбордингом', { exact: true })).toEqual([]);
+  });
+
+  it('a|b — любой из вариантов, остальные слова по-прежнему обязательны', () => {
+    expect(slugs('android|лендинг')).toEqual(['android-intro', 'landing-copy']);
+    expect(slugs('android|лендинг вступление')).toEqual(['android-intro']);
+  });
+
+  it('выражение: построчно, без регистра; кривое — понятная ошибка', () => {
+    expect(slugs('^## \\[2026-09-2\\d\\]', { regex: true })).toEqual(['webhook-timeout']);
+    expect(slugs('ВСТУПЛЕНИ[ея] на', { regex: true })).toEqual(['android-intro']);
+    expect(() => searchTasks(index.tasks, '(', { regex: true })).toThrow(SearchQueryError);
+  });
+
+  it('--lines: все совпавшие строки с подписью, откуда они, и соседними', () => {
+    const [hit] = searchTasks(index.tasks, 'ретраи|воспроизв', { lines: true });
+    expect(hit.lines?.filter((l) => l.hit).map((l) => [l.where, l.text])).toEqual([
+      ['Критерии', '- [ ] Ретраи'],
+      ['Шаги', '- [ ] Воспроизвести'],
+      ['журнал 2026-09-20', '## [2026-09-20] воспроизвёл на staging, причина в ретраях'],
+    ]);
+    const [wide] = searchTasks(index.tasks, 'ретраи', { lines: true, context: 1, exact: true });
+    expect(wide.lines?.map((l) => (l.hit ? '+' : ' ') + l.text)).toEqual([' - [x] Тест', '+- [ ] Ретраи']);
+    const text = formatSearch(index.tasks, [hit], false).join('\n');
+    expect(text).toContain('    Критерии ▸ - [ ] Ретраи');
+    expect(text).toContain('    журнал 2026-09-20 ▸ ');
+  });
+});
+
+describe('задача по частям', () => {
+  const task = (): TaskRecord => bySlug('webhook-timeout');
+
+  it('оглавление: разделы, пункты, журнал, вложения', () => {
+    const text = formatOutline(task(), ['trace.log']);
+    expect(text).toContain('10000002 · ready · Починить таймаут вебхука');
+    expect(text).toContain('## Критерии — строк 2, пунктов 1/2');
+    expect(text).toContain('## Шаги — строк 1, пунктов 0/1');
+    expect(text).toContain('Журнал: записей 1, последняя — [2026-09-20]');
+    expect(text).toContain('Вложения (1): trace.log');
+  });
+
+  it('раздел по словам названия; нет раздела — null', () => {
+    expect(formatSection(index.tasks, task(), 'шаг')).toContain('## Шаги\n\n- [ ] Воспроизвести');
+    expect(formatSection(index.tasks, task(), 'шаг')).not.toContain('Ретраи');
+    expect(formatSection(index.tasks, task(), 'нет такого')).toBeNull();
+  });
+
+  it('подразделы идут вместе с разделом и не повторяются', () => {
+    const big = buildIndex([file('active/big.md', { id: IDS[0] }, '## План\n\nтекст\n\n### План: этап 1\n\n- [ ] раз\n\n## Итог\n\nвсё\n')]).tasks;
+    const text = formatSection(big, big[0], 'план') ?? '';
+    expect(text.match(/### План: этап 1/g)).toHaveLength(1);
+    expect(text).not.toContain('Итог');
+  });
+
+  it('только неотмеченное; хвост журнала; счёт пунктов', () => {
+    const todo = formatTodo(index.tasks, task());
+    expect(todo).toContain('Критерии:\n  - [ ] Ретраи');
+    expect(todo).not.toContain('- [x] Тест');
+    expect(formatTodo(index.tasks, bySlug('onboarding'))).toContain('В задаче нет пунктов.');
+    expect(formatLogTail(index.tasks, task(), 3)).toContain('Журнал (1):');
+    expect(formatLogTail(index.tasks, bySlug('android-intro'), 3)).toContain('Журнал пуст.');
+    expect(progressLine(task())).toBe('Пункты: Критерии 1/2 · Шаги 0/1');
   });
 });
