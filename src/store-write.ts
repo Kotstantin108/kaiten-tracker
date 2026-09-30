@@ -105,9 +105,11 @@ function alive(pid: number): boolean {
 export function withLock<T>(store: string, name: string, fn: () => T, options: { waitMs?: number; staleMs?: number } = {}): T {
   const path = join(store, name);
   // Несколько агентов на одной машине пишут в одно хранилище: под нагрузкой сосед держит замок
-  // секунды (git на Windows медленный), а 10 с ожидания давали «занято» на первой же команде.
-  const waitMs = options.waitMs ?? 30_000;
-  const staleMs = options.staleMs ?? 90_000;
+  // десятки секунд: пересборка неотправленных операций — несколько вызовов git на каждую, а git на
+  // Windows медленный. Живьём 30.09: шесть агентов разом — 10 с и 30 с ожидания давали «занято».
+  // Умерший владелец замка снимается сразу (по pid), поэтому долгое ожидание ничего не подвешивает.
+  const waitMs = options.waitMs ?? 120_000;
+  const staleMs = options.staleMs ?? 5 * 60_000;
   const started = Date.now();
   let fd: number | null = null;
   while (fd === null) {
@@ -173,6 +175,44 @@ export async function withLockAsync<T>(store: string, name: string, fn: () => Pr
     rmSync(path, { force: true });
   }
 }
+
+/**
+ * Взять замок, не дожидаясь: `null` — занят живым процессом. Возвращает функцию,
+ * которая его снимает. Замок умершего процесса (или старше `staleMs`) снимается.
+ */
+export function tryLock(store: string, name: string, staleMs = 10 * 60_000): (() => void) | null {
+  const path = join(store, name);
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    try {
+      const fd = openSync(path, 'wx');
+      writeFileSync(fd, `${process.pid} ${new Date().toISOString()}`);
+      closeSync(fd);
+      return () => rmSync(path, { force: true });
+    } catch (error) {
+      if (!(typeof error === 'object' && error !== null && 'code' in error && error.code === 'EEXIST')) return null;
+      try {
+        const [pid] = readFileSync(path, 'utf8').split(' ');
+        if (alive(Number(pid)) && Date.now() - statSync(path).mtimeMs <= staleMs) return null;
+      } catch {
+        return null; // Замок как раз снимают или ставят — считаем занятым.
+      }
+      rmSync(path, { force: true });
+    }
+  }
+  return null;
+}
+
+/**
+ * Очередь фоновых отправок — не длиннее одного. Несколько агентов на одной
+ * машине пишут часто, и каждый запускает свою отправку; если бы все они ждали
+ * замок по очереди, очередь росла бы быстрее, чем разбирается (живьём 30.09:
+ * шесть агентов — `pull` не дождался замка). Поэтому фоновая отправка сначала
+ * встаёт в очередь (`*-queue.lock`): место занято — выходит, потому что тот,
+ * кто ждёт, ещё не начал и заберёт из журнала и её операцию тоже. Занявший
+ * место освобождает его, как только получил сам замок, — до чтения журнала.
+ */
+export const SEND_QUEUE = 'kaiten-send-queue.lock';
+export const KAITEN_QUEUE = 'kaiten-sync-queue.lock';
 
 /** Шаг Kaiten: один на хранилище — иначе два отправителя создали бы по карточке на задачу. */
 export const KAITEN_LOCK = 'kaiten-sync.lock';
@@ -310,6 +350,8 @@ export interface SyncResult {
 
 export interface SyncOptions {
   now?: () => Date;
+  /** Вызывается, когда замок отправки получен, — до чтения журнала (освободить место в очереди). */
+  onLocked?: () => void;
   /** Только для тестов: вызывается перед push (чужой push — гонка) и после него (обрыв). */
   beforePush?: () => void;
   afterPush?: () => void;
@@ -346,7 +388,15 @@ function keepText(entry: JournalEntry): string | null {
  */
 export function syncStore(store: string, options: SyncOptions = {}): SyncResult {
   if (!isStore(store)) throw new StoreError('not-store');
-  return withLock(store, SEND_LOCK, () => syncLocked(store, options), { waitMs: 60_000, staleMs: 5 * 60_000 });
+  return withLock(
+    store,
+    SEND_LOCK,
+    () => {
+      options.onLocked?.();
+      return syncLocked(store, options);
+    },
+    { waitMs: 180_000, staleMs: 5 * 60_000 },
+  );
 }
 
 function syncLocked(store: string, options: SyncOptions): SyncResult {
@@ -454,7 +504,14 @@ function clearProblem(store: string): void {
 
 /** Отправка в фоне: тот же `syncStore` — один отправитель за раз, следующий ждёт. */
 export function sendInBackground(store: string): void {
-  syncStore(store);
+  const leaveQueue = tryLock(store, SEND_QUEUE);
+  // В очереди уже ждёт другая отправка: она ещё не читала журнал и заберёт всё записанное.
+  if (!leaveQueue) return;
+  try {
+    syncStore(store, { onLocked: leaveQueue });
+  } finally {
+    leaveQueue();
+  }
 }
 
 // ── что сказать человеку ─────────────────────────────────────────────────
@@ -496,7 +553,11 @@ export function noteFailures(store: string, failures: readonly Omit<FailedEntry,
 /** Не применённые операции (показываются один раз) и неотправленное. */
 export function takeNotices(store: string): Notices {
   if (!existsSync(join(store, JOURNAL))) return { failed: [], kaiten: [], pending: 0, problem: null };
-  return withLock(store, JOURNAL_LOCK, () => {
+  // Сообщения прошлых команд не стоят ожидания: замок занят — команда идёт дальше, скажем в следующий раз.
+  return withLock(
+    store,
+    JOURNAL_LOCK,
+    () => {
     const journal = readJournal(store);
     const kaiten = journal.kaiten && !journal.kaiten.shown ? journal.kaiten.errors : [];
     const notices: Notices = { failed: journal.failed, kaiten, pending: journal.pending.length, problem: journal.sendProblem?.kind ?? null };
@@ -506,5 +567,7 @@ export function takeNotices(store: string): Notices {
       writeJournal(store, journal);
     }
     return notices;
-  });
+    },
+    { waitMs: 2_000 },
+  );
 }

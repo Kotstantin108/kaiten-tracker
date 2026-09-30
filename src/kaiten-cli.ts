@@ -20,7 +20,7 @@ import { formatProblems } from './kaiten-format.js';
 import { repoWebBase } from './core/kaiten-sync-plan.js';
 import { KaitenClient } from './kaiten-client.js';
 import { apiErrorText, runKaitenSync, type SyncRun } from './kaiten-sync.js';
-import { KAITEN_LOCK, recordOp, sendInBackground, setKaitenErrors, syncStore, takeNotices, withLockAsync } from './store-write.js';
+import { KAITEN_LOCK, KAITEN_QUEUE, recordOp, sendInBackground, setKaitenErrors, syncStore, takeNotices, tryLock, withLockAsync } from './store-write.js';
 import { defaultStorePath, gitText, isStore, listEntries, readStoreTree, StoreError, syncCopy, type StoreEntry } from './task-store.js';
 
 export class UsageError extends Error {
@@ -215,7 +215,7 @@ export function today(now = new Date()): string {
  * операциями `synced` через журнал и уходят общим тем же проходом. Ошибки —
  * в журнал: о них скажет следующая команда. `client` подменяется в тестах.
  */
-export async function syncWithKaiten(ctx: Context, client?: KaitenClient): Promise<SyncRun | null> {
+export async function syncWithKaiten(ctx: Context, client?: KaitenClient, onLocked?: () => void): Promise<SyncRun | null> {
   const current = settings();
   if (!current.sync.kaiten) return null;
   const mapping = ctx.loaded.project.mapping;
@@ -228,6 +228,7 @@ export async function syncWithKaiten(ctx: Context, client?: KaitenClient): Promi
   const kaiten = client ?? new KaitenClient({ domain: login?.domain ?? '', token: login?.token ?? '', minIntervalMs: 150 });
   // Один шаг Kaiten на хранилище: второй параллельный создал бы вторую карточку той же задаче.
   return withLockAsync(ctx.store, KAITEN_LOCK, async () => {
+    onLocked?.();
     let run: SyncRun;
     try {
       run = await runKaitenSync(
@@ -312,7 +313,19 @@ export async function sendAll(ctx: Context, client?: KaitenClient): Promise<void
     if (!(error instanceof StoreError)) throw error;
     return;
   }
-  const run = await syncWithKaiten(ctx, client);
+  // Шаг Kaiten — тоже с очередью не длиннее одного: он строит план по всему хранилищу, и тот,
+  // кто уже ждёт, увидит и эту запись.
+  const leaveQueue = tryLock(ctx.store, KAITEN_QUEUE);
+  if (!leaveQueue) return;
+  let run: SyncRun | null;
+  try {
+    run = await syncWithKaiten(ctx, client, leaveQueue);
+  } catch (error) {
+    if (!(error instanceof StoreError)) throw error;
+    return;
+  } finally {
+    leaveQueue();
+  }
   // Поля из Kaiten могли переложить задачи (закрытая — в архив): копия для чтения — следом.
   if (run && run.ops.length > 0) refreshLocalCopy(ctx);
 }
@@ -352,7 +365,7 @@ export function storeMessage(kind: StoreError['kind']): string {
     case 'no-identity':
       return 'Для истории изменений не задано ваше имя и почта: git config --global user.name "…" и user.email "…".';
     case 'busy':
-      return 'Задачи сейчас меняет другая команда kaiten — она не закончила за полминуты. Повторите команду.';
+      return 'Задачи сейчас меняет другая команда kaiten — она не закончила за две минуты. Повторите команду.';
     case 'refused':
       return 'Хранилище задач не принимает изменения по своим правилам. Это вопрос к владельцу проекта.';
     case 'rejected':

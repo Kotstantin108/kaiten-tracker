@@ -13,7 +13,7 @@ import * as documentModule from '../core/document.js';
 import { serializeTaskDocument } from '../core/document.js';
 import { FrontmatterSchema } from '../core/schema.js';
 import { newTaskText } from '../core/task-ops.js';
-import { readJournal, recordOp, storeBlob, syncStore, takeNotices, withLock } from '../store-write.js';
+import { readJournal, recordOp, sendInBackground, SEND_QUEUE, storeBlob, syncStore, takeNotices, tryLock, withLock } from '../store-write.js';
 import { cloneStore, listEntries, readBlobs, readStoreTree, StoreError } from '../task-store.js';
 
 const ID = '01K5ZQ3R8F2K9M4N7P0T5V8W3A';
@@ -280,5 +280,36 @@ describe('вложения', { timeout: GIT_TIMEOUT }, () => {
   it('объекта нет в хранилище — операция не записывается', () => {
     const store = join(tmp, 'attach.git');
     expect(recordOp(store, { kind: 'attach', id: ID, name: 'x.md', blob: 'b'.repeat(40) }, 'вложение', DATE)).toMatchObject({ error: expect.stringContaining('приложите файл ещё раз') });
+  });
+});
+
+describe('очередь фоновых отправок', { timeout: GIT_TIMEOUT }, () => {
+  it('место в очереди одно: занято живым процессом — второй не ждёт; умершим — занимает', () => {
+    const dir = mkdtempSync(join(tmp, 'queue-'));
+    const leave = tryLock(dir, 'q.lock');
+    expect(leave).not.toBeNull();
+    expect(tryLock(dir, 'q.lock')).toBeNull();
+    leave?.();
+    writeFileSync(join(dir, 'q.lock'), '999999999 когда-то');
+    const again = tryLock(dir, 'q.lock');
+    expect(again).not.toBeNull();
+    again?.();
+    expect(existsSync(join(dir, 'q.lock'))).toBe(false);
+  });
+
+  it('пока кто-то ждёт в очереди, фоновая отправка выходит сразу, а операция остаётся в журнале', () => {
+    const store = join(tmp, 'queue-store.git');
+    cloneStore(remote, store);
+    recordOp(store, { kind: 'log', id: ID, text: 'запись под очередью' }, 'журнал', DATE);
+    const leave = tryLock(store, SEND_QUEUE);
+    sendInBackground(store);
+    expect(readJournal(store).pending).toHaveLength(1);
+    leave?.();
+    // Место свободно — отправка проходит и освобождает его за собой.
+    sendInBackground(store);
+    expect(readJournal(store).pending).toHaveLength(0);
+    expect(existsSync(join(store, SEND_QUEUE))).toBe(false);
+    // Где лежит задача к этому моменту (прошлые тесты её двигали) — неважно: запись дошла до общего.
+    expect(git(remote, 'grep', '-l', 'запись под очередью', 'main')).toContain('webhook.log.md');
   });
 });
