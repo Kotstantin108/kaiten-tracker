@@ -61,7 +61,7 @@ const GIT_BASE = ['-c', 'core.autocrlf=false', '-c', 'core.quotepath=false'];
 
 export function git(cwd: string, args: string[], input?: Buffer | string, env?: NodeJS.ProcessEnv): Buffer {
   try {
-    return execFileSync('git', [...GIT_BASE, ...args], { cwd, input, env: env ?? process.env, stdio: ['pipe', 'pipe', 'pipe'], maxBuffer: 1 << 30 });
+    return execFileSync('git', [...GIT_BASE, ...args], { cwd, input, env: env ?? process.env, stdio: ['pipe', 'pipe', 'pipe'], maxBuffer: 1 << 30, windowsHide: true });
   } catch (error) {
     const stderr = typeof error === 'object' && error !== null && 'stderr' in error ? String(error.stderr) : '';
     throw new StoreError(classify(stderr));
@@ -205,7 +205,7 @@ function insideWorkTree(target: string): boolean {
   let dir = target;
   while (!existsSync(dir) && dirname(dir) !== dir) dir = dirname(dir);
   try {
-    return execFileSync('git', ['rev-parse', '--is-inside-work-tree'], { cwd: dir, stdio: ['ignore', 'pipe', 'ignore'] }).toString().trim() === 'true';
+    return execFileSync('git', ['rev-parse', '--is-inside-work-tree'], { cwd: dir, stdio: ['ignore', 'pipe', 'ignore'], windowsHide: true }).toString().trim() === 'true';
   } catch {
     return false;
   }
