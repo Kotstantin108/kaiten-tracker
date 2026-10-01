@@ -301,8 +301,15 @@ function show(args: string[]): void {
     process.stdout.write(text);
   } else if (values.todo) process.stdout.write(formatTodo(index.tasks, task));
   else if (tail !== undefined) process.stdout.write(formatLogTail(index.tasks, task, Math.max(1, tail), attachments));
-  else process.stdout.write(formatShow(index.tasks, task, attachments));
+  else {
+    // Как читать большую задачу по частям — здесь, а не в скилле: подсказка нужна, только когда задача большая.
+    const lines = task.body.split('\n').length;
+    if (lines > LONG_TASK_LINES) console.log(`Задача большая (${lines} строк). По частям: kaiten show ${refOf(task)} --outline, --section "<раздел>", --todo.\n`);
+    process.stdout.write(formatShow(index.tasks, task, attachments));
+  }
 }
+
+const LONG_TASK_LINES = 150;
 
 function search(args: string[]): void {
   const { values, positionals } = parse('search', args, {
@@ -343,8 +350,14 @@ function search(args: string[]): void {
       ),
     );
   } else {
-    console.log(`${ctx.title} · найдено: ${hits.length}\n`);
+    console.log(`${ctx.title} · «${positionals.join(' ')}» · найдено: ${hits.length}\n`);
     if (hits.length > 0) console.log(formatSearch(index.tasks, hits, true).join('\n'));
+    else {
+      console.log(
+        'Задача могла быть описана другими словами. Повторите с одним самым редким словом, добавьте варианты через «|» ' +
+          '(экспорт|export|выгрузк) или посмотрите открытые задачи: kaiten list.',
+      );
+    }
   }
   reportProblems(index);
 }
@@ -452,7 +465,7 @@ async function pull(args: string[]): Promise<void> {
   const { index } = loadTasks(ctx);
   const open = index.tasks.filter((t) => !t.closed).length;
   if (offline) {
-    console.log(`Свежие задачи не получены: нет связи с хранилищем задач (запрос повторён трижды). Задачи проекта ${ctx.title} — по состоянию на прошлое обновление: открытых ${open}, всего ${index.tasks.length}.`);
+    console.log(`Свежие задачи не получены: нет связи с хранилищем задач (запрос повторён трижды). Задачи проекта ${ctx.title} — по состоянию на прошлое обновление: открытых ${open}, всего ${index.tasks.length}. Работать по ним можно; скажите человеку, что задачи могли устареть.`);
     console.log('Работать по ним можно: ваши изменения записываются и уйдут, когда связь появится. Скажите об этом человеку.');
     reportProblems(index);
     refreshLocalCopy(ctx, copyDir);
