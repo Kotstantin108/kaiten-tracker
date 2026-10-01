@@ -36,7 +36,7 @@ export class UsageError extends Error {
 export const CONFIG_OVERRIDE = process.env.KAITEN_CONFIG;
 export const SETTINGS_PATH = process.env.KAITEN_SETTINGS ?? fileURLToPath(new URL('../kaiten.settings.json', import.meta.url));
 
-export const TASK_REF_HELP = 'Задача — ключ карточки (PRJ-123 или 10000002), id или slug.';
+export const TASK_REF_HELP = 'Задача — ключ карточки (PRJ-123 или номер карточки), id или slug.';
 
 // ── контекст ─────────────────────────────────────────────────────────────
 

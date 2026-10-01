@@ -176,7 +176,7 @@ export interface RepositoryLint {
 /**
  * Весь репозиторий задач: каждый файл плюс то, что видно только на всём
  * наборе, — повторы `id` и slug. Slug обязан быть уникален и между active/ и
- * archive/: ссылаются на задачу по slug, а не по пути (story `export-csv`).
+ * archive/: ссылаются на задачу по slug, а не по пути (формат задач v2).
  */
 export function lintRepository(files: readonly TaskFileText[], repos?: readonly string[]): RepositoryLint {
   const byFile = files.map((file) => ({ path: file.path, ...lintTask(file.text, { path: file.path, repos }) }));

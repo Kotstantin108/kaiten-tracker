@@ -107,7 +107,7 @@ describe('statusFromPath', () => {
 describe('parseTaskFile', () => {
   const header = [
     'Slug: export-csv',
-    'Title: Формат задач v2',
+    'Title: Добавить выгрузку в CSV',
     'Type: story',
     'Priority: p1',
     'Status: backlog',
@@ -128,7 +128,7 @@ describe('parseTaskFile', () => {
   it('разбирает plain-шапку и отделяет тело', () => {
     const { header: h, body } = parseTaskFile(header.join('\n'));
     expect(h.slug).toBe('export-csv');
-    expect(h.title).toBe('Формат задач v2');
+    expect(h.title).toBe('Добавить выгрузку в CSV');
     expect(h.status).toBe('backlog');
     expect(h.related).toEqual(['tasks/RULES.md', 'docs/raw/research/tracker-2026-09/04-sync-patterns.md']);
     expect(body.startsWith('## Мотивация (WHY)')).toBe(true);
@@ -182,7 +182,7 @@ describe('selectScope', () => {
 
   it('pilot тянет эпик и всё его дерево', () => {
     const picked = selectScope(all, { scope: 'pilot', epics: ['reports'] }).map((t) => t.externalId);
-    expect(picked.sort()).toEqual(['repo:20260916_sub', 'repo:20260916_export-csv', 'repo:20260916_reports']);
+    expect(picked.sort()).toEqual(['repo:20260916_export-csv', 'repo:20260916_reports', 'repo:20260916_sub']);
   });
 
   it('only сильнее scope', () => {

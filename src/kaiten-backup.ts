@@ -16,7 +16,7 @@
  * которых мы не читаем. Токен — только из окружения, в вывод не попадает;
  * вывод — только числа.
  *
- *   npm run backup -- --out <папка> [--spaces 100001,100002]
+ *   npm run backup -- --out <папка> [--spaces <id>,<id>]
  */
 
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
@@ -127,7 +127,7 @@ async function main(): Promise<void> {
   const argv = process.argv.slice(2);
   const out = argValue(argv, '--out');
   if (!out) {
-    console.error('Укажите папку снимка: npm run backup -- --out <папка> [--spaces 100001,100002]');
+    console.error('Укажите папку снимка: npm run backup -- --out <папка> [--spaces <id>,<id>]');
     process.exit(2);
   }
   const domain = process.env.KAITEN_DOMAIN;

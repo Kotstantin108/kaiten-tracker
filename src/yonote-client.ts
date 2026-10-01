@@ -1,7 +1,7 @@
 /**
  * Клиент yonote только на чтение.
  *
- * yonote — форк Outline (эпик `reports`: ответ `documents.list`
+ * yonote — форк Outline (ответ `documents.list`
  * байт в байт как у Outline, компоненты Outline в CSS-бандлах), поэтому API
  * Outline-совместимый: RPC-стиль, `POST https://<хост>/api/<метод>` с JSON-телом,
  * `Authorization: Bearer <token>`, ответ `{ ok, data, pagination }`, пагинация

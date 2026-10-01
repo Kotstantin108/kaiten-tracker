@@ -16,7 +16,7 @@ name: Бэкап Kaiten
 
 on:
   schedule:
-    - cron: '30 0 * * *' # 03:30 по Москве
+    - cron: '30 0 * * *' # 00:30 UTC
   workflow_dispatch:
 
 permissions:
