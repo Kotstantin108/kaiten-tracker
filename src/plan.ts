@@ -23,7 +23,7 @@ import type { FolderStatus, Priority, TaskFile, TaskType } from './task-source.j
 import { rewriteRelativeLinks } from './task-source.js';
 
 /** Маркер в конце описания карточки: скрыт при рендере, читается обратно. */
-const FINGERPRINT_RE = /<!--\s*kaiten-sync:([a-f0-9]{16})\s*-->/;
+const FINGERPRINT_RE = /<!--\s*acme-sync:([a-f0-9]{16})\s*-->/;
 
 export interface BoardMapping {
   boardId: number;
@@ -198,7 +198,7 @@ export function renderCard(task: TaskFile, options: RenderOptions): { descriptio
 
   const withoutMarker = `${body.trimEnd()}\n${tail}\n`;
   const hash = fingerprint({ title: task.title, status: task.status, description: withoutMarker, checklists });
-  return { description: `${withoutMarker}\n<!-- kaiten-sync:${hash} -->\n`, checklists };
+  return { description: `${withoutMarker}\n<!-- acme-sync:${hash} -->\n`, checklists };
 }
 
 export function missingChecklists(wanted: Checklist[], existing: ExistingChecklist[]): ChecklistPatch[] {

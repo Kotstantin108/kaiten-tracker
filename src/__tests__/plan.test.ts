@@ -50,7 +50,7 @@ describe('renderDescription', () => {
     const out = renderDescription(t, render);
     expect(out).toContain('## Мотивация (WHY)');
     expect(out).toContain('https://github.com/acme/repo/tree/main/tasks/backlog/stories/20260916_x');
-    expect(out).toMatch(/<!-- kaiten-sync:[a-f0-9]{16} -->/);
+    expect(out).toMatch(/<!-- acme-sync:[a-f0-9]{16} -->/);
   });
 
   it('упоминает LOG.md и вложения, которые остаются в git', () => {

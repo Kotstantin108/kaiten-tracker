@@ -10,11 +10,11 @@
  *
  * ФЛАГИ
  *   --config <path>    kaiten.json проекта (обязателен): repos[].path — рабочие копии репозиториев кода со старыми tasks/
- *   --overlay <path>   «Суть» и команда по external_id (по умолч. pilot/overlay.json)
+ *   --overlay <path>   «Суть» и команда по external_id (по умолч. нет)
  *   --kaiten           прочитать карточки доски и заполнить `tracker` (нужен токен)
  *   --out <dir>        куда писать дерево репозитория задач
  *   --write            записать дерево в --out
- *   --drafts <path>    черновики «Сути» (по умолч. convert/summaries.json): читаются
+ *   --drafts <path>    черновики «Сути» (по умолч. tmp/convert/summaries.json): читаются
  *                      как оверлей ниже --overlay; с --write дополняются новыми
  *                      черновиками с `reviewed: false` — отметка «проверить»
  *                      живёт в git, а не во временном отчёте
@@ -170,8 +170,9 @@ async function main(): Promise<void> {
     }
   }
 
-  const overlayPath = argValue(argv, '--overlay') ?? 'pilot/overlay.json';
-  const draftsPath = argValue(argv, '--drafts') ?? 'convert/summaries.json';
+  const overlayPath = argValue(argv, '--overlay') ?? '';
+  // Черновики «Сути» — данные проекта: по умолчанию вне git (tmp/ в .gitignore).
+  const draftsPath = argValue(argv, '--drafts') ?? 'tmp/convert/summaries.json';
   const draftsFile = readOverlay(draftsPath);
   const pilotOverlay = readOverlay(overlayPath);
   // Оверлей сильнее черновиков: там проверенная «Суть» пилота.

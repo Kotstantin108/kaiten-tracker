@@ -41,7 +41,7 @@ function fmOf(text: string | null): Frontmatter {
 
 describe('slug', () => {
   it('латиница из русского заголовка, до ~50 знаков по слову, без повторов', () => {
-    expect(slugify('Починить таймаут вебхука платёжный сервис!')).toBe('pochinit-taymaut-vebkhuka-yukassa');
+    expect(slugify('Починить таймаут вебхука оплаты!')).toBe('pochinit-taymaut-vebkhuka-oplaty');
     expect(slugify('Очень длинный заголовок задачи, который никак не помещается в пятьдесят знаков').length).toBeLessThanOrEqual(50);
     expect(uniqueSlug('a', new Set(['a', 'a-2']))).toBe('a-3');
   });
@@ -103,7 +103,7 @@ describe('отмена и блокировка', () => {
   });
 
   it('блокировка — статус и причина в журнале; без причины нельзя', () => {
-    const changes = ok(applyOp({ kind: 'block', id: ID, reason: 'ждём доступ к платёжный сервис' }, texts(), CTX));
+    const changes = ok(applyOp({ kind: 'block', id: ID, reason: 'ждём доступ к платёжному кабинету' }, texts(), CTX));
     expect(fmOf(changes[0].text).status).toBe('blocked');
     expect(changes[1].text).toContain('заблокирована: ждём доступ');
     expect('error' in applyOp({ kind: 'block', id: ID, reason: ' ' }, texts(), CTX)).toBe(true);

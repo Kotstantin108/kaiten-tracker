@@ -2,7 +2,7 @@
   "name": "kaiten-tracker",
   "version": "0.1.0",
   "private": true,
-  "description": "Синхронизатор задач репозиториев Acme и Kaiten: разовая заливка, дальше цикл сверки",
+  "description": "Задачи файлами в git ↔ Kaiten: команда kaiten для разработчиков и ИИ-агентов",
   "bin": {
     "kaiten": "bin/kaiten.mjs"
   },
