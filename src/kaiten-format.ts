@@ -23,7 +23,9 @@ export function formatTaskLines(all: readonly TaskRecord[], tasks: readonly Task
   return tasks.map((t) => {
     const cols = [pad(refOf(t), refWidth), pad(t.fm.status, 11), pad(t.fm.priority ?? '—', 2), pad(t.fm.type, 5)];
     if (withRepo) cols.push(pad(t.fm.repo ?? '—', repoWidth));
-    const tail = t.fm.type === 'epic' ? epicProgress(all, t) : '';
+    // У задачи в работе и на ревью — её ветка: работа ещё не в main, но видна отсюда.
+    const working = (t.fm.status === 'in-progress' || t.fm.status === 'review') && t.fm.branch ? ` · ветка ${t.fm.branch}` : '';
+    const tail = t.fm.type === 'epic' ? epicProgress(all, t) : working;
     return `${cols.join('  ')}  ${t.fm.title}${tail}`;
   });
 }
@@ -200,6 +202,7 @@ export function formatShow(all: readonly TaskRecord[], task: TaskRecord, attachm
   if (planning?.phase) plan.push(`фаза ${planning.phase}`);
   if (plan.length > 0) out.push(`План: ${plan.join(' · ')}`);
   if (fm.related && fm.related.length > 0) out.push(`Связано: ${fm.related.join(', ')}`);
+  if (fm.branch) out.push(`Ветка: ${fm.branch}`);
   out.push(`Создана ${fm.created}, ${fm.created_by}; обновлена ${fm.updated}`);
 
   const progress = checklistProgress(task.body);
@@ -232,6 +235,7 @@ export interface TaskJson {
   priority: string | null;
   repo: string | null;
   epic: string | null;
+  branch: string | null;
 }
 
 export function taskJson(all: readonly TaskRecord[], task: TaskRecord): TaskJson {
@@ -248,6 +252,7 @@ export function taskJson(all: readonly TaskRecord[], task: TaskRecord): TaskJson
     priority: task.fm.priority ?? null,
     repo: task.fm.repo ?? null,
     epic: epic ? refOf(epic) : (task.fm.epic ?? null),
+    branch: task.fm.branch ?? null,
   };
 }
 

@@ -31,7 +31,7 @@ export type Op =
   | { kind: 'cancel'; id: string; reason: string }
   | { kind: 'block'; id: string; reason: string }
   /** Статус работы: `kaiten start` (в работу), `review`, `done`. Заметка — в журнал. */
-  | { kind: 'move'; id: string; status: WorkStatus; note?: string; assigned?: boolean }
+  | { kind: 'move'; id: string; status: WorkStatus; note?: string; assigned?: boolean; branch?: string }
   | { kind: 'edit'; id: string; text: string; baseHash: string }
   /**
    * Вложение задачи: файл `attachments/<slug>/<name>`. Содержимое уже лежит в
@@ -174,6 +174,25 @@ function write(task: TaskRecord, fm: Frontmatter, body: string, ctx: OpContext, 
 }
 
 // ── журнал задачи ────────────────────────────────────────────────────────
+
+/** Записи, которые пишут сами команды при смене статуса, — не записи о работе. */
+const AUTO_ENTRY_RE = /^(?:(?:в работе|на ревью|сделана)(?: \(из «Бэклога», по прямому поручению\))?(?::|$)|(?:заблокирована|отменена):)/;
+const ENTRY_RE = /^## \[\d{4}-\d{2}-\d{2}\][ \t]*(.*)$/;
+
+/**
+ * Есть ли в журнале запись о работе после последнего взятия в работу: что
+ * сделано, почему, чем проверено. Записи `start`/`review`/`block` не в счёт —
+ * иначе проверка ничего не значила бы. Задача без записи «в работе» (перенесённая) —
+ * в счёт любая запись о работе.
+ */
+export function hasWorkNote(log: string | null): boolean {
+  const heads = (log ?? '').split('\n').flatMap((line) => {
+    const m = ENTRY_RE.exec(line);
+    return m ? [m[1].trim()] : [];
+  });
+  const started = heads.map((h) => /^в работе(?: \(из «Бэклога», по прямому поручению\))?(?::|$)/.test(h)).lastIndexOf(true);
+  return heads.slice(started + 1).some((h) => !AUTO_ENTRY_RE.test(h));
+}
 
 /**
  * Запись журнала `## [YYYY-MM-DD] заголовок` + текст, как у перенесённых
@@ -423,7 +442,7 @@ export function applyOp(op: Op, texts: TaskTexts, ctx: OpContext): OpResult {
       const fromBacklog = op.status === 'in-progress' && task.fm.status === 'backlog' ? ' (из «Бэклога», по прямому поручению)' : '';
       const entry = `${MOVE_WORDS[op.status]}${fromBacklog}${op.note?.trim() ? `: ${op.note.trim()}` : ''}`;
       const target = op.status === 'done' ? `archive/${ctx.date.slice(0, 7)}/${task.slug}.md` : task.path;
-      const out = write(task, { ...task.fm, status: op.status }, task.body, ctx, target);
+      const out = write(task, { ...task.fm, status: op.status, ...(op.branch ? { branch: op.branch } : {}) }, task.body, ctx, target);
       if ('error' in out) return out;
       const changes: FileChange[] = [];
       // Сделанная задача переезжает в архив вместе с журналом (Q42).

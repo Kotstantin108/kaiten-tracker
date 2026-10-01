@@ -131,6 +131,16 @@ describe('searchTasks', () => {
     expect(searchTasks(index.tasks, '   ')).toEqual([]);
   });
 
+  it('ищет и в текстовых вложениях — с подписью, в каком файле', () => {
+    const attachments = new Map([['webhook-timeout', [{ name: 'trace.log', text: 'запрос 1\nretry-after 30s\n' }]]]);
+    expect(searchTasks(index.tasks, 'retry-after')).toEqual([]);
+    const [hit] = searchTasks(index.tasks, 'retry-after', { attachments });
+    expect(hit.task.slug).toBe('webhook-timeout');
+    expect(hit.snippet).toBe('вложение trace.log: retry-after 30s');
+    const [withLines] = searchTasks(index.tasks, 'retry-after', { attachments, lines: true });
+    expect(withLines.lines).toEqual([{ where: 'вложение trace.log', text: 'retry-after 30s', hit: true, gap: false }]);
+  });
+
   it('совпадение не в заголовке — со строкой, где нашлось', () => {
     const [hit] = searchTasks(index.tasks, 'воспроизвести');
     expect(hit.snippet).toBe('- [ ] Воспроизвести');

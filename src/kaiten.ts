@@ -145,7 +145,7 @@ ${TASK_REF_HELP}
   search: `kaiten search <слова> — найти задачи по словам.
 
 Ищет во всём проекте, в открытых и закрытых задачах: заголовок, «Суть»,
-постановка, журнал. Регистр и «ё»/«е» не важны.
+постановка, журнал и текстовые вложения. Регистр и «ё»/«е» не важны.
 
 Задача подходит, если в ней есть все слова. У русских слов окончания не
 важны: «онбордингом» найдёт «онбординг». Варианты одного слова — через «|»
@@ -321,9 +321,10 @@ function search(args: string[]): void {
   });
   if (positionals.length === 0) throw new UsageError('Укажите слова для поиска: kaiten search таймаут вебхук');
   const ctx = readContext();
-  const { index } = loadTasks(ctx);
+  const { index, entries } = loadTasks(ctx);
   const filter = { ...buildFilter(ctx, index, values), closed: true };
   const context = count(values, 'context', 20);
+  const attachments = textAttachments(ctx.store, entries);
   let hits;
   try {
     hits = searchTasks(filterTasks(index.tasks, filter), positionals.join(' '), {
@@ -331,6 +332,7 @@ function search(args: string[]): void {
       exact: values.exact === true,
       lines: values.lines === true || context !== undefined,
       context,
+      attachments,
     });
   } catch (error) {
     if (error instanceof SearchQueryError) throw new UsageError(`--regex: ${error.message}`);
@@ -369,6 +371,23 @@ function formatSize(bytes: number): string {
 }
 
 /** Текст — если в начале нет нулевых байтов: так git отличает двоичные файлы. */
+/** Предел размера вложения, в котором ищет `search`: дальше — данные, а не текст для чтения. */
+const SEARCH_ATTACHMENT_MAX = 1024 * 1024;
+
+/** Текстовые вложения задач по slug — для поиска. Двоичные и большие пропускаются. */
+function textAttachments(store: string, entries: readonly StoreEntry[]): Map<string, Array<{ name: string; text: string }>> {
+  const wanted = entries.filter((e) => e.path.startsWith('attachments/') && e.size <= SEARCH_ATTACHMENT_MAX);
+  const blobs = readBlobs(store, wanted.map((e) => e.sha));
+  const out = new Map<string, Array<{ name: string; text: string }>>();
+  for (const e of wanted) {
+    const [, slug, ...rest] = e.path.split('/');
+    const content = blobs.get(e.sha);
+    if (!slug || rest.length === 0 || !content || !isText(content)) continue;
+    out.set(slug, [...(out.get(slug) ?? []), { name: rest.join('/'), text: content.toString('utf8') }]);
+  }
+  return out;
+}
+
 function isText(content: Buffer): boolean {
   return !content.subarray(0, 8000).includes(0);
 }

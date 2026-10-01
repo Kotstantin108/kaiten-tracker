@@ -112,6 +112,9 @@ export const FIELDS = {
   // агента. У задач, перенесённых из старых форматов, поля нет: угадывать по
   // истории git владелец запретил (28.09.2026).
   created_via: { owner: 'cli', required: false, schema: z.enum(CREATED_VIA) },
+  // Ветка работы по задаче в репозитории кода: ставит `kaiten start`. Видна из
+  // `main` в `show`/`list` — так соседняя задача знает, где лежит работа на ревью.
+  branch: { owner: 'cli', required: false, schema: nonEmpty },
   updated: { owner: 'cli', required: true, schema: date },
   planning: { owner: 'kaiten', required: false, schema: PlanningSchema },
   content_hash: { owner: 'cli', required: false, schema: z.string().regex(/^sha256:[a-f0-9]{64}$/, 'sha256:<64 hex>') },

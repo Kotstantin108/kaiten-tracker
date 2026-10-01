@@ -19,7 +19,7 @@ import { contentHash, serializeTaskDocument } from './core/document.js';
 import { SLUG_RE } from './core/lint.js';
 import { criteriaText, newBodyProblems, newBodyTemplate, SKELETONS, withCriteriaWaiver } from './core/skeleton.js';
 import { TASK_TYPES, type TaskType } from './core/schema.js';
-import { ATTACHMENT_MAX_BYTES, attachmentNameProblem, BLOCKABLE, CANCELLABLE, matchItem, moveProblem, newTaskText, slugify, uniqueSlug, type Op } from './core/task-ops.js';
+import { ATTACHMENT_MAX_BYTES, attachmentNameProblem, BLOCKABLE, CANCELLABLE, hasWorkNote, matchItem, moveProblem, newTaskText, slugify, uniqueSlug, type Op } from './core/task-ops.js';
 import { refOf, type TaskRecord } from './core/tasks-index.js';
 import { ulid } from './core/ulid.js';
 import {
@@ -40,6 +40,7 @@ import {
   type Context,
 } from './kaiten-cli.js';
 import { progressLine } from './kaiten-format.js';
+import { git } from './kaiten-start.js';
 import { recordOp, storeBlob } from './store-write.js';
 
 export const WRITE_HELP: Record<string, string> = {
@@ -155,8 +156,10 @@ ${TASK_REF_HELP}
 `,
   review: `kaiten review <задача> — работа готова, задача на ревью.
 
-Из «В работе», когда критерии задачи отмечены. Эпик так не закрывают: его
-закрывают в Kaiten, когда закрыты его задачи.
+Из «В работе», когда критерии задачи отмечены и в журнале есть запись о
+работе (kaiten log: что сделано, почему так, чем проверено). Ветку и
+последний коммит текущего репозитория команда пишет в журнал сама. Эпик так
+не закрывают: его закрывают в Kaiten, когда закрыты его задачи.
 
 Флаги:
   --note <текст>      что смотреть на ревью (ветка, коммит, PR) — в журнал
@@ -435,10 +438,26 @@ async function move(command: 'review' | 'done', args: string[]): Promise<void> {
       1,
     );
   }
-  const note = [stringFlag(values, 'note')?.trim(), open.length > 0 && why ? `не отмечено пунктов ${open.length}: ${why}` : undefined].filter(Boolean).join('; ') || undefined;
+  // Без записи о работе ревьюер не узнает, что сделано и чем проверено (в испытании её пропускали).
+  if (command === 'review' && task.fm.status !== 'review' && !hasWorkNote(task.log)) {
+    throw new UsageError(
+      `Не записано: в журнале задачи ${refOf(task)} нет записи о работе. Запишите, что сделано, почему так и чем проверено: kaiten log ${refOf(task)} "<что>", — и повторите.`,
+      1,
+    );
+  }
+  const work = command === 'review' ? workRef(ctx.workDir) : undefined;
+  const note = [stringFlag(values, 'note')?.trim(), work, open.length > 0 && why ? `не отмечено пунктов ${open.length}: ${why}` : undefined].filter(Boolean).join('; ') || undefined;
   const card = task.fm.status !== status ? await moveCardFirst(ctx, task, status) : 'none';
   await commit(ctx, { kind: 'move', id: task.fm.id, status, note }, `${command === 'review' ? 'ревью' : 'закрытие'} ${refOf(task)}`);
   cardNotMovedNote(card);
+}
+
+/** Ветка и последний коммит репозитория кода — для записи «на ревью»: где смотреть работу. */
+function workRef(workDir: string): string | undefined {
+  const branch = git(workDir, ['branch', '--show-current']);
+  const head = git(workDir, ['log', '-1', '--format=%h %s']);
+  if (!branch.ok || !branch.out || !head.ok || !head.out) return undefined;
+  return `ветка ${branch.out}, коммит ${head.out}`;
 }
 
 /** Неотмеченные пункты раздела критериев (первый заголовок на «Критери…»); шаги и прочие списки не считаются. */

@@ -207,6 +207,8 @@ export interface SearchOptions {
   lines?: boolean;
   /** Сколько соседних строк показать вокруг совпавшей. */
   context?: number;
+  /** Текстовые вложения по slug задачи: в них тоже ищется. */
+  attachments?: ReadonlyMap<string, ReadonlyArray<{ name: string; text: string }>>;
 }
 
 /** Запрос не разобрать (кривое выражение) — словами для человека. */
@@ -268,7 +270,7 @@ interface SourceLine {
 const SEARCH_HEADING_RE = /^#{1,6}[ \t]+(.+?)[ \t]*#*[ \t]*$/;
 
 /** Строки задачи с подписью, откуда они: «Суть», раздел тела, запись журнала. */
-function sourceLines(task: TaskRecord): SourceLine[][] {
+function sourceLines(task: TaskRecord, attachments: ReadonlyArray<{ name: string; text: string }> = []): SourceLine[][] {
   const summary: SourceLine[] = [{ where: 'Суть', text: task.fm.summary }];
   const body: SourceLine[] = [];
   let section = 'постановка';
@@ -284,12 +286,13 @@ function sourceLines(task: TaskRecord): SourceLine[][] {
     if (date) entry = `журнал ${date[1]}`;
     log.push({ where: entry, text: line });
   }
-  return [summary, body, log];
+  const files = attachments.map((a) => a.text.split(/\r?\n/).map((text) => ({ where: `вложение ${a.name}`, text })));
+  return [summary, body, log, ...files];
 }
 
-function matchLines(task: TaskRecord, terms: readonly Term[], context: number): MatchLine[] {
+function matchLines(task: TaskRecord, terms: readonly Term[], context: number, attachments: ReadonlyArray<{ name: string; text: string }> = []): MatchLine[] {
   const out: MatchLine[] = [];
-  for (const source of sourceLines(task)) {
+  for (const source of sourceLines(task, attachments)) {
     const hits = source.map((l) => l.text.trim() !== '' && terms.some((t) => t(normalize(l.text))));
     // Источники (суть, тело, журнал) друг друга не продолжают: первая строка каждого — после разрыва.
     let last = -2;
@@ -315,7 +318,8 @@ export function searchTasks(tasks: readonly TaskRecord[], query: string, options
   const hits: Array<SearchHit & { score: number }> = [];
   for (const task of tasks) {
     const head = normalize(`${task.fm.title}\n${task.fm.summary}\n${task.slug}\n${task.fm.tracker ?? ''}`);
-    const rest = normalize(`${task.body}\n${task.log ?? ''}`);
+    const files = options.attachments?.get(task.slug) ?? [];
+    const rest = normalize(`${task.body}\n${task.log ?? ''}\n${files.map((f) => f.text).join('\n')}`);
     if (!terms.every((t) => t(head) || t(rest))) continue;
     const title = normalize(task.fm.title);
     const score = terms.filter((t) => t(title)).length * 2 + terms.filter((t) => t(head)).length;
@@ -324,9 +328,19 @@ export function searchTasks(tasks: readonly TaskRecord[], query: string, options
     if (missing) {
       // Строка целиком: обрезает вывод — после того, как ссылки в ней заменены командами.
       snippet = (`${task.body}\n${task.log ?? ''}`.split('\n').find((l) => missing(normalize(l))) ?? '').trim();
+      if (!snippet) {
+        // Нашлось только во вложении — так и подписать: иначе непонятно, где искать.
+        for (const f of files) {
+          const line = f.text.split(/\r?\n/).find((l) => missing(normalize(l)));
+          if (line !== undefined) {
+            snippet = `вложение ${f.name}: ${line.trim()}`;
+            break;
+          }
+        }
+      }
     }
     const hit: SearchHit & { score: number } = { task, snippet, score };
-    if (options.lines) hit.lines = matchLines(task, terms, Math.max(0, options.context ?? 0));
+    if (options.lines) hit.lines = matchLines(task, terms, Math.max(0, options.context ?? 0), files);
     hits.push(hit);
   }
   const order = new Map(sortTasks(hits.map((h) => h.task)).map((t, i) => [t, i]));

@@ -23,7 +23,8 @@ import { commit } from './kaiten-write.js';
 export const START_HELP = `kaiten start <задача> — взять задачу в работу.
 
 Ставит задаче «В работе» и заводит ветку feature/<ключ>-<имя задачи> от
-текущей; если ветка задачи уже есть — переключается на неё. Дальше:
+текущей; если ветка задачи уже есть — переключается на неё. Ветка
+запоминается в задаче: её видно в kaiten show и kaiten list. Дальше:
 kaiten review — работа готова, kaiten done — влито в прод.
 
 В работу берут задачу из «Готово к работе», «Заблокировано» или «Ревью»
@@ -39,7 +40,7 @@ ${TASK_REF_HELP}
   kaiten start PRJ-140 --assigned
 `;
 
-function git(cwd: string, args: string[]): { ok: boolean; out: string; err: string } {
+export function git(cwd: string, args: string[]): { ok: boolean; out: string; err: string } {
   const r = spawnSync('git', args, { cwd, encoding: 'utf8', windowsHide: true });
   return { ok: r.status === 0, out: (r.stdout ?? '').trim(), err: (r.stderr ?? '').trim() };
 }
@@ -107,7 +108,7 @@ async function start(args: string[]): Promise<void> {
     if (error instanceof UsageError) throw new UsageError(`${error.message}\nВетка ${result.branch} заведена, задача осталась в прежнем статусе.`, error.code);
     throw error;
   }
-  await commit(ctx, { kind: 'move', id: task.fm.id, status: 'in-progress', ...(assigned ? { assigned: true } : {}) }, `в работу ${refOf(task)}`);
+  await commit(ctx, { kind: 'move', id: task.fm.id, status: 'in-progress', branch: result.branch, ...(assigned ? { assigned: true } : {}) }, `в работу ${refOf(task)}`);
   cardNotMovedNote(card);
 }
 

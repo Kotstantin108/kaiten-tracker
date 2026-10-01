@@ -5,7 +5,7 @@ import { describe, expect, it } from 'vitest';
 
 import { contentHash, parseTaskDocument, serializeTaskDocument } from '../core/document.js';
 import { FrontmatterSchema, type Frontmatter } from '../core/schema.js';
-import { appendLog, applyOp, attachmentNameProblem, matchItem, newTaskText, slugify, uniqueSlug, type FileChange, type Op, type TaskTexts } from '../core/task-ops.js';
+import { appendLog, applyOp, attachmentNameProblem, hasWorkNote, matchItem, newTaskText, slugify, uniqueSlug, type FileChange, type Op, type TaskTexts } from '../core/task-ops.js';
 
 const ID = '01K5ZQ3R8F2K9M4N7P0T5V8W3A';
 const CTX = { date: '2026-09-28' };
@@ -110,6 +110,24 @@ describe('отмена и блокировка', () => {
   });
 });
 
+describe('запись о работе в журнале (для review)', () => {
+  const log = (...heads: string[]): string => heads.map((h) => '## [2026-09-28] ' + h).join('\n\n') + '\n';
+
+  it('записи смены статуса не в счёт, запись о работе после взятия в работу — в счёт', () => {
+    expect(hasWorkNote(null)).toBe(false);
+    expect(hasWorkNote(log('в работе'))).toBe(false);
+    expect(hasWorkNote(log('в работе (из «Бэклога», по прямому поручению)', 'заблокирована: ждём ключ'))).toBe(false);
+    expect(hasWorkNote(log('в работе', 'Причина — ретраи без паузы\nТест на таймаут добавлен.'))).toBe(true);
+    // «в работе над X» — запись человека, не смена статуса.
+    expect(hasWorkNote(log('в работе', 'в работе над экспортом: нашёл причину'))).toBe(true);
+  });
+
+  it('запись до повторного взятия в работу — про прошлый заход; у перенесённой задачи — любая', () => {
+    expect(hasWorkNote(log('в работе', 'Разобрал причину', 'на ревью: PR #1', 'в работе'))).toBe(false);
+    expect(hasWorkNote(log('Сделали прототип'))).toBe(true);
+  });
+});
+
 describe('статусы работы', () => {
   it('в работу → на ревью → сделана: журнал, сделанная — в архив месяца операции', () => {
     const state = new Map(texts());
@@ -119,8 +137,8 @@ describe('статусы работы', () => {
       else state.set(c.path, c.text);
       return changes;
     };
-    step({ kind: 'move', id: ID, status: 'in-progress' });
-    expect(fmOf(state.get('active/webhook-timeout.md') ?? null).status).toBe('in-progress');
+    step({ kind: 'move', id: ID, status: 'in-progress', branch: 'feature/webhook-timeout' });
+    expect(fmOf(state.get('active/webhook-timeout.md') ?? null)).toMatchObject({ status: 'in-progress', branch: 'feature/webhook-timeout' });
     step({ kind: 'move', id: ID, status: 'review', note: 'PR #45' });
     const done = step({ kind: 'move', id: ID, status: 'done', note: 'влито в main' });
     expect(done.map((c) => [c.path, c.text === null])).toEqual([
