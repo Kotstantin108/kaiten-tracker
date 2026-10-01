@@ -333,6 +333,8 @@ export interface NewTaskInput {
   type: TaskType;
   repo?: string;
   epic?: string;
+  /** Связанные задачи (slug): например, та, по ходу которой завели эту. */
+  related?: string[];
   createdBy: string;
   createdVia: 'agent' | 'human';
   /** Тело; без него — скелет по типу. */
@@ -349,6 +351,7 @@ export function newTaskText(input: NewTaskInput, date: string): string | { error
     status: 'inbox',
     repo: input.repo,
     epic: input.epic,
+    related: input.related,
     created: date,
     created_by: input.createdBy,
     created_via: input.createdVia,

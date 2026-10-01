@@ -14,7 +14,7 @@ import { z } from 'zod';
 
 import { parseTaskDocument, serializeTaskDocument, TaskParseError, type RawTaskDocument } from './document.js';
 import { CLOSED_STATUSES, FrontmatterSchema, type Frontmatter } from './schema.js';
-import { countChecklistItems, criteriaText, sectionText, SKELETONS, SPIKE_ANSWER_SECTION } from './skeleton.js';
+import { countChecklistItems, criteriaText, hasCriteriaWaiver, sectionText, SKELETONS, SPIKE_ANSWER_SECTION } from './skeleton.js';
 
 export interface LintIssue {
   level: 'error' | 'warning';
@@ -48,7 +48,8 @@ const VERB_RE = /^[А-ЯЁа-яё]+(?:ть|ти|чь)(?:ся|сь)?$/;
 const CODE_TERMS: Array<[RegExp, string]> = [
   [/`/, 'обратные кавычки'],
   [/\b[\w-]+\.(?:ts|tsx|js|mjs|json|md|py|sql|ya?ml|env)\b/, 'имя файла'],
-  [/(?:^|\s)[\w.-]*\/[\w./-]+/, 'путь'],
+  // В пути есть буква: «10/3/2026» и «1/2 стакана» — не пути.
+  [/(?:^|\s)[\w.-]*\/[\w./-]*[A-Za-z_][\w./-]*/, 'путь'],
   // Названия продуктов (iPhone, iOS, macOS, eSIM) — не код.
   [/\b(?!(?:iPhone|iPad|iPod|iOS|iPadOS|macOS|watchOS|tvOS|iCloud|iMessage|eSIM)\b)[a-z]+[A-Z][A-Za-z0-9]*\b/, 'camelCase'],
   [/\b[a-z0-9]+_[a-z0-9_]+\b/, 'snake_case'],
@@ -129,13 +130,15 @@ export function lintTask(text: string, context: LintContext = {}): LintResult {
   const skeleton = SKELETONS[fm.type];
   // Критерии необязательны (владелец 28.09.2026): задача бывает общей —
   // «разобраться», «исследовать», — и критерии появляются по ходу работы.
-  // Раздел в скелете остаётся, линтер только напоминает.
+  // Раздел в скелете остаётся, линтер только напоминает. Новая задача из
+  // `kaiten new` (с 01.10.2026) — с критериями или со строкой «Критериев нет:
+  // <почему>»: о ней не напоминаем.
   const bodyLevel: LintIssue['level'] = 'warning';
   if (skeleton.criteria) {
     const criteria = sectionText(body, skeleton.criteria) ?? criteriaText(body);
     if (criteria === null) {
       issues.push({ level: bodyLevel, message: `нет раздела «${skeleton.criteria}»` });
-    } else if (countChecklistItems(criteria) === 0) {
+    } else if (countChecklistItems(criteria) === 0 && !hasCriteriaWaiver(criteria)) {
       issues.push({ level: bodyLevel, message: `в разделе «${skeleton.criteria}» нет ни одного пункта \`- [ ]\`` });
     }
   }

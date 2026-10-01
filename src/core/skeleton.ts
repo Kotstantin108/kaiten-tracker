@@ -120,3 +120,94 @@ export function stripTemplateHints(text: string): string {
 export function hasContent(text: string): boolean {
   return text.split('\n').some((line) => line.trim() !== '' && !HEADING_RE.test(line));
 }
+
+// ── тело новой задачи ────────────────────────────────────────────────────
+//
+// `kaiten new` заводит задачу только с заполненной постановкой (владелец
+// 01.10.2026): в испытании агенты заводили задачи с пустым скелетом, а
+// подсказку линтера после создания не выполнял никто. Проверка — только у
+// команды `new`: линтер, перенос карточек и правка старых задач её не
+// требуют (у 78 перенесённых задач критериев нет).
+
+/** Строка в разделе критериев: критериев у задачи нет намеренно, и сказано почему. */
+export const NO_CRITERIA_PREFIX = 'Критериев нет:';
+
+/** Разделы, которые у новой задачи должны быть заполнены; критерии — отдельно. «Шаги» и «Ответ» необязательны. */
+const REQUIRED_SECTIONS: Record<TaskType, readonly string[]> = {
+  story: ['Зачем', 'Что сделать'],
+  tech: ['Зачем', 'Что сделать'],
+  bug: ['Что происходит', 'Как воспроизвести', 'Как должно быть'],
+  epic: ['Цель'],
+  spike: ['Вопрос', 'Как ищем ответ'],
+};
+
+/** В тексте раздела есть пометка «Критериев нет: <причина>». */
+export function hasCriteriaWaiver(text: string): boolean {
+  return text.split('\n').some((line) => line.trim().startsWith(NO_CRITERIA_PREFIX) && line.trim().length > NO_CRITERIA_PREFIX.length);
+}
+
+/** Строка-заглушка шаблона `<…>`: её не заполнили. */
+const PLACEHOLDER_RE = /^\s*(?:[-*+]\s+(?:\[[ xX]\]\s+)?|\d+[.)]\s+)?<[^>]*>\s*$/;
+
+function filledText(text: string | null): boolean {
+  if (text === null) return false;
+  return text.split('\n').some((line) => line.trim() !== '' && !HEADING_RE.test(line) && !PLACEHOLDER_RE.test(line));
+}
+
+/** Что не так с телом новой задачи — словами для того, кто её заводит; пусто — можно заводить. */
+export function newBodyProblems(type: TaskType, body: string): string[] {
+  const problems: string[] = [];
+  for (const name of REQUIRED_SECTIONS[type]) {
+    const text = sectionText(body, name);
+    if (text === null) problems.push(`нет раздела «${name}»`);
+    else if (!filledText(text)) problems.push(`раздел «${name}» не заполнен`);
+  }
+  if (body.split('\n').some((line) => PLACEHOLDER_RE.test(line))) problems.push('остались заготовки шаблона <…> — замените их текстом или удалите');
+  const { criteria } = SKELETONS[type];
+  if (criteria) {
+    const text = sectionText(body, criteria) ?? criteriaText(body);
+    if (text === null) problems.push(`нет раздела «${criteria}»`);
+    else if (countChecklistItems(text) === 0 && !hasCriteriaWaiver(text)) {
+      problems.push(`в разделе «${criteria}» нет ни одного пункта \`- [ ]\` — напишите, по чему поймём, что сделано, или --no-criteria "<почему критериев нет>"`);
+    }
+  }
+  return problems;
+}
+
+/** Тело с пометкой «Критериев нет: <причина>» в разделе критериев (раздела нет — добавляется в конец). */
+export function withCriteriaWaiver(type: TaskType, body: string, reason: string): string {
+  const { criteria } = SKELETONS[type];
+  if (!criteria) return body;
+  const line = `${NO_CRITERIA_PREFIX} ${reason.trim()}`;
+  const lines = body.replace(/\s+$/, '').split('\n');
+  const at = lines.findIndex((l) => {
+    const m = HEADING_RE.exec(l);
+    return m !== null && /^Критери/i.test(m[2].replace(/[*_`]/g, '').trim());
+  });
+  if (at === -1) return `${lines.join('\n')}\n\n## ${criteria}\n\n${line}\n`;
+  return `${[...lines.slice(0, at + 1), '', line, ...lines.slice(at + 1)].join('\n').replace(/\n{3,}/g, '\n\n')}\n`;
+}
+
+/** Заготовки для шаблона в помощи и отказе `kaiten new`: что писать в разделе. */
+const NEW_HINTS: Record<string, string> = {
+  Зачем: '<какую проблему решаем и для кого>',
+  'Что сделать': '<что должно появиться или измениться>',
+  'Критерии готовности': '- [ ] <по чему поймём, что сделано — проверяемо>',
+  Шаги: '- [ ] <необязательно: план по шагам>',
+  'Что происходит': '<что сломано и где, кого задевает>',
+  'Как воспроизвести': '1. <шаги, данные, окружение>',
+  'Как должно быть': '<ожидаемое поведение>',
+  Критерии: '- [ ] <по чему поймём, что исправлено>',
+  Цель: '<какой результат для продукта даёт эпик>',
+  'Критерии-результаты': '- [ ] <измеримый результат; работа — дочерние задачи>',
+  Вопрос: '<что выясняем и какое решение от ответа зависит>',
+  'Как ищем ответ': '<источники, эксперименты, сколько времени готовы потратить>',
+};
+
+/** Тело-шаблон для `kaiten new --stdin`: разделы типа с заготовками `<…>`; «Ответ» спайка заполняется при закрытии. */
+export function newBodyTemplate(type: TaskType): string {
+  return SKELETONS[type].sections
+    .filter((name) => NEW_HINTS[name])
+    .map((name) => `## ${name}\n\n${NEW_HINTS[name]}`)
+    .join('\n\n');
+}

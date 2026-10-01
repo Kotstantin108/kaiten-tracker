@@ -17,7 +17,7 @@ import { basename, join, resolve } from 'node:path';
 
 import { contentHash, serializeTaskDocument } from './core/document.js';
 import { SLUG_RE } from './core/lint.js';
-import { criteriaText } from './core/skeleton.js';
+import { criteriaText, newBodyProblems, newBodyTemplate, SKELETONS, withCriteriaWaiver } from './core/skeleton.js';
 import { TASK_TYPES, type TaskType } from './core/schema.js';
 import { ATTACHMENT_MAX_BYTES, attachmentNameProblem, BLOCKABLE, CANCELLABLE, matchItem, moveProblem, newTaskText, slugify, uniqueSlug, type Op } from './core/task-ops.js';
 import { refOf, type TaskRecord } from './core/tasks-index.js';
@@ -47,20 +47,49 @@ export const WRITE_HELP: Record<string, string> = {
 
 Задача попадает во «Входящие» без приоритета: его ставят при разборе.
 Заголовок — с глагола («Починить…», «Перенести…»). «Суть» — 1–3 предложения
-для фаундера без терминов кода. Без --stdin тело задачи — пустой скелет по
-типу; заполнить его — kaiten edit.
+для фаундера без терминов кода. Постановка — сразу, через --stdin: что
+видели и знаете сейчас, потом не вспомнит никто.
+
+Разделы постановки по типу (обязательные; «Шаги» — по желанию):
+  story, tech  Зачем · Что сделать · Критерии готовности
+  bug          Что происходит · Как воспроизвести · Как должно быть · Критерии
+  epic         Цель · Критерии-результаты (работа эпика — его задачи)
+  spike        Вопрос · Как ищем ответ («Ответ» — при закрытии)
+Критерии — пункты «- [ ] …», по которым проверят, что задача сделана. Нельзя
+их назвать — --no-criteria с причиной; работа «разобраться» — это spike.
 
 Флаги:
   --type <тип>        обязательно: ${TASK_TYPES.join(', ')}
   --summary <текст>   обязательно: «Суть»
+  --stdin             обязательно: постановка — из стандартного ввода
+  --slug <имя>        короткое имя по-английски через дефис; обязательно, если
+                      в заголовке не латиница
   --epic <задача>     эпик, в который входит задача
-  --slug <имя>        короткое имя латиницей через дефис (по умолчанию — из заголовка)
+  --from <задача>     задача, по ходу которой нашлась эта работа (в «Связано»)
+  --no-criteria <почему>  критериев нет — и почему
   --agent             задачу заводит агент
-  --stdin             тело задачи — из стандартного ввода
 
 Пример:
-  kaiten new "Починить повтор вебхука после 503" --type bug --agent \\
-    --summary "Оплата теряется, если база ответила ошибкой." --epic PRJ-100
+  kaiten new "Починить порядок даты в отчёте" --type bug --agent \\
+    --slug fix-report-date --from PRJ-123 \\
+    --summary "Дата в отчёте читается как месяц-день-год, 3 октября выглядит как 10/3." --stdin <<'EOF'
+  ## Что происходит
+
+  В заголовке отчёта дата в порядке месяц/день/год.
+
+  ## Как воспроизвести
+
+  1. Сформировать отчёт 3 октября — в заголовке 10/3/2026.
+
+  ## Как должно быть
+
+  День.месяц.год: 03.10.2026.
+
+  ## Критерии
+
+  - [ ] Дата в заголовке отчёта — день.месяц.год
+  - [ ] Есть тест на дату с однозначным днём
+  EOF
 `,
   check: `kaiten check <задача> <пункт>... — отметить пункты задачи.
 
@@ -198,18 +227,64 @@ async function newTask(args: string[]): Promise<void> {
   const { values, positionals } = parse(
     'new',
     args,
-    { type: { type: 'string' }, summary: { type: 'string' }, epic: { type: 'string' }, slug: { type: 'string' }, agent: { type: 'boolean' }, stdin: { type: 'boolean' } },
+    {
+      type: { type: 'string' },
+      summary: { type: 'string' },
+      epic: { type: 'string' },
+      from: { type: 'string' },
+      slug: { type: 'string' },
+      agent: { type: 'boolean' },
+      stdin: { type: 'boolean' },
+      'no-criteria': { type: 'string' },
+    },
     1,
   );
   const title = positionals[0]?.trim();
-  if (!title) throw new UsageError('Укажите заголовок: kaiten new "Починить…" --type bug --summary "…"');
+  if (!title) throw new UsageError('Укажите заголовок: kaiten new "Починить…" --type bug --summary "…" --stdin');
   const type = stringFlag(values, 'type');
   if (!type || !(TASK_TYPES as readonly string[]).includes(type)) throw new UsageError(`--type: укажите тип задачи: ${TASK_TYPES.join(', ')}`);
+  const taskType = type as TaskType;
   const summary = stringFlag(values, 'summary')?.trim();
   if (!summary) throw new UsageError('--summary: без «Сути» задачу не завести — 1–3 предложения для фаундера.');
+  const waiver = stringFlag(values, 'no-criteria')?.trim();
+  if (waiver !== undefined && !waiver) throw new UsageError('--no-criteria: напишите, почему у задачи нет критериев.');
+  if (waiver && !SKELETONS[taskType].criteria) throw new UsageError(`--no-criteria: у задачи типа ${type} нет раздела критериев.`);
+
+  // Всё, чего не хватает, — одним отказом и готовой командой с флагами самого вызова: агент исполняет отказы, а не подсказки.
+  const problems: string[] = [];
+  // Имя задачи из кириллического заголовка вышло бы транслитом (pochinit-format-daty…) — его просим придумать.
+  const slugFlag = stringFlag(values, 'slug')?.trim();
+  if (slugFlag === undefined && /[^\x20-\x7e]/.test(title)) problems.push('--slug: придумайте задаче короткое имя по-английски латиницей через дефис');
+  // Постановка — сразу: тот, кто заводит задачу, знает контекст сейчас, а потом его не вспомнит никто.
+  let body = '';
+  if (!values.stdin) problems.push('--stdin: задача заводится с постановкой — заполните разделы');
+  else {
+    body = readStdin();
+    if (waiver) body = withCriteriaWaiver(taskType, body, waiver);
+    problems.push(...newBodyProblems(taskType, body));
+  }
+  if (problems.length > 0) {
+    const quote = (s: string): string => `"${s.replace(/(["\\$`])/g, '\\$1')}"`;
+    const flags = [
+      `--type ${type}`,
+      values.agent ? '--agent' : '',
+      `--slug ${slugFlag ?? (type === 'bug' ? 'fix-…' : 'add-…')}`,
+      ...(['epic', 'from', 'no-criteria'] as const).map((f) => (stringFlag(values, f) ? `--${f} ${quote(stringFlag(values, f) ?? '')}` : '')),
+      `--summary ${quote(summary)}`,
+    ].filter(Boolean);
+    const filled = newBodyTemplate(taskType);
+    throw new UsageError(
+      `Не записано:${problems.map((p) => `\n  - ${p}`).join('')}\n\n` +
+        `Так задача заводится (разделы — для типа ${type}; «Шаги» и свои разделы можно добавить):\n\n` +
+        `kaiten new ${quote(title)} ${flags.join(' ')} --stdin <<'EOF'\n${filled}\nEOF`,
+      1,
+    );
+  }
 
   const ctx = begin();
   const { index } = loadTasks(ctx);
+  const fromRef = stringFlag(values, 'from');
+  const related = fromRef ? [findTask(index, fromRef).slug] : undefined;
   let epic: string | undefined;
   const epicRef = stringFlag(values, 'epic');
   if (epicRef) {
@@ -232,12 +307,13 @@ async function newTask(args: string[]): Promise<void> {
       slug,
       title,
       summary,
-      type: type as TaskType,
+      type: taskType,
       repo: type === 'epic' ? undefined : ctx.currentRepo,
       epic,
+      related,
       createdBy: currentPerson(),
       createdVia: values.agent ? 'agent' : 'human',
-      body: values.stdin ? readStdin() : undefined,
+      body,
     },
     today(),
   );

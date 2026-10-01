@@ -8,7 +8,7 @@ import { describe, expect, it } from 'vitest';
 import { contentHash, foreignFieldChanges, parseTaskDocument, serializeTaskDocument, TaskParseError } from '../core/document.js';
 import { lintRepository, lintTask, type LintIssue } from '../core/lint.js';
 import { FrontmatterSchema, type Frontmatter, type TaskType } from '../core/schema.js';
-import { renderSkeleton, sectionText } from '../core/skeleton.js';
+import { newBodyProblems, newBodyTemplate, renderSkeleton, sectionText, withCriteriaWaiver } from '../core/skeleton.js';
 import { ulid } from '../core/ulid.js';
 
 const ID = '01K5ZQ3R8F2K9M4N7P0T5V8W2X';
@@ -261,5 +261,57 @@ describe('линтер', () => {
     expect(result.errors).toBe(4);
     expect(result.byFile[1].issues.map((i) => i.message)).toEqual([`id ${ID} повторяется: active/one.md, active/two.md`]);
     expect(result.byFile[2].issues.map((i) => i.message)).toEqual(['slug one повторяется: active/one.md, archive/2026-09/one.md']);
+  });
+});
+
+describe('постановка новой задачи (kaiten new)', () => {
+  const BUG = '## Что происходит\n\nДата в отчёте месяц/день/год.\n\n## Как воспроизвести\n\n1. Отчёт 3 октября.\n\n## Как должно быть\n\nДень.месяц.год.\n\n## Критерии\n\n- [ ] Дата — день.месяц.год\n';
+
+  it('заполненный баг проходит, лишние разделы и «Шаги» не мешают', () => {
+    expect(newBodyProblems('bug', BUG)).toEqual([]);
+    expect(newBodyProblems('bug', `${BUG}\n## Заметки\n\nСм. соседний отчёт.\n`)).toEqual([]);
+  });
+
+  it('пустой скелет и заготовки шаблона — отказ с перечнем', () => {
+    expect(newBodyProblems('bug', renderSkeleton('bug'))).toEqual([
+      'раздел «Что происходит» не заполнен',
+      'раздел «Как воспроизвести» не заполнен',
+      'раздел «Как должно быть» не заполнен',
+      'в разделе «Критерии» нет ни одного пункта `- [ ]` — напишите, по чему поймём, что сделано, или --no-criteria "<почему критериев нет>"',
+    ]);
+    const problems = newBodyProblems('story', newBodyTemplate('story'));
+    expect(problems).toContain('раздел «Зачем» не заполнен');
+    expect(problems).toContain('остались заготовки шаблона <…> — замените их текстом или удалите');
+  });
+
+  it('нет раздела — так и сказано; спайку критерии не нужны, «Ответ» пустой', () => {
+    expect(newBodyProblems('story', '## Зачем\n\nНадо.\n')).toEqual(['нет раздела «Что сделать»', 'нет раздела «Критерии готовности»']);
+    expect(newBodyProblems('spike', '## Вопрос\n\nХватит ли целых копеек?\n\n## Как ищем ответ\n\nСмотрим код.\n\n## Ответ\n')).toEqual([]);
+  });
+
+  it('«Критериев нет: …» — вместо пунктов; линтер о такой задаче не напоминает', () => {
+    const noCriteria = BUG.replace('- [ ] Дата — день.месяц.год\n', '');
+    expect(newBodyProblems('bug', noCriteria)).toHaveLength(1);
+    const waived = withCriteriaWaiver('bug', noCriteria, 'проверит дизайнер глазами');
+    expect(waived).toContain('## Критерии\n\nКритериев нет: проверит дизайнер глазами\n');
+    expect(newBodyProblems('bug', waived)).toEqual([]);
+    expect(messages(lintTask(serializeTaskDocument(frontmatter({ type: 'bug' }), `\n${waived}`)).issues, 'warning')).toEqual([]);
+    // Пустая причина — не пометка.
+    expect(newBodyProblems('bug', `${noCriteria}Критериев нет:\n`)).toHaveLength(1);
+    // Раздела нет — добавляется в конец.
+    const story = withCriteriaWaiver('story', '## Зачем\n\nНадо.\n\n## Что сделать\n\nСделать.\n', 'общая задача');
+    expect(story.endsWith('## Критерии готовности\n\nКритериев нет: общая задача\n')).toBe(true);
+    expect(newBodyProblems('story', story)).toEqual([]);
+  });
+
+  it('шаблон — разделы типа с заготовками, без «Ответа» спайка', () => {
+    expect(newBodyTemplate('bug').match(/^## .+$/gm)).toEqual(['## Что происходит', '## Как воспроизвести', '## Как должно быть', '## Критерии']);
+    expect(newBodyTemplate('spike')).not.toContain('## Ответ');
+  });
+
+  it('даты и дроби в «Сути» — не путь', () => {
+    const lint = (summary: string): string[] => messages(lintTask(serializeTaskDocument(frontmatter({ summary }), `\n${filled('story')}`)).issues, 'warning');
+    expect(lint('Дата печатается месяц/день/год, 3 октября — как 10/3/2026.')).toEqual([]);
+    expect(lint('Правим src/report.')[0]).toContain('путь');
   });
 });

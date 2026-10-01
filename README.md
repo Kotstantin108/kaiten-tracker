@@ -41,7 +41,7 @@ kaiten show PRJ-123            # задача целиком, её эпик и �
 kaiten search таймаут вебхук  # по словам (окончания не важны, a|b — варианты), --regex, --lines
 kaiten files PRJ-123           # вложения задачи
 kaiten pull                   # свежие задачи проекта и отправка своих изменений
-kaiten new "Починить…" --type bug --summary "…" [--agent]
+kaiten new "Починить…" --type bug --slug fix-… --summary "…" --stdin <<'EOF' … EOF   # с постановкой; [--agent] [--from PRJ-123] [--no-criteria "почему"]
 kaiten check PRJ-123 "тест на таймаут"   # отметить пункты
 kaiten log PRJ-123 "что сделано"         # запись в журнал задачи
 kaiten attach PRJ-123 report.md          # приложить файл к задаче (--stdin — содержимое из ввода)
