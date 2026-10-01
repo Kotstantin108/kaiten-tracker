@@ -71,6 +71,13 @@ node scripts/install.mjs      # Node.js и git → зависимости → к
 `--no-kaiten` — без входа в Kaiten (задачи ведутся, карточки нет). Обновление
 инструмента — `git pull` в этой папке.
 
+Linux: если глобальная папка npm принадлежит root (`/usr/local`), `npm link`
+падает с `EACCES` — скрипт подскажет завести свою (`npm config set prefix
+~/.npm-global` и `~/.npm-global/bin` в PATH); `sudo` не нужен. Хранилище
+задач на Linux — `~/.local/share/kaiten` (`$XDG_DATA_HOME`), на macOS —
+`~/Library/Application Support/kaiten`. Проверено в Docker
+(`node:24-bookworm-slim`, 01.10); на macOS не запускалось.
+
 **Репозиторий кода** — владелец проекта, один раз и после обновления скилла:
 
 ```bash

@@ -103,6 +103,13 @@ else {
 }
 
 // ── 3. Команда kaiten в PATH ─────────────────────────────────────────────
+/** Папка, куда npm link кладёт команды: на Windows — сам prefix, на Linux/macOS — prefix/bin. */
+function globalBin() {
+  const r = run('npm', ['prefix', '-g']);
+  const prefix = r.status === 0 ? (r.stdout ?? '').trim() : '';
+  if (!prefix) return undefined;
+  return isWin ? prefix : join(prefix, 'bin');
+}
 function kaitenAnswers() {
   const r = run('kaiten', ['--help'], { cwd: dirname(ROOT) });
   return r.status === 0 && /задачи проекта/.test(r.stdout ?? '');
@@ -112,8 +119,26 @@ else if (checkOnly) todo('команды kaiten в PATH нет (npm link)');
 else {
   console.log('… подключаю команду kaiten (npm link)');
   const r = run('npm', ['link']);
-  if (r.status !== 0) fail('npm link не прошёл', (r.stderr || r.stdout || '').trim().split('\n').slice(-3).join(' '));
-  if (!kaitenAnswers()) fail('команда kaiten не находится после npm link', 'Проверьте, что папка глобальных пакетов npm (npm prefix -g) есть в PATH, и откройте новый терминал.');
+  const output = `${r.stderr ?? ''}\n${r.stdout ?? ''}`;
+  // Linux/macOS: глобальная папка npm принадлежит root (/usr/local), обычному пользователю туда не записать.
+  // sudo не советуем: папка kaiten-tracker и кеш npm станут чужими. Своя папка для глобальных пакетов — штатный путь npm.
+  if (r.status !== 0 && !isWin && /EACCES|permission denied/i.test(output)) {
+    fail(
+      `npm link не прошёл: нет прав на запись в папку глобальных пакетов npm (${globalBin() ?? 'npm prefix -g'})`,
+      'Заведите свою папку для глобальных пакетов npm и запустите установку снова:\n' +
+        '      npm config set prefix ~/.npm-global\n' +
+        "      echo 'export PATH=\"$HOME/.npm-global/bin:$PATH\"' >> ~/.bashrc   (для zsh — ~/.zshrc)\n" +
+        '      откройте новый терминал и запустите node scripts/install.mjs ещё раз',
+    );
+  }
+  if (r.status !== 0) fail('npm link не прошёл', output.trim().split('\n').slice(-3).join(' '));
+  if (!kaitenAnswers()) {
+    const bin = globalBin();
+    fail(
+      'команда kaiten не находится после npm link',
+      `Добавьте в PATH папку ${bin ?? 'глобальных пакетов npm (npm prefix -g)'} и откройте новый терминал${isWin ? '' : ` — например, echo 'export PATH="${bin ?? '<папка>'}:$PATH"' >> ~/.bashrc`}.`,
+    );
+  }
   ok('команда kaiten в PATH');
 }
 
