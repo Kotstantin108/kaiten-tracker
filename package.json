@@ -21,6 +21,7 @@
     "kaiten-sync": "tsx --env-file-if-exists=.env src/kaiten-sync-cli.ts",
     "backup": "tsx --env-file-if-exists=.env src/kaiten-backup.ts",
     "connect-repo": "tsx src/connect-repo.ts",
+    "normalize": "tsx src/normalize-tasks.ts",
     "install-machine": "node scripts/install.mjs"
   },
   "dependencies": {
