@@ -110,9 +110,65 @@ export function loadProject(path: string, wanted: string | null): LoadedProject 
   return { key, project, config };
 }
 
-/** Записать маппинг проекта, не трогая остальной конфиг. */
+/** Записать маппинг проекта, не трогая остальной конфиг (файл любого из двух видов). */
 export function saveMapping(path: string, key: string, mapping: ConfigMapping): void {
-  const raw = JSON.parse(readFileSync(path, 'utf8')) as { projects: Record<string, Record<string, unknown>> };
-  raw.projects[key].mapping = mapping;
+  const raw = JSON.parse(readFileSync(path, 'utf8')) as Record<string, unknown> & { projects?: Record<string, Record<string, unknown>> };
+  if (raw.projects) raw.projects[key].mapping = mapping;
+  else raw.mapping = mapping;
   writeFileSync(path, `${JSON.stringify(raw, null, 2)}\n`, 'utf8');
+}
+
+// ── конфиг в репозитории задач ───────────────────────────────────────────
+//
+// Инструмент не знает ни одного проекта: всё о проекте лежит в корне его
+// репозитория задач, в `kaiten.json` (решение владельца 01.10.2026 — сам
+// kaiten-tracker публичный). Внутри кода проект по-прежнему виден как
+// `LoadedProject`: файл переводится в таблицу из одного проекта.
+
+/** Имя файла конфига в корне репозитория задач. */
+export const TASKS_REPO_CONFIG = 'kaiten.json';
+
+/** Реестр людей: ключ человека (как в `created_by`) и почты его коммитов. */
+export const PeopleSchema = z.object({
+  people: z.record(z.string(), z.object({ name: z.string().optional() }).passthrough()).default({}),
+  emails: z.record(z.string(), z.string()).default({}),
+});
+export type People = z.infer<typeof PeopleSchema>;
+
+export const TasksRepoConfigSchema = ProjectSchema.extend({
+  /** Ключ проекта: имя копии для чтения, метка в сообщениях скриптов. */
+  project: z.string().regex(/^[a-z0-9-]+$/, 'ключ проекта — латиница, цифры, дефис'),
+  teams: z.array(z.string().min(1)).default([]),
+  defaultTeam: z.string().optional(),
+  people: PeopleSchema.default({ people: {}, emails: {} }),
+}).passthrough();
+export type TasksRepoConfig = z.infer<typeof TasksRepoConfigSchema>;
+
+/** Конфиг из `kaiten.json` → проект; `url` — адрес репозитория задач, если его знает вызывающий (`.kaiten`). */
+export function projectFromTasksRepo(text: string, url?: string): LoadedProject & { people: People } {
+  let json: unknown;
+  try {
+    json = JSON.parse(text);
+  } catch {
+    throw new Error(`${TASKS_REPO_CONFIG} не разбирается как JSON`);
+  }
+  const parsed = TasksRepoConfigSchema.safeParse(json);
+  if (!parsed.success) throw new Error(`${TASKS_REPO_CONFIG}: ${parsed.error.issues.map((i) => `${i.path.join('.') || '(корень)'}: ${i.message}`).join('; ')}`);
+  const { project: key, teams, defaultTeam, people, ...rest } = parsed.data;
+  const tasksUrl = rest.tasksRepo?.url ?? url;
+  const project = ProjectSchema.parse({ ...rest, tasksRepo: { name: rest.tasksRepo?.name ?? storeNameOf(tasksUrl ?? `${key}-tasks`), ...(tasksUrl ? { url: tasksUrl } : {}) } });
+  const config = ConfigSchema.parse({ teams, defaultTeam, projects: { [key]: project } });
+  return { key, project, config, people };
+}
+
+/** Конфиг из файла `kaiten.json` (рабочая копия репозитория задач или `--config`). */
+export function loadTasksRepoConfig(path: string): LoadedProject & { people: People } {
+  if (!existsSync(path)) throw new Error(`Не найден ${path}`);
+  return projectFromTasksRepo(readFileSync(path, 'utf8'));
+}
+
+/** Имя хранилища на машине — по адресу репозитория задач: `…/acme-tasks.git` → `acme-tasks`. */
+export function storeNameOf(url: string): string {
+  const base = url.replace(/[\\/]+$/, '').split(/[\\/:]/).at(-1) ?? url;
+  return base.replace(/\.git$/, '') || 'tasks';
 }

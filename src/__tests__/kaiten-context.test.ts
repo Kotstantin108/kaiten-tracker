@@ -17,9 +17,9 @@ describe('файл проекта', () => {
   it('ищется вверх от текущей папки', () => {
     const repo = join(tmp, 'repo');
     mkdirSync(join(repo, 'src', 'deep'), { recursive: true });
-    writeFileSync(join(repo, PROJECT_FILE), 'project: acme\nrepo: acme-app\n');
+    writeFileSync(join(repo, PROJECT_FILE), 'tasks: https://example.com/acme/acme-tasks.git\nrepo: acme-app\n');
     expect(findProjectFile(join(repo, 'src', 'deep'))).toBe(join(repo, PROJECT_FILE));
-    expect(readProjectFile(join(repo, 'src'))).toEqual({ file: { project: 'acme', repo: 'acme-app' } });
+    expect(readProjectFile(join(repo, 'src'))).toEqual({ file: { tasks: 'https://example.com/acme/acme-tasks.git', repo: 'acme-app' } });
   });
 
   it('нет файла — не подключён', () => {
@@ -30,9 +30,11 @@ describe('файл проекта', () => {
   });
 
   it('обе строки обязательны, лишнего не бывает', () => {
-    expect(parseProjectFile('project: acme\n')).toEqual({ error: 'repo: обязательное поле' });
-    expect('error' in parseProjectFile('project: acme\nrepo: x\nextra: 1\n')).toBe(true);
-    expect('error' in parseProjectFile('project: [\n')).toBe(true);
+    expect(parseProjectFile('tasks: https://example.com/acme/acme-tasks.git\n')).toEqual({ error: 'repo: обязательное поле' });
+    expect('error' in parseProjectFile('tasks: https://example.com/acme/acme-tasks.git\nrepo: x\nextra: 1\n')).toBe(true);
+    expect('error' in parseProjectFile('tasks: [\n')).toBe(true);
+    // Старый вид — с подсказкой, что поменять.
+    expect(parseProjectFile('project: acme\nrepo: acme-app\n')).toEqual({ error: 'старый вид файла: вместо «project: …» нужна строка «tasks: <адрес репозитория задач>»' });
     expect('error' in parseProjectFile('')).toBe(true);
   });
 });
@@ -60,7 +62,7 @@ describe('настройки', () => {
 
   it('ошибка в настройках не выводит токен', () => {
     const secret = 'secret-token-value-123';
-    const path = write('bad.json', { kaiten: { domain: 'x.kaiten.ru', token: secret, extra: secret } });
+    const path = write('bad.json', { kaiten: { domain: 'example.kaiten.ru', token: secret, extra: secret } });
     expect(() => loadSettings(path)).toThrow(SettingsError);
     try {
       loadSettings(path);
@@ -78,7 +80,7 @@ describe('настройки', () => {
   });
 
   it('вход в Kaiten читается', () => {
-    const settings = loadSettings(write('login.json', { kaiten: { domain: 'x.kaiten.ru', token: 't' } }));
-    expect(settings.kaiten).toEqual({ domain: 'x.kaiten.ru', token: 't' });
+    const settings = loadSettings(write('login.json', { kaiten: { domain: 'example.kaiten.ru', token: 't' } }));
+    expect(settings.kaiten).toEqual({ domain: 'example.kaiten.ru', token: 't' });
   });
 });

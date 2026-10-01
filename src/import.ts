@@ -18,7 +18,6 @@
  * не трогает то, что не изменилось.
  *
  * ФЛАГИ
- *   --project <key>                        проект из конфига (обязателен, если их несколько)
  *   --overlay <path>                       «Суть» и команда задач, которых ещё нет в файлах (пилот)
  *   --scope pilot|active|active+done|all   что заливать (по умолч. active)
  *   --repo <name>[,<name>]                 какие репозитории из конфига
@@ -26,7 +25,7 @@
  *   --only <extId>[,<extId>]               точечный список, сильнее scope
  *   --done-since <YYYY-MM>                 граница done/ для scope=active+done
  *   --limit <N>                            не больше N карточек за прогон
- *   --config <path>                        конфиг (по умолч. tracker.config.json)
+ *   --config <path>                        kaiten.json проекта (по умолч. kaiten.json в текущей папке)
  *   --apply                                реально писать в Kaiten
  *   --link-epics                           планировать связи эпик → story
  *   --no-rewrite-links                     не переписывать ссылки в URL репозитория
@@ -45,7 +44,7 @@ import { dirname, isAbsolute, join, resolve } from 'node:path';
 
 import { z } from 'zod';
 
-import { loadProject } from './config.js';
+import { loadTasksRepoConfig } from './config.js';
 import { collectNumberedTasks } from './numbered-source.js';
 import { KaitenClient, type Card } from './kaiten-client.js';
 import {
@@ -67,7 +66,7 @@ import {
 } from './task-source.js';
 
 const OUT_DIR = 'tmp/import';
-const DEFAULT_CONFIG = 'tracker.config.json';
+const DEFAULT_CONFIG = 'kaiten.json';
 
 interface Args {
   project: string | null;
@@ -176,7 +175,8 @@ interface LoadedConfig {
 function loadConfig(path: string, projectKey: string | null, wanted: string[]): LoadedConfig {
   let loaded;
   try {
-    loaded = loadProject(path, projectKey);
+    loaded = loadTasksRepoConfig(path);
+    if (projectKey && projectKey !== loaded.key) fail(`В ${path} проект «${loaded.key}», а не «${projectKey}»`, 2);
   } catch (error) {
     fail((error as Error).message, 2);
   }

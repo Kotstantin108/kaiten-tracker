@@ -12,7 +12,7 @@ import { parseArgs, type ParseArgsConfig } from 'node:util';
 
 import { z } from 'zod';
 
-import { loadConfig, loadProject, type LoadedProject } from './config.js';
+import { loadTasksRepoConfig, projectFromTasksRepo, storeNameOf, TASKS_REPO_CONFIG, type LoadedProject, type People } from './config.js';
 import type { TaskStatus } from './core/schema.js';
 import { buildIndex, belongsToProject, resolveTask, type TaskIndex, type TaskRecord } from './core/tasks-index.js';
 import { localCopyDir, loadSettings, PROJECT_FILE, readProjectFile, type KaitenSettings } from './kaiten-context.js';
@@ -21,7 +21,7 @@ import { repoWebBase } from './core/kaiten-sync-plan.js';
 import { KaitenClient } from './kaiten-client.js';
 import { apiErrorText, runKaitenSync, type SyncRun } from './kaiten-sync.js';
 import { KAITEN_LOCK, KAITEN_QUEUE, recordOp, sendInBackground, setKaitenErrors, syncStore, takeNotices, tryLock, withLockAsync } from './store-write.js';
-import { defaultStorePath, gitText, isStore, listEntries, readStoreTree, StoreError, syncCopy, type StoreEntry } from './task-store.js';
+import { defaultStorePath, gitText, isStore, listEntries, readBlobs, readStoreTree, StoreError, syncCopy, type StoreEntry } from './task-store.js';
 
 export class UsageError extends Error {
   constructor(
@@ -32,17 +32,20 @@ export class UsageError extends Error {
   }
 }
 
-export const CONFIG_PATH = process.env.KAITEN_CONFIG ?? fileURLToPath(new URL('../tracker.config.json', import.meta.url));
+/** Конфиг проекта вместо `kaiten.json` из хранилища — для тестов и пробных прогонов. */
+export const CONFIG_OVERRIDE = process.env.KAITEN_CONFIG;
 export const SETTINGS_PATH = process.env.KAITEN_SETTINGS ?? fileURLToPath(new URL('../kaiten.settings.json', import.meta.url));
-const PEOPLE_PATH = fileURLToPath(new URL('../convert/people.json', import.meta.url));
 
 export const TASK_REF_HELP = 'Задача — ключ карточки (PRJ-123 или 10000002), id или slug.';
 
 // ── контекст ─────────────────────────────────────────────────────────────
 
 export interface Context {
-  loaded: LoadedProject;
-  title: string;
+  /** Проект из `kaiten.json` хранилища; до первого `kaiten pull` — отказ «получите задачи». */
+  readonly loaded: LoadedProject & { people: People };
+  readonly title: string;
+  /** Адрес репозитория задач из `.kaiten`. */
+  tasksUrl: string;
   /** Репозиторий кода проекта, из которого запущена команда (из `.kaiten`). */
   currentRepo: string;
   store: string;
@@ -69,22 +72,49 @@ export function resolveContext(): Context {
   }
   if ('error' in found) throw new UsageError(`Файл ${PROJECT_FILE} этого репозитория не читается: ${found.error}. Исправляет владелец проекта.`);
 
-  const { projects } = loadConfig(CONFIG_PATH);
-  const key = found.file.project;
-  if (!projects[key]) {
-    throw new UsageError(`Файл ${PROJECT_FILE}: проекта «${key}» в kaiten нет (есть: ${Object.keys(projects).join(', ')}). Исправляет владелец проекта.`);
-  }
-  const loaded = loadProject(CONFIG_PATH, key);
-  const repos = loaded.project.repos.map((r) => r.name);
-  if (!repos.includes(found.file.repo)) {
-    throw new UsageError(`Файл ${PROJECT_FILE}: в проекте ${loaded.project.title} нет репозитория «${found.file.repo}» (есть: ${repos.join(', ')}). Исправляет владелец проекта.`);
-  }
-  const store = storePathOf(loaded);
-  return { loaded, title: loaded.project.title, currentRepo: found.file.repo, store, workDir };
+  const tasksUrl = found.file.tasks;
+  const store = defaultStorePath(storeNameOf(tasksUrl));
+  const currentRepo = found.file.repo;
+  let cached: (LoadedProject & { people: People }) | null = null;
+  // Проект читается из хранилища при первом обращении: до первого pull его ещё нет, а адрес для pull — уже есть.
+  const loaded = (): LoadedProject & { people: People } => {
+    if (cached) return cached;
+    const project = readProjectConfig(store, tasksUrl);
+    const repos = project.project.repos.map((r) => r.name);
+    if (!repos.includes(currentRepo)) {
+      throw new UsageError(`Файл ${PROJECT_FILE}: в проекте ${project.project.title} нет репозитория «${currentRepo}» (есть: ${repos.join(', ')}). Исправляет владелец проекта.`);
+    }
+    cached = project;
+    return project;
+  };
+  return {
+    get loaded() {
+      return loaded();
+    },
+    get title() {
+      return loaded().project.title;
+    },
+    tasksUrl,
+    currentRepo,
+    store,
+    workDir,
+  };
 }
 
-function storePathOf(loaded: LoadedProject): string {
-  return defaultStorePath(loaded.project.tasksRepo?.name ?? `${loaded.key}-tasks`);
+/** `kaiten.json` из хранилища (или файл из `KAITEN_CONFIG`). */
+function readProjectConfig(store: string, tasksUrl: string): LoadedProject & { people: People } {
+  try {
+    if (CONFIG_OVERRIDE) return loadTasksRepoConfig(CONFIG_OVERRIDE);
+    if (!existsSync(store)) throw new UsageError('Задач проекта на этой машине ещё нет. Получите их: kaiten pull');
+    if (!isStore(store)) throw new StoreError('not-store');
+    const entry = listEntries(store).find((e) => e.path === TASKS_REPO_CONFIG);
+    if (!entry) throw new UsageError('В репозитории задач нет описания проекта. Сообщите владельцу проекта.');
+    const text = readBlobs(store, [entry.sha]).get(entry.sha)?.toString('utf8') ?? '';
+    return projectFromTasksRepo(text, tasksUrl);
+  } catch (error) {
+    if (error instanceof UsageError || error instanceof StoreError) throw error;
+    throw new UsageError(`Описание проекта в репозитории задач не читается: ${(error as Error).message}. Сообщите владельцу проекта.`);
+  }
 }
 
 export interface Loaded {
@@ -176,20 +206,16 @@ export function refreshLocalCopy(ctx: Context, target: string | null = localCopy
   }
 }
 
-const PeopleSchema = z.object({ emails: z.record(z.string(), z.string()) }).passthrough();
-
-/** Реестр людей: почта (в нижнем регистре) → человек. Нет файла — пусто. */
-export function loadPeople(): Record<string, string> {
-  if (!existsSync(PEOPLE_PATH)) return {};
-  const { emails } = PeopleSchema.parse(JSON.parse(readFileSync(PEOPLE_PATH, 'utf8')));
-  return Object.fromEntries(Object.entries(emails).map(([email, person]) => [email.toLowerCase(), person]));
+/** Реестр людей проекта: почта (в нижнем регистре) → человек. */
+export function peopleByEmail(people: People): Record<string, string> {
+  return Object.fromEntries(Object.entries(people.emails).map(([email, person]) => [email.toLowerCase(), person]));
 }
 
 /**
  * Кто создаёт задачу (`created_by`): `person` из настроек, иначе человек по
- * git-почте из `convert/people.json` — тот же реестр, что у конвертера.
+ * git-почте из реестра людей проекта (`people` в `kaiten.json`).
  */
-export function currentPerson(): string {
+export function currentPerson(people: People): string {
   const fromSettings = settings().person;
   if (fromSettings) return fromSettings;
   let email = '';
@@ -198,7 +224,7 @@ export function currentPerson(): string {
   } catch {
     email = '';
   }
-  const key = email ? loadPeople()[email] : undefined;
+  const key = email ? peopleByEmail(people)[email] : undefined;
   if (key) return key;
   throw new UsageError('Не знаю, кто вы: укажите себя (person) в настройках kaiten.');
 }
@@ -243,7 +269,7 @@ export async function syncWithKaiten(ctx: Context, client?: KaitenClient, onLock
           repoWebBase: repoWebBase(ctx.loaded.project.tasksRepo?.url),
           defaultTeam: ctx.loaded.config.defaultTeam,
           boardId: mapping.boardId,
-          people: loadPeople(),
+          people: peopleByEmail(ctx.loaded.people),
           date: today(),
         },
         'apply',

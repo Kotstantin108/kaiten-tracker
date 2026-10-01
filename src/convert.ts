@@ -9,8 +9,7 @@
  * конвертером: чужое дерево не перезаписываем.
  *
  * ФЛАГИ
- *   --project <key>    проект из конфига (обязателен)
- *   --config <path>    конфиг (по умолч. tracker.config.json)
+ *   --config <path>    kaiten.json проекта (обязателен): repos[].path — рабочие копии репозиториев кода со старыми tasks/
  *   --overlay <path>   «Суть» и команда по external_id (по умолч. pilot/overlay.json)
  *   --kaiten           прочитать карточки доски и заполнить `tracker` (нужен токен)
  *   --out <dir>        куда писать дерево репозитория задач
@@ -19,7 +18,7 @@
  *                      как оверлей ниже --overlay; с --write дополняются новыми
  *                      черновиками с `reviewed: false` — отметка «проверить»
  *                      живёт в git, а не во временном отчёте
- *   --people <path>    люди и их почты в git (по умолч. convert/people.json)
+ *   --people <path>    люди и их почты в git (по умолч. people из --config)
  *   --report <path>    отчёт (по умолч. tmp/convert/<проект>-report.md)
  *
  * Коды выхода: 0 — ок; 2 — ошибка аргументов или конфига; 6 — ошибка Kaiten.
@@ -31,7 +30,7 @@ import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { z } from 'zod';
 
-import { loadProject } from './config.js';
+import { loadTasksRepoConfig } from './config.js';
 import { convertProject, type CardFields, type OverlayEntry } from './convert/convert-plan.js';
 import { readHistory, type TaskHistory } from './convert/git-history.js';
 import { lintRepository } from './core/lint.js';
@@ -125,10 +124,10 @@ function historyKey(task: TaskFile): string {
 
 async function main(): Promise<void> {
   const argv = process.argv.slice(2);
-  const projectKey = argValue(argv, '--project');
-  if (!projectKey) fail('Укажите --project', 2);
-  const configPath = argValue(argv, '--config') ?? 'tracker.config.json';
-  const { project } = loadProject(configPath, projectKey);
+  const configPath = argValue(argv, '--config') ?? fail('Укажите --config <kaiten.json проекта>', 2);
+  const loaded = loadTasksRepoConfig(configPath);
+  const { project } = loaded;
+  const projectKey = loaded.key;
   const base = dirname(resolve(configPath));
   const write = argv.includes('--write');
   const out = argValue(argv, '--out');
@@ -213,8 +212,8 @@ async function main(): Promise<void> {
     const root = repoPaths.get(repoName);
     return root !== undefined && existsSync(join(root, path));
   };
-  const peoplePath = argValue(argv, '--people') ?? 'convert/people.json';
-  const people = existsSync(peoplePath) ? PeopleSchema.parse(JSON.parse(readFileSync(peoplePath, 'utf8'))) : { people: {}, emails: {} };
+  const peoplePath = argValue(argv, '--people');
+  const people = peoplePath ? PeopleSchema.parse(JSON.parse(readFileSync(peoplePath, 'utf8'))) : loaded.people;
   const person = (commit: { author: string; email: string }): string | undefined => people.emails[commit.email.toLowerCase()];
   const result = convertProject({ tasks, history, logs, overlay, cards, exists, extraFiles, person });
   const lint = lintRepository(

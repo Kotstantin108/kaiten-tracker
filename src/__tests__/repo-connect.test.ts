@@ -7,13 +7,13 @@ import { planConnect, RULES_END, RULES_START, rulesBlock, rulesState, skillState
 import { formatChecks } from '../kaiten-doctor.js';
 
 const SKILL = '---\nname: kaiten\n---\n\n# Задачи проекта\n';
-const base = { project: 'acme', repo: 'acme-app', push: 'branch' as const, toolSkill: SKILL, rulesFile: 'CLAUDE.md' };
+const base = { tasks: 'https://example.com/acme/acme-tasks.git', repo: 'acme-app', push: 'branch' as const, toolSkill: SKILL, rulesFile: 'CLAUDE.md' };
 
 describe('подключение репозитория', () => {
   it('пустой репозиторий: файл проекта, скилл и файл правил с блоком', () => {
     const changes = planConnect({ ...base, current: { projectFile: null, skill: null, rules: null } });
     expect(changes.map((c) => c.path)).toEqual(['.kaiten', '.claude/skills/kaiten/SKILL.md', 'CLAUDE.md']);
-    expect(changes[0].text).toBe('project: acme\nrepo: acme-app\n');
+    expect(changes[0].text).toBe('tasks: https://example.com/acme/acme-tasks.git\nrepo: acme-app\n');
     expect(changes[2].text.startsWith(RULES_START)).toBe(true);
     expect(changes[2].text).toContain('Перед любой правкой кода — скилл kaiten');
     expect(changes[2].text).toContain('git push -u origin');
@@ -38,7 +38,7 @@ describe('подключение репозитория', () => {
   });
 
   it('устаревший скилл и чужой файл проекта — в плане, с объяснением', () => {
-    const changes = planConnect({ ...base, current: { projectFile: 'project: globex\nrepo: globex-site\n', skill: 'старый текст', rules: withRulesBlock(null, rulesBlock('branch')) } });
+    const changes = planConnect({ ...base, current: { projectFile: 'tasks: https://example.com/other/other-tasks.git\nrepo: other-site\n', skill: 'старый текст', rules: withRulesBlock(null, rulesBlock('branch')) } });
     expect(changes.map((c) => [c.path, c.what])).toEqual([
       ['.kaiten', 'файл проекта — другой проект или продукт, заменяется'],
       ['.claude/skills/kaiten/SKILL.md', 'скилл — устарел, обновляется'],

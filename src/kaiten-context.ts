@@ -5,8 +5,12 @@
  * ФАЙЛ ПРОЕКТА `.kaiten` — в корне репозитория кода (ищется вверх от текущей
  * папки, как `.editorconfig`). Две строки YAML:
  *
- *     project: acme
+ *     tasks: https://github.com/acme/acme-tasks.git
  *     repo: acme-app
+ *
+ * `tasks` — адрес репозитория задач проекта: всё остальное о проекте (доска,
+ * поля, репозитории, люди) лежит в нём, в `kaiten.json`. `repo` — какой из
+ * репозиториев проекта этот.
  *
  * Нет файла — репозиторий не подключён к kaiten, и команды не работают:
  * ни флага `--project`, ни угадывания по `origin` или имени папки (в worktree
@@ -14,8 +18,7 @@
  * проектов; команды его создания нет, чтобы агент не «подключал» репозиторий
  * сам.
  *
- * НАСТРОЙКИ `kaiten.settings.json` — рядом с `tracker.config.json` в
- * kaiten-tracker, у каждого разработчика свои (в `.gitignore`, пример —
+ * НАСТРОЙКИ `kaiten.settings.json` — в папке kaiten-tracker, у каждого разработчика свои (в `.gitignore`, пример —
  * `kaiten.settings.example.json`). В них:
  *   · `kaiten.domain` и `kaiten.token` — личный вход в Kaiten (для команд
  *     записи; скрипты `import`/`setup` пока читают `.env`);
@@ -35,7 +38,7 @@ export const PROJECT_FILE = '.kaiten';
 
 const ProjectFileSchema = z
   .object({
-    project: z.string().trim().min(1, 'пустое значение'),
+    tasks: z.string().trim().min(1, 'пустое значение'),
     repo: z.string().trim().min(1, 'пустое значение'),
   })
   .strict();
@@ -60,7 +63,10 @@ export function parseProjectFile(text: string): ProjectFileResult {
   try {
     raw = parseYaml(text);
   } catch {
-    return { error: 'файл не разбирается: нужны две строки «project: …» и «repo: …»' };
+    return { error: 'файл не разбирается: нужны две строки «tasks: …» и «repo: …»' };
+  }
+  if (raw && typeof raw === 'object' && 'project' in raw && !('tasks' in raw)) {
+    return { error: 'старый вид файла: вместо «project: …» нужна строка «tasks: <адрес репозитория задач>»' };
   }
   const parsed = ProjectFileSchema.safeParse(raw ?? {});
   if (!parsed.success) {
@@ -96,7 +102,7 @@ const SettingsSchema = z
      * карточки, только если `sync.kaiten` включён. По умолчанию выключен.
      */
     sync: z.object({ kaiten: z.boolean().default(false) }).strict().default({ kaiten: false }),
-    /** Кто вы в реестре людей (`convert/people.json`): автор новых задач. Без него — по git-почте. */
+    /** Кто вы в реестре людей проекта (`people` в `kaiten.json` репозитория задач): автор новых задач. Без него — по git-почте. */
     person: z.string().trim().min(1).optional(),
     localCopy: z
       .object({

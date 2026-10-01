@@ -1,8 +1,8 @@
 /**
  * Заводит в Kaiten структуру проекта под схему эпика: пространство, доску с
  * колонкой на каждый статус, типы карточек, поля-выборы приоритета, команды и
- * репозитория проекта — и записывает их id в `projects.<проект>.mapping`
- * файла `tracker.config.json`.
+ * репозитория проекта — и записывает их id в `mapping` файла `kaiten.json`
+ * рабочей копии репозитория задач (закоммитить и отправить — руками).
  *
  * ЗАЧЕМ. Маппинг заливки ссылается на id колонок, типов и свойств, а в новом
  * аккаунте их нет. Руками это 20 с лишним кликов и опечатка в id на выходе;
@@ -13,17 +13,18 @@
  * переименовывается. Повторный прогон после `--apply` даёт пустой план.
  *
  * ФЛАГИ
- *   --apply            создать недостающее и записать маппинг в конфиг
- *   --project <key>    проект из конфига (обязателен, если проектов несколько)
- *   --config <path>    конфиг (по умолч. tracker.config.json)
+ *   --tasks <папка>    рабочая копия репозитория задач проекта (с kaiten.json)
+ *   --config <путь>    kaiten.json не из репозитория задач (пробные прогоны)
+ *   --apply            создать недостающее и записать маппинг в kaiten.json
  *
  * ENV: `KAITEN_DOMAIN`, `KAITEN_TOKEN`. Запуск: `npm run setup` / `npm run setup -- --apply`.
  *
  * Коды выхода: 0 — ок; 2 — нет токена; 6 — ошибка запроса.
  */
 
-import { loadProject, saveMapping, type ConfigMapping, type LoadedProject } from './config.js';
+import { saveMapping, type ConfigMapping, type LoadedProject } from './config.js';
 import { KaitenApiError, KaitenClient, type CardType } from './kaiten-client.js';
+import { loadOwnerProject } from './owner-project.js';
 
 import {
   buildMapping,
@@ -209,16 +210,9 @@ async function apply(client: KaitenClient, actions: SetupAction[], desired: Desi
   }
 }
 
-function argValue(argv: string[], name: string): string | undefined {
-  const i = argv.indexOf(name);
-  if (i !== -1 && argv[i + 1]) return argv[i + 1];
-  return argv.find((a) => a.startsWith(`${name}=`))?.slice(name.length + 1);
-}
-
 async function main(): Promise<void> {
   const argv = process.argv.slice(2);
   const doApply = argv.includes('--apply');
-  const configPath = argValue(argv, '--config') ?? 'tracker.config.json';
   const domain = process.env.KAITEN_DOMAIN ?? '';
   const token = process.env.KAITEN_TOKEN ?? '';
   if (!domain || !token) {
@@ -226,7 +220,10 @@ async function main(): Promise<void> {
     process.exit(2);
   }
 
-  const loaded = loadProject(configPath, argValue(argv, '--project') ?? null);
+  const owner = loadOwnerProject(argv);
+  if (owner.source.kind === 'store') throw new Error('setup пишет id в kaiten.json — нужна рабочая копия: --tasks <папка>');
+  const { loaded } = owner;
+  const configPath = owner.source.configPath;
   const client = new KaitenClient({ domain, token, minIntervalMs: 150 });
   const desired = desiredFor(loaded);
   console.log(`Проект: ${loaded.project.title} (${loaded.key}) → пространство «${desired.space}», доска «${desired.board}»`);
@@ -251,7 +248,7 @@ async function main(): Promise<void> {
   const mapping = toConfigMapping(buildMapping(await readCurrent(client, desired), desired), loaded);
   if (doApply) {
     saveMapping(configPath, loaded.key, mapping);
-    console.log(`Маппинг записан в ${configPath} → projects.${loaded.key}.mapping`);
+    console.log(`Маппинг записан в ${configPath} → mapping. Закоммитьте и отправьте репозиторий задач.`);
   }
   console.log(JSON.stringify(mapping, null, 2));
   console.log(`Запросов: ${client.requestCount}`);

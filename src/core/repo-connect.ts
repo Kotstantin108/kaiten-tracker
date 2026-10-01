@@ -75,7 +75,8 @@ export function rulesState(text: string | null): RulesState {
 }
 
 export interface ConnectInput {
-  project: string;
+  /** Адрес репозитория задач проекта. */
+  tasks: string;
   repo: string;
   push: PushPolicy;
   /** Скилл инструмента — то, что должно лежать в репозитории. */
@@ -95,7 +96,7 @@ export interface ConnectChange {
 /** Что записать в репозиторий; пустой список — всё уже на месте. */
 export function planConnect(input: ConnectInput): ConnectChange[] {
   const changes: ConnectChange[] = [];
-  const projectFile = `project: ${input.project}\nrepo: ${input.repo}\n`;
+  const projectFile = `tasks: ${input.tasks}\nrepo: ${input.repo}\n`;
   if (lf(input.current.projectFile ?? '') !== projectFile) {
     changes.push({ path: PROJECT_FILE_PATH, text: projectFile, what: input.current.projectFile === null ? 'файл проекта — новый' : 'файл проекта — другой проект или продукт, заменяется' });
   }

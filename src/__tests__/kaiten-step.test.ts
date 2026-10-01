@@ -9,7 +9,7 @@ import { join } from 'node:path';
 
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
-import type { LoadedProject } from '../config.js';
+import type { LoadedProject, People } from '../config.js';
 import { serializeTaskDocument } from '../core/document.js';
 import { FrontmatterSchema } from '../core/schema.js';
 import type { Context } from '../kaiten-cli.js';
@@ -68,8 +68,9 @@ beforeAll(() => {
       mapping: { boardId: 10, laneId: 20, columns: { inbox: 101 }, types: { tech: 3 }, summaryProperty: { id: 4 }, repoProperty: { id: 2, values: { 'acme-app': 21 } } },
     },
     config: { teams: [], projects: {} },
-  } as unknown as LoadedProject;
-  ctx = { loaded, title: 'Acme', currentRepo: 'acme-app', store, workDir: tmp };
+    people: { people: {}, emails: {} },
+  } as unknown as LoadedProject & { people: People };
+  ctx = { loaded, title: 'Acme', tasksUrl: 'https://example.com/acme/acme-tasks.git', currentRepo: 'acme-app', store, workDir: tmp };
 });
 
 afterAll(() => rmSync(tmp, { recursive: true, force: true }));

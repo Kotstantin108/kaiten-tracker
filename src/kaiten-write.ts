@@ -311,7 +311,7 @@ async function newTask(args: string[]): Promise<void> {
       repo: type === 'epic' ? undefined : ctx.currentRepo,
       epic,
       related,
-      createdBy: currentPerson(),
+      createdBy: currentPerson(ctx.loaded.people),
       createdVia: values.agent ? 'agent' : 'human',
       body,
     },

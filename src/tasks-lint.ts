@@ -3,18 +3,20 @@
  * `archive/YYYY-MM/*.md` (журналы `*.log.md` — нет). Только чтение.
  *
  * ФЛАГИ
- *   <dir>              корень репозитория задач (по умолч. `TASKS_DIR`)
- *   --project <key>    сверить `repo` с репозиториями проекта из конфига
- *   --config <path>    конфиг (по умолч. tracker.config.json)
+ *   <dir>              корень репозитория задач (по умолч. `TASKS_DIR`); если в
+ *                      нём есть `kaiten.json` — `repo` задач сверяется с
+ *                      репозиториями проекта и сам `kaiten.json` проверяется
+ *   --config <path>    другой `kaiten.json`
  *
- * Запуск: `npm run tasks:lint -- <dir> --project acme`.
+ * Запуск: `npm run tasks:lint -- <dir>`.
  * Коды выхода: 0 — ошибок нет (предупреждения допустимы); 1 — есть ошибки;
  * 2 — не задан или не найден каталог.
  */
 
 import { existsSync } from 'node:fs';
+import { join } from 'node:path';
 
-import { loadProject } from './config.js';
+import { loadTasksRepoConfig, TASKS_REPO_CONFIG } from './config.js';
 import { lintRepository } from './core/lint.js';
 import { readTasksTree } from './tasks-files.js';
 
@@ -26,7 +28,7 @@ function argValue(argv: string[], name: string): string | undefined {
 
 function main(): void {
   const argv = process.argv.slice(2);
-  const valued = new Set(['--project', '--config']);
+  const valued = new Set(['--config']);
   const positional = argv.filter((a, i) => !a.startsWith('--') && !valued.has(argv[i - 1] ?? ''));
   const dir = positional[0] ?? process.env.TASKS_DIR;
   if (!dir || !existsSync(dir)) {
@@ -34,10 +36,16 @@ function main(): void {
     process.exit(2);
   }
 
-  const projectKey = argValue(argv, '--project');
-  const repos = projectKey
-    ? loadProject(argValue(argv, '--config') ?? 'tracker.config.json', projectKey).project.repos.map((r) => r.name)
-    : undefined;
+  const configPath = argValue(argv, '--config') ?? join(dir, TASKS_REPO_CONFIG);
+  let repos: string[] | undefined;
+  if (existsSync(configPath)) {
+    try {
+      repos = loadTasksRepoConfig(configPath).project.repos.map((r) => r.name);
+    } catch (error) {
+      console.log(`ошибка  ${TASKS_REPO_CONFIG}: ${(error as Error).message}`);
+      process.exit(1);
+    }
+  }
 
   const { files } = readTasksTree(dir);
   const result = lintRepository(files, repos);

@@ -424,7 +424,7 @@ async function pull(args: string[]): Promise<void> {
   parse('pull', args, {}, 0);
   const ctx = readContext();
   // Настройки — до загрузки: битые настройки не должны обнаружиться после неё.
-  const copyDir = localCopyDir(settings(), ctx.loaded.key);
+  const userSettings = settings();
   // Испорченное хранилище (оборванная загрузка, чужая папка) человек удалить не
   // может: где оно лежит, CLI не говорит. Поэтому `pull` загружает заново —
   // но только если в нём нет неотправленных изменений.
@@ -436,8 +436,7 @@ async function pull(args: string[]): Promise<void> {
   let sent = 0;
   let offline = false;
   if (!existsSync(ctx.store)) {
-    const url = ctx.loaded.project.tasksRepo?.url;
-    if (!url) throw new UsageError(`Задачи проекта ${ctx.title} ещё негде взять: хранилище задач не подключено. Это вопрос к владельцу проекта.`);
+    const url = ctx.tasksUrl;
     // Два агента на новой машине начинают одновременно: загружает первый, второй ждёт и находит готовое.
     const parent = dirname(ctx.store);
     mkdirSync(parent, { recursive: true });
@@ -463,10 +462,11 @@ async function pull(args: string[]): Promise<void> {
     }
   }
   const { index } = loadTasks(ctx);
+  // Проект известен только теперь: его описание — в загруженном репозитории задач.
+  const copyDir = localCopyDir(userSettings, ctx.loaded.key);
   const open = index.tasks.filter((t) => !t.closed).length;
   if (offline) {
     console.log(`Свежие задачи не получены: нет связи с хранилищем задач (запрос повторён трижды). Задачи проекта ${ctx.title} — по состоянию на прошлое обновление: открытых ${open}, всего ${index.tasks.length}. Работать по ним можно; скажите человеку, что задачи могли устареть.`);
-    console.log('Работать по ним можно: ваши изменения записываются и уйдут, когда связь появится. Скажите об этом человеку.');
     reportProblems(index);
     refreshLocalCopy(ctx, copyDir);
     return;

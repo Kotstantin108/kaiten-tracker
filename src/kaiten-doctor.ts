@@ -23,14 +23,14 @@ import { existsSync, readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { loadConfig } from './config.js';
+import { projectFromTasksRepo, storeNameOf, TASKS_REPO_CONFIG, type LoadedProject, type People } from './config.js';
 import { rulesState, SKILL_PATH, skillState } from './core/repo-connect.js';
 import { belongsToProject, buildIndex } from './core/tasks-index.js';
-import { CONFIG_PATH, invocationDir, loadPeople, parse, SETTINGS_PATH, storeMessage } from './kaiten-cli.js';
+import { invocationDir, parse, peopleByEmail, SETTINGS_PATH, storeMessage } from './kaiten-cli.js';
 import { KaitenApiError, KaitenClient } from './kaiten-client.js';
 import { findProjectFile, loadSettings, parseProjectFile, SettingsError, type KaitenSettings } from './kaiten-context.js';
 import { readJournal } from './store-write.js';
-import { defaultStorePath, gitNetwork, gitText, isStore, listEntries, readStoreTree, StoreError } from './task-store.js';
+import { defaultStorePath, gitNetwork, gitText, isStore, listEntries, readBlobs, readStoreTree, StoreError } from './task-store.js';
 
 export const DOCTOR_HELP = `kaiten doctor — проверить, что всё готово к работе с задачами.
 
@@ -87,6 +87,16 @@ function gitChecks(dir: string): Check[] {
   return checks;
 }
 
+/** Кто вы в задачах — по реестру людей проекта (он в репозитории задач, поэтому проверка — после загрузки). */
+function personCheck(settings: KaitenSettings | null, email: string, people: People): Check {
+  const byEmail = peopleByEmail(people);
+  const known = new Set(Object.keys(people.people));
+  const person = settings?.person;
+  if (person) return known.has(person) ? { level: 'ok', what: `вы в задачах — ${person}` } : { level: 'warn', what: `вы в задачах — ${person}, такого человека нет в реестре проекта`, fix: 'Сверьте person в настройках с реестром людей у владельца проекта.' };
+  if (byEmail[email.toLowerCase()]) return { level: 'ok', what: `вы в задачах — ${byEmail[email.toLowerCase()]} (по почте git)` };
+  return { level: 'fail', what: 'не понять, кто вы: новую задачу не завести', fix: `Укажите person в ${SETTINGS_PATH} или попросите владельца проекта добавить вашу почту в реестр людей.` };
+}
+
 function settingsChecks(email: string): { checks: Check[]; settings: KaitenSettings | null } {
   if (!existsSync(SETTINGS_PATH)) {
     return { checks: [{ level: 'warn', what: 'настроек kaiten нет: команды пишут задачи, но карточки Kaiten не обновляют', fix: `Создайте ${SETTINGS_PATH} по образцу kaiten.settings.example.json (или node scripts/install.mjs в kaiten-tracker).` }], settings: null };
@@ -99,11 +109,6 @@ function settingsChecks(email: string): { checks: Check[]; settings: KaitenSetti
     return { checks: [{ level: 'fail', what: `не читаются ${error.message}`, fix: `Исправьте ${SETTINGS_PATH}.` }], settings: null };
   }
   const checks: Check[] = [];
-  const people = loadPeople();
-  const known = new Set(Object.values(people));
-  if (settings.person) checks.push(known.has(settings.person) ? { level: 'ok', what: `вы в задачах — ${settings.person}` } : { level: 'warn', what: `вы в задачах — ${settings.person}, такого человека нет в реестре`, fix: 'Сверьте person в настройках с реестром людей у владельца проекта.' });
-  else if (people[email.toLowerCase()]) checks.push({ level: 'ok', what: `вы в задачах — ${people[email.toLowerCase()]} (по почте git)` });
-  else checks.push({ level: 'fail', what: 'не понять, кто вы: новую задачу не завести', fix: `Укажите person в ${SETTINGS_PATH}.` });
   if (!settings.sync.kaiten) checks.push({ level: 'warn', what: 'обновление Kaiten выключено: статусы и текст карточек команды не меняют', fix: `Включите sync.kaiten в ${SETTINGS_PATH}, когда владелец проекта скажет.` });
   else if (!settings.kaiten) checks.push({ level: 'fail', what: 'обновление Kaiten включено, а входа нет', fix: `Добавьте kaiten.domain и kaiten.token в ${SETTINGS_PATH}.` });
   return { checks, settings };
@@ -128,7 +133,7 @@ function readOrNull(path: string): string | null {
 
 interface RepoFacts {
   checks: Check[];
-  project?: { key: string; title: string; store: string; repos: string[]; hasBoard: boolean };
+  project?: { store: string; repo: string; tasksUrl: string };
 }
 
 function repoChecks(workDir: string): RepoFacts {
@@ -136,13 +141,7 @@ function repoChecks(workDir: string): RepoFacts {
   if (!path) return { checks: [{ level: 'fail', what: 'этот репозиторий не подключён к kaiten: нет файла .kaiten', fix: OWNER }] };
   const parsed = parseProjectFile(readFileSync(path, 'utf8'));
   if (!('file' in parsed)) return { checks: [{ level: 'fail', what: `файл .kaiten не читается${'error' in parsed ? `: ${parsed.error}` : ''}`, fix: OWNER }] };
-  const { projects } = loadConfig(CONFIG_PATH);
-  const project = projects[parsed.file.project];
-  if (!project) return { checks: [{ level: 'fail', what: `в .kaiten проект «${parsed.file.project}», такого в kaiten нет (есть: ${Object.keys(projects).join(', ')})`, fix: 'Обновите kaiten-tracker (git pull) или исправьте .kaiten — вопрос к владельцу проекта.' }] };
-  const repos = project.repos.map((r) => r.name);
-  const checks: Check[] = [];
-  if (repos.includes(parsed.file.repo)) checks.push({ level: 'ok', what: `репозиторий подключён: проект ${project.title}, продукт ${parsed.file.repo}` });
-  else checks.push({ level: 'fail', what: `в .kaiten продукт «${parsed.file.repo}», в проекте ${project.title} такого нет (есть: ${repos.join(', ')})`, fix: OWNER });
+  const checks: Check[] = [{ level: 'ok', what: `репозиторий подключён: продукт ${parsed.file.repo}` }];
 
   const root = dirname(path);
   const skill = skillState(readFileSync(TOOL_SKILL, 'utf8'), readOrNull(join(root, SKILL_PATH)));
@@ -153,14 +152,31 @@ function repoChecks(workDir: string): RepoFacts {
   if (rules.includes('fresh')) checks.push({ level: 'ok', what: 'правила про задачи в репозитории есть' });
   else checks.push({ level: 'warn', what: rules.includes('stale') ? 'правила про задачи в репозитории устарели' : 'правил про задачи в CLAUDE.md нет: агент может чинить мимо задач', fix: OWNER });
 
-  return { checks, project: { key: parsed.file.project, title: project.title, store: defaultStorePath(project.tasksRepo?.name ?? `${parsed.file.project}-tasks`), repos, hasBoard: project.mapping !== undefined } };
+  return { checks, project: { store: defaultStorePath(storeNameOf(parsed.file.tasks)), repo: parsed.file.repo, tasksUrl: parsed.file.tasks } };
 }
 
-function storeChecks(project: NonNullable<RepoFacts['project']>, settings: KaitenSettings | null, offline: boolean): Check[] {
+function storeConfig(store: string, tasksUrl: string): (LoadedProject & { people: People }) | string {
+  const entry = listEntries(store).find((e) => e.path === TASKS_REPO_CONFIG);
+  if (!entry) return 'в репозитории задач нет описания проекта';
+  try {
+    return projectFromTasksRepo(readBlobs(store, [entry.sha]).get(entry.sha)?.toString('utf8') ?? '', tasksUrl);
+  } catch (error) {
+    return (error as Error).message;
+  }
+}
+
+function storeChecks(facts: NonNullable<RepoFacts['project']>, settings: KaitenSettings | null, email: string, offline: boolean): Check[] {
   const checks: Check[] = [];
-  if (settings?.sync.kaiten && !project.hasBoard) checks.push({ level: 'fail', what: `у проекта ${project.title} не настроена доска Kaiten`, fix: 'Обновите kaiten-tracker (git pull); если не поможет — вопрос к владельцу проекта.' });
-  if (!existsSync(project.store)) return [...checks, { level: 'fail', what: `задач проекта ${project.title} на этой машине ещё нет`, fix: 'kaiten pull' }];
-  if (!isStore(project.store)) return [...checks, { level: 'fail', what: 'задачи проекта на этой машине повреждены', fix: 'kaiten pull — загрузит заново.' }];
+  if (!existsSync(facts.store)) return [{ level: 'fail', what: 'задач проекта на этой машине ещё нет', fix: 'kaiten pull' }];
+  if (!isStore(facts.store)) return [{ level: 'fail', what: 'задачи проекта на этой машине повреждены', fix: 'kaiten pull — загрузит заново.' }];
+  const loaded = storeConfig(facts.store, facts.tasksUrl);
+  if (typeof loaded === 'string') return [{ level: 'fail', what: `описание проекта не читается: ${loaded}`, fix: 'kaiten pull; если не поможет — вопрос к владельцу проекта.' }];
+  const repos = loaded.project.repos.map((r) => r.name);
+  const project = { title: loaded.project.title, store: facts.store, repos };
+  if (repos.includes(facts.repo)) checks.push({ level: 'ok', what: `проект ${project.title}, продукт ${facts.repo}` });
+  else checks.push({ level: 'fail', what: `в .kaiten продукт «${facts.repo}», в проекте ${project.title} такого нет (есть: ${repos.join(', ')})`, fix: OWNER });
+  checks.push(personCheck(settings, email, loaded.people));
+  if (settings?.sync.kaiten && !loaded.project.mapping) checks.push({ level: 'fail', what: `у проекта ${project.title} не настроена доска Kaiten`, fix: 'Вопрос к владельцу проекта.' });
 
   const tree = readStoreTree(project.store, listEntries(project.store));
   const index = buildIndex(tree.files, tree.logs);
@@ -207,7 +223,7 @@ export async function doctor(args: string[]): Promise<void> {
 
   const repo = repoChecks(workDir);
   checks.push(...repo.checks);
-  if (repo.project && git[0].level === 'ok') checks.push(...storeChecks(repo.project, settings, offline));
+  if (repo.project && git[0].level === 'ok') checks.push(...storeChecks(repo.project, settings, email, offline));
 
   console.log(formatChecks(checks).join('\n'));
   if (checks.some((c) => c.level === 'fail')) process.exitCode = 1;

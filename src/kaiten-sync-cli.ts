@@ -8,9 +8,10 @@
  * (`--first-load`), которую фон не делает никогда.
  *
  * ФЛАГИ
- *   --project <key>        проект (обязателен, если их несколько)
- *   --config <path>        конфиг (по умолч. tracker.config.json)
- *   --tasks <dir>          читать задачи из папки (дерево конвертера) — только сухой прогон
+ *   --tasks <адрес>        хранилище задач проекта на этой машине (kaiten pull)
+ *   --tasks <папка>        рабочая копия репозитория задач или дерево
+ *                          конвертера — только сухой прогон
+ *   --config <путь>        kaiten.json не из репозитория задач (пробные прогоны)
  *   --first-load           создать карточки и перенесённым задачам: открытым и
  *                          сделанным с месяца --closed-since (Q19: «done за три
  *                          месяца» — текущий и два предыдущих)
@@ -28,18 +29,16 @@
  * Коды выхода: 0 — ок; 1 — были ошибки Kaiten; 2 — ошибка аргументов.
  */
 
-import { existsSync } from 'node:fs';
-
-import { loadProject } from './config.js';
 import { repoWebBase } from './core/kaiten-sync-plan.js';
 import { buildIndex, resolveTask } from './core/tasks-index.js';
 import { KaitenClient } from './kaiten-client.js';
-import { loadPeople, SETTINGS_PATH, today } from './kaiten-cli.js';
+import { peopleByEmail, SETTINGS_PATH, today } from './kaiten-cli.js';
 import { loadSettings } from './kaiten-context.js';
 import { formatPlan, runKaitenSync } from './kaiten-sync.js';
 import { KAITEN_LOCK, recordOp, syncStore, withLockAsync } from './store-write.js';
 import { readTasksTree } from './tasks-files.js';
-import { defaultStorePath, isStore, listEntries, readStoreTree } from './task-store.js';
+import { loadOwnerProject } from './owner-project.js';
+import { listEntries, readStoreTree } from './task-store.js';
 
 function argValue(argv: string[], name: string): string | undefined {
   const i = argv.indexOf(name);
@@ -59,21 +58,18 @@ function monthsAgo(n: number, now = new Date()): string {
 async function main(): Promise<void> {
   const argv = process.argv.slice(2);
   const apply = argv.includes('--apply');
-  const { key, project, config } = loadProject(argValue(argv, '--config') ?? 'tracker.config.json', argValue(argv, '--project') ?? null);
-  const mapping = project.mapping;
-  if (!mapping) fail(`У проекта ${key} нет доски в конфиге — сначала npm run setup -- --project ${key} --apply`);
-
-  const tasksDir = argValue(argv, '--tasks');
-  if (tasksDir && apply) fail('--apply пишет ключи карточек в задачи — только из хранилища задач, без --tasks');
-  const store = defaultStorePath(project.tasksRepo?.name ?? `${key}-tasks`);
-  let tree;
-  if (tasksDir) {
-    if (!existsSync(tasksDir)) fail(`Нет каталога ${tasksDir}`);
-    tree = readTasksTree(tasksDir);
-  } else {
-    if (!isStore(store)) fail(`Задач проекта ${key} на этой машине нет — kaiten pull или --tasks <dir>`);
-    tree = readStoreTree(store, listEntries(store));
+  let owner;
+  try {
+    owner = loadOwnerProject(argv);
+  } catch (error) {
+    fail((error as Error).message);
   }
+  const { project, config, people } = owner.loaded;
+  const mapping = project.mapping;
+  if (!mapping) fail(`У проекта ${project.title} нет доски в kaiten.json — сначала npm run setup -- --tasks <рабочая копия> --apply`);
+  if (owner.source.kind !== 'store' && apply) fail('--apply пишет ключи карточек в задачи — только из хранилища задач: --tasks <адрес репозитория задач>');
+  const store = owner.source.kind === 'store' ? owner.source.store : '';
+  const tree = owner.source.kind === 'dir' ? readTasksTree(owner.source.dir) : owner.source.kind === 'store' ? readStoreTree(store, listEntries(store)) : fail('--config без --tasks: укажите, откуда брать задачи');
   const index = buildIndex(tree.files, tree.logs);
   if (index.problems.length > 0) console.error(`Не читается задач: ${index.problems.length} — они не участвуют.`);
 
@@ -106,7 +102,7 @@ async function main(): Promise<void> {
     firstLoad,
     only,
     onlyCards,
-    people: loadPeople(),
+    people: peopleByEmail(people),
     date: today(),
   };
   // Запись — под тем же замком, что фон и pull: иначе две карточки одной задаче.

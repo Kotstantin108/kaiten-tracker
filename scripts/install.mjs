@@ -21,7 +21,6 @@ import { fileURLToPath } from 'node:url';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const SETTINGS = join(ROOT, 'kaiten.settings.json');
-const PEOPLE = join(ROOT, 'convert', 'people.json');
 const argv = process.argv.slice(2);
 const flag = (name) => argv.includes(name);
 const value = (name) => {
@@ -153,18 +152,10 @@ if (existsSync(SETTINGS)) {
   ok(`настройки есть (${parsed?.kaiten ? 'вход в Kaiten задан' : 'без входа в Kaiten'}, обновление Kaiten ${parsed?.sync?.kaiten ? 'включено' : 'выключено'}) — не трогаю`);
 } else if (checkOnly) todo('настроек нет (kaiten.settings.json)');
 else {
-  const people = existsSync(PEOPLE) ? JSON.parse(readFileSync(PEOPLE, 'utf8')) : { people: {}, emails: {} };
-  const known = Object.keys(people.people ?? {});
-  const byEmail = (people.emails ?? {})[gitEmail.toLowerCase()];
-  let person = value('--person') ?? byEmail;
-  if (!person) {
-    if (!process.stdin.isTTY) fail('не понять, кто вы', `Запустите с --person <${known.join('|')}> или в терминале.`);
-    person = await ask(`Кто вы в задачах (${known.join(', ')}): `);
-  }
-  if (!person) fail('не указано, кто вы', `--person <${known.join('|')}>`);
-  if (known.length > 0 && !known.includes(person)) console.log(`! человека «${person}» нет в реестре (${known.join(', ')}) — попросите владельца проекта добавить`);
-
-  const settings = { sync: { kaiten: false }, person, localCopy: { enabled: false } };
+  // Кто вы в задачах — по реестру людей проекта (он в репозитории задач) по почте git.
+  // --person — только если почта в реестре другая; сверит kaiten doctor после первого pull.
+  const person = value('--person');
+  const settings = { sync: { kaiten: false }, ...(person ? { person } : {}), localCopy: { enabled: false } };
   if (!flag('--no-kaiten')) {
     let domain = value('--domain') ?? process.env.KAITEN_DOMAIN;
     let token = process.env.KAITEN_TOKEN;
@@ -191,7 +182,7 @@ else {
   }
   const ordered = { ...(settings.kaiten ? { kaiten: settings.kaiten } : {}), sync: settings.sync, person: settings.person, localCopy: settings.localCopy };
   writeFileSync(SETTINGS, `${JSON.stringify(ordered, null, 2)}\n`, 'utf8');
-  ok(`настройки записаны: вы — ${person}, обновление Kaiten ${settings.sync.kaiten ? 'включено' : 'выключено'}`);
+  ok(`настройки записаны: ${person ? `вы — ${person}, ` : ""}обновление Kaiten ${settings.sync.kaiten ? 'включено' : 'выключено'}`);
 }
 
 // ── Что дальше ───────────────────────────────────────────────────────────

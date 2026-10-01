@@ -1,7 +1,6 @@
-# Проверка формата задач в репозитории задач проекта (acme-tasks, globex-tasks).
-#
-# Шаблон лежит в kaiten-tracker, пока репозиториев задач нет; при их создании
-# копируется в .github/workflows/ репозитория задач.
+# Проверка формата задач в репозитории задач проекта. Копируется в
+# .github/workflows/ репозитория задач; проект (репозитории для поля repo)
+# линтер берёт из kaiten.json в корне.
 #
 # НЕБЛОКИРУЮЩАЯ (решение 16): запускается на push в main — уже после записи.
 # Запись CLI — прямой push, защита main — только от force-push и удаления, так
@@ -11,9 +10,8 @@
 #
 # Нужно в настройках репозитория задач (Settings → Secrets and variables → Actions):
 #   vars.KAITEN_TRACKER_REPO    — репозиторий kaiten-tracker, например owner/kaiten-tracker
-#   vars.KAITEN_PROJECT         — ключ проекта из tracker.config.json: acme или globex
-#   secrets.KAITEN_TRACKER_TOKEN — fine-grained токен только на чтение kaiten-tracker
-#                                  (Contents: read-only); токенов Kaiten здесь нет
+#   secrets.KAITEN_TRACKER_TOKEN — только если kaiten-tracker приватный: fine-grained
+#                                  токен на чтение (Contents: read-only); токенов Kaiten здесь нет
 
 name: Формат задач
 
@@ -31,7 +29,7 @@ concurrency:
 
 jobs:
   lint:
-    # Пока не заведён доступ к kaiten-tracker (переменная и секрет) — не запускаться, а не падать на каждой записи.
+    # Пока не задан репозиторий kaiten-tracker — не запускаться, а не падать на каждой записи.
     if: vars.KAITEN_TRACKER_REPO != ''
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -45,7 +43,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: ${{ vars.KAITEN_TRACKER_REPO }}
-          token: ${{ secrets.KAITEN_TRACKER_TOKEN }}
+          token: ${{ secrets.KAITEN_TRACKER_TOKEN || github.token }}
           path: kaiten-tracker
 
       - uses: actions/setup-node@v4
@@ -60,4 +58,4 @@ jobs:
 
       - name: Проверка формата
         working-directory: kaiten-tracker
-        run: npm run --silent tasks:lint -- "$GITHUB_WORKSPACE/tasks" --project "${{ vars.KAITEN_PROJECT }}"
+        run: npm run --silent tasks:lint -- "$GITHUB_WORKSPACE/tasks"
