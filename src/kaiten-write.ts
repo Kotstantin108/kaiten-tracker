@@ -445,18 +445,21 @@ async function move(command: 'review' | 'done', args: string[]): Promise<void> {
       1,
     );
   }
-  const work = command === 'review' ? workRef(ctx.workDir) : undefined;
-  const note = [stringFlag(values, 'note')?.trim(), work, open.length > 0 && why ? `не отмечено пунктов ${open.length}: ${why}` : undefined].filter(Boolean).join('; ') || undefined;
+  const given = stringFlag(values, 'note')?.trim();
+  const work = command === 'review' ? workRef(ctx.workDir, given) : undefined;
+  const note = [given, work, open.length > 0 && why ? `не отмечено пунктов ${open.length}: ${why}` : undefined].filter(Boolean).join('; ') || undefined;
   const card = task.fm.status !== status ? await moveCardFirst(ctx, task, status) : 'none';
   await commit(ctx, { kind: 'move', id: task.fm.id, status, note }, `${command === 'review' ? 'ревью' : 'закрытие'} ${refOf(task)}`);
   cardNotMovedNote(card);
 }
 
 /** Ветка и последний коммит репозитория кода — для записи «на ревью»: где смотреть работу. */
-function workRef(workDir: string): string | undefined {
+function workRef(workDir: string, given?: string): string | undefined {
   const branch = git(workDir, ['branch', '--show-current']);
   const head = git(workDir, ['log', '-1', '--format=%h %s']);
   if (!branch.ok || !branch.out || !head.ok || !head.out) return undefined;
+  // Ветку уже назвали в --note — второй раз не пишем.
+  if (given?.includes(branch.out)) return undefined;
   return `ветка ${branch.out}, коммит ${head.out}`;
 }
 
