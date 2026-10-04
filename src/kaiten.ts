@@ -526,6 +526,12 @@ async function main(): Promise<void> {
   await run(args);
 }
 
+// Вывод обрезали (`kaiten show … | head`): читатель ушёл — это не ошибка, и стек node печатать нельзя.
+process.stdout.on('error', (error: NodeJS.ErrnoException) => {
+  if (error.code === 'EPIPE') process.exit(0);
+  throw error;
+});
+
 main().catch((error: unknown) => {
   if (error instanceof UsageError) {
     console.error(error.message);
