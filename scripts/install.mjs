@@ -45,24 +45,52 @@ function run(cmd, args, options = {}) {
     : spawnSync(cmd, args, { cwd: ROOT, encoding: 'utf8', ...options });
 }
 
-function ask(question, { hidden = false } = {}) {
+function ask(question) {
   return new Promise((resolveAnswer) => {
     const rl = createInterface({ input: process.stdin, output: process.stdout, terminal: true });
-    if (hidden) {
-      // Вопрос печатаем сами, а эхо ввода глушим: токен не должен остаться на экране и в истории.
-      process.stdout.write(question);
-      rl._writeToOutput = () => {};
-      rl.question('', (answer) => {
-        rl.close();
-        process.stdout.write('\n');
-        resolveAnswer(answer.trim());
-      });
-    } else {
-      rl.question(question, (answer) => {
-        rl.close();
-        resolveAnswer(answer.trim());
-      });
-    }
+    rl.question(question, (answer) => {
+      rl.close();
+      resolveAnswer(answer.trim());
+    });
+  });
+}
+
+/**
+ * Вопрос без показа ввода: токен не должен остаться на экране и в истории.
+ * Не через readline: он перерисовывает строку промпта кодами «в начало строки, очистить
+ * экран» мимо заглушки эха и стирает уже напечатанный вопрос (Linux) — установщик
+ * выглядит зависшим. Поэтому терминал в сыром режиме, символы собираем сами.
+ */
+function askHidden(question) {
+  return new Promise((resolveAnswer) => {
+    const input = process.stdin;
+    process.stdout.write(question);
+    let answer = '';
+    const finish = () => {
+      input.off('data', onData);
+      input.setRawMode(false);
+      input.pause();
+      process.stdout.write('\n');
+      resolveAnswer(answer.trim());
+    };
+    const onData = (chunk) => {
+      // Стрелки и прочие клавиши-последовательности в токен не попадают.
+      if (chunk.startsWith('\u001b')) return;
+      for (const ch of chunk) {
+        if (ch === '\r' || ch === '\n') return finish();
+        if (ch === '\u0003') {
+          input.setRawMode(false);
+          process.stdout.write('\n');
+          process.exit(130);
+        }
+        if (ch === '\u007f' || ch === '\b') answer = answer.slice(0, -1);
+        else if (ch >= ' ') answer += ch;
+      }
+    };
+    input.setEncoding('utf8');
+    input.setRawMode(true);
+    input.resume();
+    input.on('data', onData);
   });
 }
 
@@ -161,7 +189,7 @@ else {
     let token = process.env.KAITEN_TOKEN;
     if ((!domain || !token) && !process.stdin.isTTY) fail('нет домена или токена Kaiten', 'Задайте --domain и переменную KAITEN_TOKEN, запустите в терминале или добавьте --no-kaiten.');
     if (!domain) domain = await ask('Домен Kaiten (например company.kaiten.ru): ');
-    if (!token) token = await ask('Личный токен Kaiten (Профиль → API-ключи; ввод не показывается): ', { hidden: true });
+    if (!token) token = await askHidden('Личный токен Kaiten (Профиль → API-ключи; ввод не показывается): ');
     domain = (domain ?? '').replace(/^https?:\/\//, '').replace(/\/+$/, '');
     if (!domain || !token) fail('домен и токен Kaiten обязательны', 'Или запустите с --no-kaiten: задачи будут вестись, карточки — нет.');
 

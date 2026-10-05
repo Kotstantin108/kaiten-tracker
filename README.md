@@ -48,6 +48,16 @@ Linux: если глобальная папка npm принадлежит root,
 ~/.npm-global` и `~/.npm-global/bin` в PATH). Проверено на Windows и в Docker
 (`node:24-bookworm-slim`); на macOS не запускалось.
 
+Git должен уметь войти в GitHub по тому адресу задач, что записан в проекте
+(обычно HTTPS). Если на машине есть только SSH-ключ, а логина для HTTPS нет,
+`kaiten pull` и `kaiten doctor` скажут, что не может войти git на машине, — это не
+отказ в доступе к проекту. Исправить: войти для HTTPS (`gh auth login`) или
+перенаправить HTTPS на SSH:
+
+```bash
+git config --global url."git@github.com:".insteadOf "https://github.com/"
+```
+
 Проверка — из подключённого репозитория кода:
 
 ```bash

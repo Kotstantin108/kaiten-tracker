@@ -25,7 +25,7 @@ import { dirname, join, resolve } from 'node:path';
 
 import type { TasksTree } from './tasks-files.js';
 
-export type StoreErrorKind = 'no-access' | 'offline' | 'not-found' | 'rejected' | 'refused' | 'no-identity' | 'busy' | 'not-store' | 'other';
+export type StoreErrorKind = 'no-access' | 'no-login' | 'offline' | 'not-found' | 'rejected' | 'refused' | 'no-identity' | 'busy' | 'not-store' | 'other';
 
 export class StoreError extends Error {
   constructor(readonly kind: StoreErrorKind) {
@@ -45,7 +45,7 @@ export function defaultStorePath(name: string): string {
 }
 
 /** Вид ошибки по тексту git — сам текст наружу не выходит: в нём пути. */
-function classify(stderr: string): StoreErrorKind {
+export function classify(stderr: string): StoreErrorKind {
   // Две отправки столкнулись на одной ветке: сервер отверг вторую не по правилам, а потому что
   // ветка в этот миг менялась («failed to lock», «incorrect old value provided»). Это гонка — повторить, как
   // и обычное «кто-то успел раньше» (тест параллельной записи, 30.09.2026).
@@ -55,7 +55,10 @@ function classify(stderr: string): StoreErrorKind {
   // Push отвергнут, потому что кто-то успел раньше, — не ошибка, а повод повторить.
   if (/\[rejected\]/.test(stderr) && /non-fast-forward|fetch first/i.test(stderr)) return 'rejected';
   if (/Please tell me who you are|empty ident|unable to auto-detect email/i.test(stderr)) return 'no-identity';
-  if (/Authentication failed|Permission denied|could not read Username|returned error: 403|access denied/i.test(stderr)) return 'no-access';
+  // Git на машине не смог войти: для HTTPS нет логина (или он устарел), для SSH нет ключа. Это
+  // настройка машины, а не отказ владельца — с ключом без доступа GitHub отвечает «not found».
+  if (/could not read Username|terminal prompts disabled|Authentication failed|Permission denied \(publickey/i.test(stderr)) return 'no-login';
+  if (/Permission denied|returned error: 403|access denied/i.test(stderr)) return 'no-access';
   if (/Repository not found|does not appear to be a git repository|not found/i.test(stderr)) return 'not-found';
   if (/Could not resolve host|unable to access|timed out|Failed to connect|Connection refused|network/i.test(stderr)) return 'offline';
   return 'other';

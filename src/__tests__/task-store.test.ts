@@ -9,7 +9,7 @@ import { dirname, join } from 'node:path';
 
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
-import { blobSha, cloneStore, COPY_MANIFEST, syncCopy, isStore, listEntries, readBlobs, readStoreTree, StoreError } from '../task-store.js';
+import { blobSha, classify, cloneStore, COPY_MANIFEST, syncCopy, isStore, listEntries, readBlobs, readStoreTree, StoreError } from '../task-store.js';
 import { syncStore } from '../store-write.js';
 
 const GIT = ['-c', 'core.autocrlf=false', '-c', 'user.name=test', '-c', 'user.email=test@example.com', '-c', 'init.defaultBranch=main'];
@@ -105,6 +105,18 @@ describe('хранилище', { timeout: 30_000 }, () => {
     }
     // Оборванная загрузка не оставляет полухранилища, которое потом не открыть.
     expect(existsSync(join(tmp, 'store2', 'x.git'))).toBe(false);
+  });
+
+  it('нет логина на машине — не «нет доступа к проекту»', () => {
+    // Адрес HTTPS, а у git есть только SSH-ключ.
+    expect(classify("fatal: could not read Username for 'https://github.com': terminal prompts disabled")).toBe('no-login');
+    expect(classify("fatal: could not read Username for 'https://github.com': No such device or address")).toBe('no-login');
+    expect(classify("remote: Invalid username or token.\nfatal: Authentication failed for 'https://github.com/acme-org/acme-tasks.git/'")).toBe('no-login');
+    // Адрес SSH, а ключа нет.
+    expect(classify('git@github.com: Permission denied (publickey).\nfatal: Could not read from remote repository.')).toBe('no-login');
+    // Вход есть, а прав нет — это вопрос к владельцу.
+    expect(classify("remote: Permission to acme-org/acme-tasks.git denied to alice.\nfatal: unable to access 'https://github.com/acme-org/acme-tasks.git/': The requested URL returned error: 403")).toBe('no-access');
+    expect(classify('ERROR: Repository not found.\nfatal: Could not read from remote repository.')).toBe('not-found');
   });
 
   it('blobSha совпадает с git', () => {

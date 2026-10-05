@@ -387,6 +387,10 @@ export function storeMessage(kind: StoreError['kind']): string {
   switch (kind) {
     case 'no-access':
       return 'Нет доступа к задачам проекта. Попросите владельца проекта добавить вас в команду проекта на GitHub.';
+    case 'no-login':
+      return 'Git на этой машине не может войти в GitHub: для адреса задач нет логина или ключа. Это настройка машины, а не доступ к проекту. '
+        + 'Войдите в GitHub для HTTPS (например, gh auth login) или, если у вас настроен SSH-ключ, перенаправьте HTTPS на SSH: '
+        + 'git config --global url."git@github.com:".insteadOf "https://github.com/". Затем повторите команду.';
     case 'offline':
       return 'Нет связи с хранилищем задач: запрос повторён трижды, ответа нет. Это сеть, а не доступ. Проверьте интернет и повторите.';
     case 'not-found':
