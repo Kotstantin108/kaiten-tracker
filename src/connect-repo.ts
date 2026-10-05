@@ -19,6 +19,7 @@
  * Коды выхода: 0 — ок; 2 — ошибка аргументов.
  */
 
+import { spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -91,6 +92,14 @@ function main(): void {
   }
   for (const c of changes) console.log(`  ${c.path}: ${c.what}`);
   if (existsSync(join(dir, 'tasks'))) console.log('  В репозитории есть папка tasks/ — скрипт её не трогает: удаление после переезда задач делает владелец.');
+  // Частый случай: .claude/ целиком в .gitignore — скилл не попадёт в git, и у других его не будет.
+  const ignored = spawnSync('git', ['check-ignore', '-q', SKILL_PATH], { cwd: dir, windowsHide: true }).status === 0;
+  if (ignored) {
+    console.log(
+      `  ВНИМАНИЕ: ${SKILL_PATH} попадает под .gitignore — в коммит скилл не войдёт. Замените в .gitignore строку «.claude/» на:\n` +
+        '      .claude/*\n      !.claude/skills/\n      .claude/skills/*\n      !.claude/skills/kaiten/',
+    );
+  }
   if (!values.apply) {
     console.log('Записать: тот же вызов с --apply.');
     return;
