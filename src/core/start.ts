@@ -15,7 +15,7 @@
  */
 
 import type { TaskStatus } from './schema.js';
-import { moveProblem } from './task-ops.js';
+import { ASSIGNABLE, moveProblem } from './task-ops.js';
 import { refOf, type TaskRecord } from './tasks-index.js';
 
 /** Из этих статусов задачу берут в работу; из «В работе» — продолжают. */
@@ -40,12 +40,13 @@ export function branchName(task: TaskRecord): string {
 export function startProblem(task: TaskRecord, currentRepo: string, assigned = false): string | null {
   if (task.fm.type === 'epic') return `это эпик: в работу берут его задачи — kaiten list --epic ${refOf(task)}`;
   if (task.fm.status === 'done' || task.fm.status === 'cancelled') return `задача уже в ${STATUS_WORDS[task.fm.status]}`;
-  // Прямое поручение человека на эту задачу — то же решение, что разбор (владелец 30.09): из «Бэклога» можно.
-  const allowed = STARTABLE.includes(task.fm.status) || (assigned && task.fm.status === 'backlog');
+  // Прямое поручение человека на эту задачу — то же решение, что разбор (владелец 30.09, 05.10):
+  // из «Входящих» и «Бэклога» можно.
+  const allowed = STARTABLE.includes(task.fm.status) || (assigned && ASSIGNABLE.includes(task.fm.status));
   if (!allowed) {
     const how =
-      task.fm.status === 'backlog'
-        ? 'её переводят туда в Kaiten при разборе. Человек прямо поручил вам именно эту задачу — kaiten start ' + refOf(task) + ' --assigned'
+      ASSIGNABLE.includes(task.fm.status)
+        ?'её переводят туда в Kaiten при разборе. Человек прямо поручил вам именно эту задачу — kaiten start ' + refOf(task) + ' --assigned'
         : 'её переводят туда в Kaiten при разборе';
     return `задача во ${STATUS_WORDS[task.fm.status]}: в работу берут из «Готово к работе» — ${how}`;
   }

@@ -14,7 +14,8 @@
  * а ещё `cancelled`, `blocked` и `inbox` новой задаче. Переходы — те же, что
  * ограничения доски (28.09): «В работе» — из «Готово к работе»,
  * «Заблокировано», «Ревью»; «Ревью» — из «В работе»; «Сделано» — из «Ревью»;
- * отмена — из «Входящих», «Бэклога», «Готово к работе». Эпик так не
+ * отмена — из «Входящих», «Бэклога», «Готово к работе». По прямому
+ * поручению человека «В работе» — и из «Входящих», «Бэклога» (`ASSIGNABLE`). Эпик так не
  * закрывают: его закрывают в Kaiten, когда закрыты его задачи (решение 7).
  */
 
@@ -117,12 +118,26 @@ export const MOVES: Record<WorkStatus, readonly TaskStatus[]> = {
 };
 const MOVE_WORDS: Record<WorkStatus, string> = { 'in-progress': 'в работе', review: 'на ревью', done: 'сделана' };
 
+/**
+ * Откуда задачу берут в работу по прямому поручению человека («сделай
+ * задачу N», «заведи и приступай»): поручение и есть разбор. Задача без
+ * приоритета получает высший — её взяли сразу (владелец 05.10).
+ */
+export const ASSIGNABLE: readonly TaskStatus[] = ['inbox', 'backlog'];
+export const ASSIGNED_PRIORITY: Priority = 'p0';
+const ASSIGNED_FROM: Partial<Record<TaskStatus, string>> = { inbox: '«Входящих»', backlog: '«Бэклога»' };
+
+/** Приоритет, который задача получает при взятии в работу; `undefined` — не меняется. */
+export function assignedPriority(task: TaskRecord, assigned: boolean): Priority | undefined {
+  return assigned && ASSIGNABLE.includes(task.fm.status) && task.fm.priority === undefined ? ASSIGNED_PRIORITY : undefined;
+}
+
 /** Что мешает перевести задачу в статус работы; `null` — ничего (или она уже там). */
 export function moveProblem(task: TaskRecord, status: WorkStatus, assigned = false): string | null {
   if (task.fm.type === 'epic') return 'это эпик: его закрывают в Kaiten, когда закрыты его задачи';
   if (task.fm.status === status || MOVES[status].includes(task.fm.status)) return null;
-  // По прямому поручению человека задачу берут в работу и из «Бэклога» (владелец 30.09).
-  if (assigned && status === 'in-progress' && task.fm.status === 'backlog') return null;
+  // По прямому поручению человека задачу берут в работу и неразобранной (владелец 30.09, 05.10).
+  if (assigned && status === 'in-progress' && ASSIGNABLE.includes(task.fm.status)) return null;
   return `задача в статусе ${task.fm.status}: ${MOVE_WORDS[status]} — только из ${MOVES[status].join(', ')}`;
 }
 export const BLOCKABLE: readonly TaskStatus[] = ['inbox', 'backlog', 'ready', 'in-progress', 'review'];
@@ -176,7 +191,8 @@ function write(task: TaskRecord, fm: Frontmatter, body: string, ctx: OpContext, 
 // ── журнал задачи ────────────────────────────────────────────────────────
 
 /** Записи, которые пишут сами команды при смене статуса, — не записи о работе. */
-const AUTO_ENTRY_RE = /^(?:(?:в работе|на ревью|сделана)(?: \(из «Бэклога», по прямому поручению\))?(?::|$)|(?:заблокирована|отменена):)/;
+const ASSIGNED_NOTE = String.raw`(?: \(из «[^»]+», по прямому поручению[^)]*\))?`;
+const AUTO_ENTRY_RE = new RegExp(String.raw`^(?:(?:в работе|на ревью|сделана)${ASSIGNED_NOTE}(?::|$)|(?:заблокирована|отменена):)`);
 const ENTRY_RE = /^## \[\d{4}-\d{2}-\d{2}\][ \t]*(.*)$/;
 
 /**
@@ -190,7 +206,7 @@ export function hasWorkNote(log: string | null): boolean {
     const m = ENTRY_RE.exec(line);
     return m ? [m[1].trim()] : [];
   });
-  const started = heads.map((h) => /^в работе(?: \(из «Бэклога», по прямому поручению\))?(?::|$)/.test(h)).lastIndexOf(true);
+  const started = heads.map((h) => new RegExp(String.raw`^в работе${ASSIGNED_NOTE}(?::|$)`).test(h)).lastIndexOf(true);
   return heads.slice(started + 1).some((h) => !AUTO_ENTRY_RE.test(h));
 }
 
@@ -439,10 +455,13 @@ export function applyOp(op: Op, texts: TaskTexts, ctx: OpContext): OpResult {
       const problem = moveProblem(task, op.status, op.assigned === true);
       if (problem) return { error: problem };
       if (task.fm.status === op.status) return { changes: [], summary: `задача ${ref} уже ${MOVE_WORDS[op.status]}`, warnings: [] };
-      const fromBacklog = op.status === 'in-progress' && task.fm.status === 'backlog' ? ' (из «Бэклога», по прямому поручению)' : '';
-      const entry = `${MOVE_WORDS[op.status]}${fromBacklog}${op.note?.trim() ? `: ${op.note.trim()}` : ''}`;
+      const from = op.status === 'in-progress' ? ASSIGNED_FROM[task.fm.status] : undefined;
+      const priority = op.status === 'in-progress' ? assignedPriority(task, op.assigned === true) : undefined;
+      const assignedNote = from ? ` (из ${from}, по прямому поручению${priority ? `, приоритет ${priority}` : ''})` : '';
+      const entry = `${MOVE_WORDS[op.status]}${assignedNote}${op.note?.trim() ? `: ${op.note.trim()}` : ''}`;
       const target = op.status === 'done' ? `archive/${ctx.date.slice(0, 7)}/${task.slug}.md` : task.path;
-      const out = write(task, { ...task.fm, status: op.status, ...(op.branch ? { branch: op.branch } : {}) }, task.body, ctx, target);
+      const fm: Frontmatter = { ...task.fm, status: op.status, ...(op.branch ? { branch: op.branch } : {}), ...(priority ? { priority } : {}) };
+      const out = write(task, fm, task.body, ctx, target);
       if ('error' in out) return out;
       const changes: FileChange[] = [];
       // Сделанная задача переезжает в архив вместе с журналом (Q42).

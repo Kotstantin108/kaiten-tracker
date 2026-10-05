@@ -160,7 +160,11 @@ describe('статус — сначала карточка', { timeout: 30_000 }
       ...ctx,
       loaded: {
         ...ctx.loaded,
-        project: { ...ctx.loaded.project, ignoreCards: [123], mapping: { ...ctx.loaded.project.mapping, columns: { inbox: 101, blocked: 105, cancelled: 108 } } },
+        project: {
+          ...ctx.loaded.project,
+          ignoreCards: [123],
+          mapping: { ...ctx.loaded.project.mapping, columns: { inbox: 101, ready: 103, blocked: 105, cancelled: 108 }, priorityProperty: { id: 7, values: { p0: 70, p1: 71 } } },
+        },
       },
     } as Context;
     const task = loadTasks(withColumns).index.tasks.find((t) => t.slug === 'step');
@@ -181,6 +185,13 @@ describe('статус — сначала карточка', { timeout: 30_000 }
     const s = await setup(true);
     expect(await s.moveCardFirst(s.ctx, s.task, 'blocked', s.fake.client)).toBe('moved');
     expect(s.fake.cards.get(s.cardId)?.column_id).toBe(105);
+  });
+
+  it('приоритет — тем же запросом, остальные поля карточки не трогаем', async () => {
+    const s = await setup(true);
+    s.fake.cards.set(s.cardId, { ...s.fake.cards.get(s.cardId)!, properties: { id_2: [21] } });
+    expect(await s.moveCardFirst(s.ctx, s.task, 'ready', s.fake.client, 'p0')).toBe('moved');
+    expect(s.fake.cards.get(s.cardId)).toMatchObject({ column_id: 103, properties: { id_2: [21], id_7: [70] } });
   });
 
   it('ограничение доски — команда останавливается словами владельца', async () => {

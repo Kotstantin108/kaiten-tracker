@@ -16,6 +16,7 @@
 import { spawnSync } from 'node:child_process';
 
 import { branchName, startProblem } from './core/start.js';
+import { ASSIGNABLE, assignedPriority } from './core/task-ops.js';
 import { refOf, type TaskRecord } from './core/tasks-index.js';
 import { cardNotMovedNote, findTask, loadTasks, moveCardFirst, parse, printNotices, resolveContext, TASK_REF_HELP, UsageError } from './kaiten-cli.js';
 import { commit } from './kaiten-write.js';
@@ -28,12 +29,13 @@ export const START_HELP = `kaiten start <задача> — взять задач
 kaiten review — работа готова, kaiten done — влито в прод.
 
 В работу берут задачу из «Готово к работе», «Заблокировано» или «Ревью»
-(вернули на доработку); задачу в работе — продолжают. Задачу из «Бэклога»
-берут, только если человек прямо поручил именно её.
+(вернули на доработку); задачу в работе — продолжают. Задачу из «Входящих»
+или «Бэклога» берут, только если человек прямо поручил именно её — в том
+числе «заведи задачу и приступай». Задача без приоритета получает высший (p0).
 ${TASK_REF_HELP}
 
 Флаги:
-  --assigned          человек прямо поручил эту задачу: взять её и из «Бэклога»
+  --assigned          человек прямо поручил эту задачу: взять её и из «Входящих» или «Бэклога»
 
 Примеры:
   kaiten start PRJ-123
@@ -100,8 +102,10 @@ async function start(args: string[]): Promise<void> {
   }
   let card: Awaited<ReturnType<typeof moveCardFirst>>;
   try {
-    // Доска пускает «В работу» только из «Готово к работе»: задачу из «Бэклога» карточка проходит в два шага.
-    if (task.fm.status === 'backlog') await moveCardFirst(ctx, task, 'ready');
+    // Доска пускает «В работу» только из «Готово к работе»: неразобранную задачу карточка проходит в два шага,
+    // высший приоритет (если его не было) — с первым из них.
+    const priority = assignedPriority(task, assigned);
+    if (ASSIGNABLE.includes(task.fm.status)) await moveCardFirst(ctx, task, 'ready', undefined, priority);
     card = await moveCardFirst(ctx, task, 'in-progress');
   } catch (error) {
     // Ветка уже заведена — так и сказать, иначе человек решит, что не сделано ничего.

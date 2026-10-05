@@ -279,9 +279,23 @@ describe('в работу из «Бэклога» по прямому поруч
     expect(changes[1].text).toContain('в работе (из «Бэклога», по прямому поручению)');
   });
 
+  it('приоритет был — остаётся', () => {
+    const changes = ok(applyOp({ kind: 'move', id: ID, status: 'in-progress', assigned: true }, backlog(), CTX));
+    expect(fmOf(changes[0].text).priority).toBe('p1');
+  });
+
+  it('из «Входящих» («заведи и приступай») — тоже; без приоритета — высший', () => {
+    const inbox: TaskTexts = new Map([['active/webhook-timeout.md', task({ status: 'inbox', priority: undefined })]]);
+    expect('error' in applyOp({ kind: 'move', id: ID, status: 'in-progress' }, inbox, CTX)).toBe(true);
+    const changes = ok(applyOp({ kind: 'move', id: ID, status: 'in-progress', assigned: true }, inbox, CTX));
+    expect(fmOf(changes[0].text)).toMatchObject({ status: 'in-progress', priority: 'p0' });
+    expect(changes[1].text).toContain('в работе (из «Входящих», по прямому поручению, приоритет p0)');
+    expect(hasWorkNote(changes[1].text)).toBe(false);
+  });
+
   it('поручение не открывает остальные переходы', () => {
-    const inbox: TaskTexts = new Map([['active/webhook-timeout.md', task({ status: 'inbox' })]]);
-    expect('error' in applyOp({ kind: 'move', id: ID, status: 'in-progress', assigned: true }, inbox, CTX)).toBe(true);
+    const cancelled: TaskTexts = new Map([['active/webhook-timeout.md', task({ status: 'cancelled' })]]);
+    expect('error' in applyOp({ kind: 'move', id: ID, status: 'in-progress', assigned: true }, cancelled, CTX)).toBe(true);
     expect('error' in applyOp({ kind: 'move', id: ID, status: 'review', assigned: true }, backlog(), CTX)).toBe(true);
   });
 });

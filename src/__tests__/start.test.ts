@@ -52,11 +52,12 @@ describe('можно ли взять в работу', () => {
 
   it('что мешает — словами задачи', () => {
     expect(startProblem(task({ status: 'backlog' }), 'acme-app')).toContain('в работу берут из «Готово к работе»');
-    // Прямое поручение человека: из «Бэклога» можно, из «Входящих» — всё равно нет.
-    expect(startProblem(task({ status: 'backlog' }), 'acme-app')).toContain('--assigned');
-    expect(startProblem(task({ status: 'backlog' }), 'acme-app', true)).toBeNull();
-    expect(startProblem(task({ status: 'inbox' }), 'acme-app', true)).toContain('в работу берут из «Готово к работе»');
-    expect(startProblem(task({ status: 'inbox' }), 'acme-app', true)).not.toContain('--assigned');
+    // Прямое поручение человека: из «Бэклога» и «Входящих» можно, отказ подсказывает флаг.
+    for (const status of ['backlog', 'inbox'] as const) {
+      expect(startProblem(task({ status }), 'acme-app')).toContain('--assigned');
+      expect(startProblem(task({ status }), 'acme-app', true)).toBeNull();
+    }
+    expect(startProblem(task({ status: 'done' }), 'acme-app', true)).toBe('задача уже в «Сделано»');
     expect(startProblem(task({ status: 'done' }), 'acme-app')).toBe('задача уже в «Сделано»');
     expect(startProblem(task(), 'acme-site')).toBe('задача для репозитория acme-app, а вы в acme-site');
     // Без карточки (синхронизация выключена) — можно: ветка по имени задачи.

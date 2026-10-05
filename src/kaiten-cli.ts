@@ -13,7 +13,7 @@ import { parseArgs, type ParseArgsConfig } from 'node:util';
 import { z } from 'zod';
 
 import { loadTasksRepoConfig, projectFromTasksRepo, storeNameOf, TASKS_REPO_CONFIG, type LoadedProject, type People } from './config.js';
-import type { TaskStatus } from './core/schema.js';
+import type { Priority, TaskStatus } from './core/schema.js';
 import { buildIndex, belongsToProject, resolveTask, type TaskIndex, type TaskRecord } from './core/tasks-index.js';
 import { localCopyDir, loadSettings, PROJECT_FILE, readProjectFile, type KaitenSettings } from './kaiten-context.js';
 import { formatProblems } from './kaiten-format.js';
@@ -310,8 +310,17 @@ export async function syncWithKaiten(ctx: Context, client?: KaitenClient, onLock
  * `'off'` — карточка есть, но синхронизация выключена: статус меняется только в
  * файле, а при включении синхронизации сверка вернёт в файл колонку карточки.
  * Команда говорит об этом человеку (`cardNotMovedNote`), а не молчит.
+ *
+ * `priority` — тем же запросом поставить карточке приоритет (`start --assigned`
+ * для задачи без приоритета).
  */
-export async function moveCardFirst(ctx: Context, task: TaskRecord, status: TaskStatus, client?: KaitenClient): Promise<'moved' | 'off' | 'none'> {
+export async function moveCardFirst(
+  ctx: Context,
+  task: TaskRecord,
+  status: TaskStatus,
+  client?: KaitenClient,
+  priority?: Priority,
+): Promise<'moved' | 'off' | 'none'> {
   const current = settings();
   const cardId = task.fm.tracker !== undefined && /^\d+$/.test(task.fm.tracker) ? Number(task.fm.tracker) : null;
   const column = ctx.loaded.project.mapping?.columns[status];
@@ -321,7 +330,10 @@ export async function moveCardFirst(ctx: Context, task: TaskRecord, status: Task
   if (!login && !client) throw new UsageError('Не настроен вход в Kaiten: kaiten.domain и kaiten.token в настройках kaiten.', 2);
   const kaiten = client ?? new KaitenClient({ domain: login?.domain ?? '', token: login?.token ?? '' });
   try {
-    await kaiten.updateCard(cardId, { column_id: column });
+    const priorityProperty = ctx.loaded.project.mapping?.priorityProperty;
+    const value = priority !== undefined ? priorityProperty?.values[priority] : undefined;
+    const properties = priorityProperty && value !== undefined ? { [`id_${priorityProperty.id}`]: [value] } : undefined;
+    await kaiten.updateCard(cardId, { column_id: column, ...(properties ? { properties } : {}) });
   } catch (error) {
     throw new UsageError(`Не записано: Kaiten не разрешил — ${apiErrorText(error)}`, 1);
   }
