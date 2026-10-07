@@ -261,8 +261,14 @@ export function createFields(task: TaskRecord, mapping: ConfigMapping, defaultTe
 /** Сколько закрытая карточка стоит в «Сделано»/«Отменено», прежде чем уйти в «Архив» (владелец 07.10). */
 export const ARCHIVE_AFTER_DAYS = 30;
 
-/** Дорожка продукта задачи; продукта без дорожки и эпика — дорожка по умолчанию. */
+/**
+ * Дорожка продукта задачи; продукта без дорожки и эпика — дорожка по
+ * умолчанию. Эпик объединяет задачи и не принадлежит дорожке продукта, даже
+ * если у него есть `repo`; к тому же ограничение «эпик в „Сделано“ — только с
+ * закрытыми дочерними» Kaiten применяет и к смене дорожки (живьём 07.10).
+ */
 export function productLane(task: TaskRecord, mapping: ConfigMapping): number | undefined {
+  if (task.fm.type === 'epic') return mapping.laneId;
   return (task.fm.repo !== undefined ? mapping.repoLanes?.[task.fm.repo] : undefined) ?? mapping.laneId;
 }
 

@@ -396,10 +396,13 @@ describe('дорожки: продукт и «Архив»', () => {
     expect(manual.lane()).toBe(42);
   });
 
-  it('заведённая до дорожек (в дорожке по умолчанию) — в дорожку продукта', async () => {
+  it('заведённая до дорожек (в дорожке по умолчанию) — в дорожку продукта; эпик с repo — остаётся', async () => {
     const { w, lane } = laneWorld({}, { lane_id: 20, column_id: 102 });
     await w.sync({ mapping: LANES, now: NOW });
     expect(lane()).toBe(41);
+    const epic = laneWorld({ type: 'epic' }, { lane_id: 20, column_id: 107, column_changed_at: DAYS_AGO(2) });
+    await epic.w.sync({ mapping: LANES, now: NOW });
+    expect(epic.lane()).toBe(20);
   });
 
   it('без дорожек в маппинге — карточку не двигаем', async () => {
