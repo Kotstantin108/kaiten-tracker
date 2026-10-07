@@ -274,7 +274,9 @@ export function productLane(task: TaskRecord, mapping: ConfigMapping): number | 
  *   · закрыта больше `ARCHIVE_AFTER_DAYS` дней назад — в «Архив»;
  *   · открыта снова, а лежит в «Архиве», — в дорожку продукта;
  *   · сменился продукт (поле «Репозиторий» расходится с файлом) — в дорожку
- *     нового продукта, если карточка не в «Архиве».
+ *     нового продукта, если карточка не в «Архиве»;
+ *   · лежит в дорожке по умолчанию, а у продукта своя, — в неё: так
+ *     раскладываются карточки, заведённые до дорожек.
  */
 export function laneMove(task: TaskRecord, card: CardView, mapping: ConfigMapping, repoChanged: boolean, now: number): number | undefined {
   if (card.laneId === undefined) return undefined;
@@ -286,7 +288,7 @@ export function laneMove(task: TaskRecord, card: CardView, mapping: ConfigMappin
   if (archive !== undefined && closed && card.columnChangedAt !== undefined && now - Date.parse(card.columnChangedAt) > ARCHIVE_AFTER_DAYS * 86_400_000) {
     target = archive;
   } else if (inArchive && !closed) target = productLane(task, mapping);
-  else if (repoChanged && !inArchive) target = productLane(task, mapping);
+  else if ((repoChanged || card.laneId === mapping.laneId) && !inArchive) target = productLane(task, mapping);
   return target !== undefined && target !== card.laneId ? target : undefined;
 }
 

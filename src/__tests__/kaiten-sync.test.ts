@@ -396,6 +396,12 @@ describe('дорожки: продукт и «Архив»', () => {
     expect(manual.lane()).toBe(42);
   });
 
+  it('заведённая до дорожек (в дорожке по умолчанию) — в дорожку продукта', async () => {
+    const { w, lane } = laneWorld({}, { lane_id: 20, column_id: 102 });
+    await w.sync({ mapping: LANES, now: NOW });
+    expect(lane()).toBe(41);
+  });
+
   it('без дорожек в маппинге — карточку не двигаем', async () => {
     const { w, lane } = laneWorld({ status: 'done' }, { lane_id: 20, column_id: 107, column_changed_at: DAYS_AGO(90) });
     await w.sync({ now: NOW });
