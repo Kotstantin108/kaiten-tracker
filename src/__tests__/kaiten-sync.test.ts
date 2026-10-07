@@ -337,3 +337,68 @@ describe('длинное описание', () => {
     expect(card.description).not.toMatch(/Абзац \d+: текст $/m);
   });
 });
+
+describe('дорожки: продукт и «Архив»', () => {
+  const LANES: ConfigMapping = { ...MAPPING, repoLanes: { 'acme-app': 41, 'acme-site': 42 }, archiveLaneId: 49 };
+  const NOW = Date.parse('2026-10-07T12:00:00.000Z');
+  const DAYS_AGO = (n: number): string => new Date(NOW - n * 86_400_000).toISOString();
+
+  function laneWorld(fm: Partial<Frontmatter>, card: { lane_id: number; column_id: number; column_changed_at?: string; repo?: number }) {
+    const [path, text] = task('active/lane.md', { tracker: '600', ...fm });
+    const w = world([[path, text]]);
+    seedCard(w.fake, {
+      id: 600,
+      title: 'Сделать задачу',
+      board_id: BOARD,
+      lane_id: card.lane_id,
+      column_id: card.column_id,
+      ...(card.column_changed_at ? { column_changed_at: card.column_changed_at } : {}),
+      properties: { id_4: 'Коротко для фаундера.', id_2: [card.repo ?? 21] },
+    });
+    return { w, lane: () => w.fake.cards.get(600)?.lane_id };
+  }
+
+  it('новая карточка — в дорожке своего продукта; эпик — в дорожке по умолчанию', async () => {
+    const w = world([task('active/site.md', { repo: 'acme-site', created_via: 'human' }), task('active/epic.md', { type: 'epic', repo: undefined, created_via: 'human' })]);
+    await w.sync({ mapping: LANES, now: NOW });
+    const lanes = [...w.fake.cards.values()].map((c) => [c.title, c.lane_id]);
+    expect(lanes).toEqual([
+      ['Сделать задачу', 20],
+      ['Сделать задачу', 42],
+    ].sort((a, b) => Number(a[1]) - Number(b[1])));
+  });
+
+  it('закрыта больше месяца назад — в «Архив», поле «Репозиторий» остаётся', async () => {
+    const { w, lane } = laneWorld({ status: 'done' }, { lane_id: 41, column_id: 107, column_changed_at: DAYS_AGO(31) });
+    await w.sync({ mapping: LANES, now: NOW });
+    expect(lane()).toBe(49);
+    expect(w.fake.cards.get(600)?.properties.id_2).toEqual([21]);
+  });
+
+  it('закрыта недавно — остаётся в дорожке продукта', async () => {
+    const { w, lane } = laneWorld({ status: 'cancelled' }, { lane_id: 41, column_id: 108, column_changed_at: DAYS_AGO(5) });
+    await w.sync({ mapping: LANES, now: NOW });
+    expect(lane()).toBe(41);
+  });
+
+  it('открыта снова, а лежит в «Архиве», — обратно в дорожку продукта', async () => {
+    const { w, lane } = laneWorld({ status: 'in-progress' }, { lane_id: 49, column_id: 104, column_changed_at: DAYS_AGO(1) });
+    await w.sync({ mapping: LANES, now: NOW });
+    expect(lane()).toBe(41);
+  });
+
+  it('сменился продукт — новая дорожка; ручной перенос без смены продукта не откатываем', async () => {
+    const moved = laneWorld({ repo: 'acme-site' }, { lane_id: 41, column_id: 102, repo: 21 });
+    await moved.w.sync({ mapping: LANES, now: NOW });
+    expect(moved.lane()).toBe(42);
+    const manual = laneWorld({}, { lane_id: 42, column_id: 102 });
+    await manual.w.sync({ mapping: LANES, now: NOW });
+    expect(manual.lane()).toBe(42);
+  });
+
+  it('без дорожек в маппинге — карточку не двигаем', async () => {
+    const { w, lane } = laneWorld({ status: 'done' }, { lane_id: 20, column_id: 107, column_changed_at: DAYS_AGO(90) });
+    await w.sync({ now: NOW });
+    expect(lane()).toBe(20);
+  });
+});

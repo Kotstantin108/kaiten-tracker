@@ -9,8 +9,10 @@
  * скрипт делает то же одним прогоном и повторяем.
  *
  * БЕЗОПАСНОСТЬ ПО УМОЛЧАНИЮ. Без `--apply` — только чтение и план. Существующее
- * находится по имени и не создаётся второй раз; ничего не удаляется и не
- * переименовывается. Повторный прогон после `--apply` даёт пустой план.
+ * находится по имени и не создаётся второй раз; ничего не удаляется.
+ * Переименовывается и переносится только пространство разработки — когда в
+ * `kaiten.json` ему задали новое имя или папку (находится по доске из прошлого
+ * `setup`). Повторный прогон после `--apply` даёт пустой план.
  *
  * ФЛАГИ
  *   --tasks <папка>    рабочая копия репозитория задач проекта (с kaiten.json)
@@ -32,6 +34,7 @@ import {
   findSelect,
   findCardType,
   findSpace,
+  findFolder,
   findText,
   typeRequires,
   typeSuggests,
@@ -54,6 +57,11 @@ function desiredFor(loaded: LoadedProject): DesiredStructure {
     repoLabels: project.repos.map((r) => r.label),
     teams: config.teams,
     retire: project.retireFields,
+    folder: project.kaiten.folder,
+    knownBoardId: project.mapping?.boardId,
+    repoLanes: Object.fromEntries(project.repos.flatMap((r) => (r.lane ? [[r.name, r.lane]] : []))),
+    archiveLane: project.kaiten.archiveLane,
+    departments: project.kaiten.departments,
   });
 }
 
@@ -92,8 +100,18 @@ async function readCurrent(client: KaitenClient, desired: DesiredStructure): Pro
 
 function describe(action: SetupAction): string {
   switch (action.kind) {
+    case 'create-folder':
+      return `папка «${action.title}» (пространство верхнего уровня)`;
+    case 'move-space': {
+      const parts = [action.from !== action.title ? `переименовать в «${action.title}»` : '', action.folder ? `положить в папку «${action.folder}»` : ''].filter(Boolean);
+      return `пространство «${action.from}» (${action.id}): ${parts.join(', ')} — доска, карточки и ограничения остаются`;
+    }
     case 'create-space':
       return `пространство «${action.title}»`;
+    case 'create-lane':
+      return `дорожка «${action.title}»`;
+    case 'create-department':
+      return `пространство отдела «${action.space}» в папке, доска «${action.board}»: ${action.columns.map((c) => c.title).join(' → ')}`;
     case 'create-board':
       return `доска «${action.title}» с колонками: ${action.columns.map((c) => `${c.title} [${c.type}]`).join(', ')}`;
     case 'create-column':
@@ -135,10 +153,38 @@ async function apply(client: KaitenClient, actions: SetupAction[], desired: Desi
   for (const action of actions) {
     console.log(`  + ${describe(action)}`);
     switch (action.kind) {
-      case 'create-space':
+      case 'create-folder':
         await client.createSpace(action.title);
         current = await readCurrent(client, desired);
         break;
+      case 'move-space': {
+        const folder = findFolder(current, desired);
+        if (desired.folder && !folder?.uid) throw new Error(`Папка «${desired.folder}» не нашлась`);
+        const saved = await client.updateSpace(action.id, { title: action.title, ...(folder?.uid ? { parent_entity_uid: folder.uid } : {}) });
+        if (saved.title !== action.title || (folder?.uid && saved.parent_entity_uid !== folder.uid)) throw new Error(`Пространство «${action.from}» не переименовалось или не переехало в папку`);
+        current = await readCurrent(client, desired);
+        break;
+      }
+      case 'create-space':
+        await client.createSpace(action.title, findFolder(current, desired)?.uid);
+        current = await readCurrent(client, desired);
+        break;
+      case 'create-lane': {
+        const board = findBoard(current, desired);
+        if (!board) throw new Error(`Доска «${desired.board}» не найдена`);
+        await client.createLane(board.id, { title: action.title, sort_order: action.sortOrder });
+        break;
+      }
+      case 'create-department': {
+        const folder = findFolder(current, desired);
+        if (!folder?.uid) throw new Error(`Папка «${desired.folder ?? ''}» не нашлась`);
+        await client.createSpace(action.space, folder.uid);
+        current = await readCurrent(client, desired);
+        const space = current.spaces.find((s) => s.title === action.space && s.parent_entity_uid === folder.uid);
+        if (!space) throw new Error(`Пространство отдела «${action.space}» не нашлось после создания`);
+        await client.createBoard(space.id, action.board, action.columns);
+        break;
+      }
       case 'create-board': {
         const space = findSpace(current, desired);
         if (!space) throw new Error(`Пространство «${desired.space}» не нашлось после создания`);

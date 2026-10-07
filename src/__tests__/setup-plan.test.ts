@@ -6,7 +6,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { kaitenTemplate } from '../core/skeleton.js';
-import { buildMapping, DESIRED, planSetup, withSelectValues, type CurrentStructure, type DesiredStructure } from '../setup-plan.js';
+import { buildMapping, DEPARTMENTS, DESIRED, desiredForProject, planSetup, withSelectValues, type CurrentStructure, type DesiredStructure } from '../setup-plan.js';
 
 /** Схема без «Сути» и шаблонов — для тестов полей-выборов; «Суть» проверяется отдельно. */
 const selectsOnly = (d: DesiredStructure): DesiredStructure => ({ ...d, summary: null, templates: false, suggested: [] });
@@ -169,5 +169,71 @@ describe('шаблоны описаний и обязательная «Суть
     const current = complete();
     current.properties.push({ id: 400, uid: 'uid-sut', name: 'Суть', type: 'string' });
     expect(buildMapping(current, full).summaryProperty).toEqual({ id: 400 });
+  });
+});
+
+describe('папка, дорожки и отделы', () => {
+  const nested: DesiredStructure = {
+    ...desired,
+    space: 'Acme (разработка)',
+    folder: 'Acme',
+    knownBoardId: 20,
+    lanes: { repos: { 'acme-app': 'Приложение', 'acme-site': 'Сайт' }, archive: 'Архив' },
+    departments: DEPARTMENTS.filter((d) => d.key === 'marketing' || d.key === 'hr'),
+  };
+
+  /** Аккаунт до переезда: пространство разработки называется как папка и лежит наверху. */
+  function before(): CurrentStructure {
+    const current = complete();
+    current.spaces = [...empty.spaces, { id: 10, uid: 'uid-dev', title: 'Acme', parent_entity_uid: null, boards: [{ id: 20 }] }];
+    current.boards[0].lanes = [{ id: 30, title: '', sort_order: 1 }, { id: 31, title: 'Приложение', sort_order: 2 }];
+    return current;
+  }
+
+  it('до переезда: папка, переименовать и перенести, недостающие дорожки, отделы', () => {
+    const plan = planSetup(before(), nested);
+    expect(plan.actions).toEqual([
+      { kind: 'create-folder', title: 'Acme' },
+      { kind: 'move-space', id: 10, from: 'Acme', title: 'Acme (разработка)', folder: 'Acme' },
+      { kind: 'create-lane', title: 'Сайт', sortOrder: 3 },
+      { kind: 'create-lane', title: 'Архив', sortOrder: 4 },
+      { kind: 'create-department', space: 'Маркетинг', board: 'Задачи', columns: DEPARTMENTS[0].columns.map((c) => ({ ...c })) },
+      { kind: 'create-department', space: 'HR', board: 'Найм', columns: DEPARTMENTS[1].columns.map((c) => ({ ...c })) },
+    ]);
+  });
+
+  /** После `--apply`. */
+  function after(): CurrentStructure {
+    const current = before();
+    current.spaces = [
+      ...empty.spaces,
+      { id: 9, uid: 'uid-folder', title: 'Acme', parent_entity_uid: null },
+      { id: 10, uid: 'uid-dev', title: 'Acme (разработка)', parent_entity_uid: 'uid-folder', boards: [{ id: 20 }] },
+      { id: 11, uid: 'uid-m', title: 'Маркетинг', parent_entity_uid: 'uid-folder' },
+      { id: 12, uid: 'uid-h', title: 'HR', parent_entity_uid: 'uid-folder' },
+      // Одноимённый отдел в чужой папке — не наш.
+      { id: 13, uid: 'uid-x', title: 'Маркетинг', parent_entity_uid: 'uid-other' },
+    ];
+    current.boards[0].lanes.push({ id: 32, title: 'Сайт', sort_order: 3 }, { id: 33, title: 'Архив', sort_order: 4 });
+    return current;
+  }
+
+  it('после --apply — пустой план', () => {
+    expect(planSetup(after(), nested).actions).toEqual([]);
+  });
+
+  it('маппинг: дорожки продуктов, «Архив» и дорожка по умолчанию', () => {
+    const mapping = buildMapping(after(), nested);
+    expect(mapping).toMatchObject({ laneId: 30, repoLanes: { 'acme-app': 31, 'acme-site': 32 }, archiveLaneId: 33 });
+  });
+
+  it('несколько дорожек, а в схеме их нет, — дорожку по умолчанию не угадываем', () => {
+    expect(buildMapping(after(), desired).laneId).toBeUndefined();
+  });
+
+  it('конфиг: неизвестный отдел и отделы без папки — ошибка', () => {
+    const base = { space: 'Acme', board: 'Задачи', repoField: 'Репозиторий', repoLabels: [], teams: [] };
+    expect(() => desiredForProject({ ...base, folder: 'Acme', departments: ['legal'] })).toThrow(/Нет шаблона отдела: legal/);
+    expect(() => desiredForProject({ ...base, departments: ['hr'] })).toThrow(/kaiten.folder/);
   });
 });

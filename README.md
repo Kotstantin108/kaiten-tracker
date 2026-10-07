@@ -73,9 +73,16 @@ kaiten doctor --offline  # без проверок, которым нужна с
    {
      "project": "acme",
      "title": "Acme",
-     "kaiten": { "space": "Acme", "board": "Задачи", "repoField": "Репозиторий Acme" },
+     "kaiten": {
+       "space": "Acme (разработка)", "board": "Задачи", "repoField": "Репозиторий Acme",
+       "folder": "Acme", "departments": ["marketing", "hr", "sales", "finance", "support", "admin"],
+       "archiveLane": "Архив"
+     },
      "tasksRepo": { "url": "https://github.com/acme-org/acme-tasks.git" },
-     "repos": [{ "name": "acme-app", "label": "Acme-app" }, { "name": "acme-site", "label": "Acme-site" }],
+     "repos": [
+       { "name": "acme-app", "label": "Acme-app", "lane": "Приложение" },
+       { "name": "acme-site", "label": "Acme-site", "lane": "Сайт" }
+     ],
      "teams": ["Разработка", "Дизайн"],
      "defaultTeam": "Разработка",
      "people": { "people": { "alice": { "name": "Алиса" } }, "emails": { "alice@example.com": "alice" } }
@@ -92,6 +99,16 @@ kaiten doctor --offline  # без проверок, которым нужна с
 
    Закоммитьте и отправьте `kaiten.json`. Типы и поля компании заводит только
    администратор компании Kaiten.
+
+   Необязательное в `kaiten`: `folder` — пространство-«папка», в которое
+   кладётся пространство разработки (уже заведённое по прошлому `setup`
+   переименовывается и переносится, доска и карточки остаются);
+   `departments` — пространства отделов в папке из шаблонов (`marketing`,
+   `hr`, `sales`, `finance`, `support`, `admin`), заведённые план больше не
+   трогает. `repos[].lane` — дорожка продукта на доске, `archiveLane` —
+   дорожка, куда синхронизация убирает карточки, закрытые больше месяца
+   назад; продукт по-прежнему хранит поле «Репозиторий». Дорожка — только
+   раскладка: ручной перенос между дорожками синхронизация не откатывает.
 
 3. Подключить репозиторий кода — `.kaiten`, копия скилла и блок правил в
    `CLAUDE.md` (или `AGENTS.md`):

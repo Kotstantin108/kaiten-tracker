@@ -61,7 +61,104 @@ export interface DesiredStructure {
   suggested: readonly string[];
   /** Поля, которые надо отключить и переименовать (данные на карточках остаются). */
   retire: readonly string[];
+  /** Пространство-«папка» вокруг пространства разработки; `undefined` — без папки. */
+  folder?: string;
+  /**
+   * Доска проекта из прошлого `setup`: по ней находится пространство, которое
+   * ещё называется по-старому, — план переименует его, а не заведёт второе.
+   */
+  knownBoardId?: number;
+  /** Дорожки доски: продукта — по имени репозитория, «Архив». */
+  lanes: { repos: Record<string, string>; archive?: string };
+  /** Пространства отделов в папке. */
+  departments: readonly Department[];
 }
+
+/** Пространство отдела: доска со своими колонками. type: 1 очередь, 2 в работе, 3 готово. */
+export interface Department {
+  key: string;
+  space: string;
+  board: string;
+  columns: ReadonlyArray<{ title: string; type: 1 | 2 | 3 }>;
+}
+
+/**
+ * Шаблоны пространств отделов (решение владельца 07.10): типичный набор
+ * фирмы рядом с разработкой. Проект выбирает нужные ключами в
+ * `kaiten.departments`. Заведённое пространство отдела план больше не
+ * трогает — дальше его настраивают люди.
+ */
+export const DEPARTMENTS: readonly Department[] = [
+  {
+    key: 'marketing',
+    space: 'Маркетинг',
+    board: 'Задачи',
+    columns: [
+      { title: 'Идеи', type: 1 },
+      { title: 'План', type: 1 },
+      { title: 'В работе', type: 2 },
+      { title: 'Согласование', type: 2 },
+      { title: 'Опубликовано', type: 3 },
+    ],
+  },
+  {
+    key: 'hr',
+    space: 'HR',
+    board: 'Найм',
+    columns: [
+      { title: 'Заявка на вакансию', type: 1 },
+      { title: 'Поиск', type: 2 },
+      { title: 'Собеседования', type: 2 },
+      { title: 'Оффер', type: 2 },
+      { title: 'Вышел', type: 3 },
+    ],
+  },
+  {
+    key: 'sales',
+    space: 'Продажи',
+    board: 'Сделки',
+    columns: [
+      { title: 'Лид', type: 1 },
+      { title: 'Квалификация', type: 2 },
+      { title: 'КП', type: 2 },
+      { title: 'Переговоры', type: 2 },
+      { title: 'Сделка', type: 3 },
+      { title: 'Отказ', type: 3 },
+    ],
+  },
+  {
+    key: 'finance',
+    space: 'Финансы',
+    board: 'Платежи',
+    columns: [
+      { title: 'Входящие счета', type: 1 },
+      { title: 'Согласование', type: 2 },
+      { title: 'К оплате', type: 2 },
+      { title: 'Оплачено', type: 3 },
+    ],
+  },
+  {
+    key: 'support',
+    space: 'Поддержка',
+    board: 'Обращения',
+    columns: [
+      { title: 'Новые', type: 1 },
+      { title: 'В работе', type: 2 },
+      { title: 'Ждём клиента', type: 2 },
+      { title: 'Решено', type: 3 },
+    ],
+  },
+  {
+    key: 'admin',
+    space: 'Администрирование',
+    board: 'Задачи',
+    columns: [
+      { title: 'Входящие', type: 1 },
+      { title: 'В работе', type: 2 },
+      { title: 'Готово', type: 3 },
+    ],
+  },
+];
 
 export const DESIRED: DesiredStructure = {
   space: 'Acme',
@@ -94,6 +191,8 @@ export const DESIRED: DesiredStructure = {
   templates: true,
   suggested: ['due_date'],
   retire: [],
+  lanes: { repos: {} },
+  departments: [],
 };
 
 /**
@@ -108,7 +207,15 @@ export function desiredForProject(input: {
   repoLabels: readonly string[];
   teams: readonly string[];
   retire?: readonly string[];
+  folder?: string;
+  knownBoardId?: number;
+  repoLanes?: Record<string, string>;
+  archiveLane?: string;
+  departments?: readonly string[];
 }): DesiredStructure {
+  const unknown = (input.departments ?? []).filter((key) => !DEPARTMENTS.some((d) => d.key === key));
+  if (unknown.length > 0) throw new Error(`Нет шаблона отдела: ${unknown.join(', ')} (есть: ${DEPARTMENTS.map((d) => d.key).join(', ')})`);
+  if ((input.departments ?? []).length > 0 && !input.folder) throw new Error('Пространства отделов кладутся в папку — задайте kaiten.folder');
   return {
     ...DESIRED,
     space: input.space,
@@ -119,6 +226,10 @@ export function desiredForProject(input: {
       team: { name: DESIRED.selects.team.name, values: input.teams },
     },
     retire: input.retire ?? [],
+    ...(input.folder ? { folder: input.folder } : {}),
+    ...(input.knownBoardId !== undefined ? { knownBoardId: input.knownBoardId } : {}),
+    lanes: { repos: input.repoLanes ?? {}, ...(input.archiveLane ? { archive: input.archiveLane } : {}) },
+    departments: DEPARTMENTS.filter((d) => (input.departments ?? []).includes(d.key)),
   };
 }
 
@@ -144,7 +255,12 @@ export interface CurrentStructure {
 }
 
 export type SetupAction =
+  | { kind: 'create-folder'; title: string }
+  /** Пространство разработки: переименовать и/или положить в папку. */
+  | { kind: 'move-space'; id: number; from: string; title: string; folder?: string }
   | { kind: 'create-space'; title: string }
+  | { kind: 'create-lane'; title: string; sortOrder: number }
+  | { kind: 'create-department'; space: string; board: string; columns: Array<{ title: string; type: 1 | 2 | 3 }> }
   | { kind: 'create-board'; title: string; columns: Array<{ title: string; type: 1 | 2 | 3 }> }
   | { kind: 'create-column'; title: string; type: 1 | 2 | 3; sortOrder: number }
   | { kind: 'create-card-type'; name: string; letter: string; color: number }
@@ -166,9 +282,32 @@ export interface SetupPlan {
 const same = (a: string, b: string) => a.trim().toLowerCase() === b.trim().toLowerCase();
 const alive = <T extends { archived?: boolean; condition?: string }>(x: T) => x.archived !== true && (x.condition ?? 'active') === 'active';
 
+/**
+ * Пространство разработки: по имени, а если его ещё не переименовали — по
+ * доске проекта из прошлого `setup`.
+ */
 export function findSpace(current: CurrentStructure, desired: DesiredStructure): Space | undefined {
-  return current.spaces.filter(alive).find((s) => same(s.title, desired.space));
+  const spaces = current.spaces.filter(alive);
+  return (
+    spaces.find((s) => same(s.title, desired.space)) ??
+    (desired.knownBoardId === undefined ? undefined : spaces.find((s) => (s.boards ?? []).some((b) => b.id === desired.knownBoardId)))
+  );
 }
+
+/** Папка: пространство с этим именем на верхнем уровне — не само пространство разработки. */
+export function findFolder(current: CurrentStructure, desired: DesiredStructure): Space | undefined {
+  if (!desired.folder) return undefined;
+  const dev = findSpace(current, desired);
+  return current.spaces.filter(alive).find((s) => same(s.title, desired.folder ?? '') && !s.parent_entity_uid && s.id !== dev?.id);
+}
+
+/** Пространство отдела — внутри папки. */
+export function findDepartment(current: CurrentStructure, folder: Space | undefined, department: Department): Space | undefined {
+  if (!folder?.uid) return undefined;
+  return current.spaces.filter(alive).find((s) => same(s.title, department.space) && s.parent_entity_uid === folder.uid);
+}
+
+const laneTitle = (lane: { title?: string | null }): string => lane.title ?? '';
 
 export function findBoard(current: CurrentStructure, desired: DesiredStructure): Board | undefined {
   return current.boards.find((b) => same(b.title, desired.board));
@@ -213,9 +352,20 @@ export function planSetup(current: CurrentStructure, desired: DesiredStructure =
   const reused: string[] = [];
   const extra: string[] = [];
 
+  const folder = findFolder(current, desired);
+  if (desired.folder) {
+    if (!folder) actions.push({ kind: 'create-folder', title: desired.folder });
+    else reused.push(`папка «${folder.title}» (${folder.id})`);
+  }
+
   const space = findSpace(current, desired);
   if (!space) actions.push({ kind: 'create-space', title: desired.space });
-  else reused.push(`пространство «${space.title}» (${space.id})`);
+  else {
+    const rename = !same(space.title, desired.space);
+    const move = desired.folder !== undefined && (!folder?.uid || space.parent_entity_uid !== folder.uid);
+    if (rename || move) actions.push({ kind: 'move-space', id: space.id, from: space.title, title: desired.space, ...(desired.folder ? { folder: desired.folder } : {}) });
+    else reused.push(`пространство «${space.title}» (${space.id})`);
+  }
 
   const board = space ? findBoard(current, desired) : undefined;
   if (!board) {
@@ -232,6 +382,14 @@ export function planSetup(current: CurrentStructure, desired: DesiredStructure =
     for (const c of board.columns) {
       if (!desired.columns.some((d) => same(d.title, c.title))) extra.push(`колонка «${c.title}» (${c.id})`);
     }
+  }
+  // Дорожки продуктов и «Архив» — по имени; новая доска приходит с одной дорожкой по умолчанию.
+  const lanes = board?.lanes ?? [];
+  let nextLane = Math.max(0, ...lanes.map((l) => l.sort_order ?? 0));
+  for (const title of wantedLanes(desired)) {
+    const found = lanes.find((l) => same(laneTitle(l), title));
+    if (found) reused.push(`дорожка «${title}» (${found.id})`);
+    else actions.push({ kind: 'create-lane', title, sortOrder: ++nextLane });
   }
 
   for (const type of desired.types) {
@@ -288,7 +446,19 @@ export function planSetup(current: CurrentStructure, desired: DesiredStructure =
     }
   }
 
+  for (const department of desired.departments) {
+    const found = findDepartment(current, folder, department);
+    if (found) reused.push(`пространство отдела «${found.title}» (${found.id})`);
+    else actions.push({ kind: 'create-department', space: department.space, board: department.board, columns: department.columns.map((c) => ({ ...c })) });
+  }
+
   return { actions, reused, extra };
+}
+
+/** Дорожки доски по схеме: продуктов (без повторов) и «Архив». */
+export function wantedLanes(desired: DesiredStructure): string[] {
+  const titles = [...Object.values(desired.lanes.repos), ...(desired.lanes.archive ? [desired.lanes.archive] : [])];
+  return titles.filter((t, i) => titles.findIndex((o) => same(o, t)) === i);
 }
 
 /** Поле-выбор в маппинге: id поля и id вариантов по значению. */
@@ -301,6 +471,8 @@ export interface SelectMapping {
 export interface KaitenMapping {
   boardId: number;
   laneId?: number;
+  repoLanes?: Record<string, number>;
+  archiveLaneId?: number;
   columns: Record<string, number>;
   types: Record<string, number>;
   priorityProperty: SelectMapping;
@@ -354,16 +526,35 @@ export function buildMapping(current: CurrentStructure, desired: DesiredStructur
   const summaryProperty = desired.summary ? findText(current, desired.summary.name) : undefined;
   if (desired.summary && !summaryProperty) missing.push(`поле «${desired.summary.name}»`);
 
+  const laneOf = (title: string): number | undefined => {
+    const found = board?.lanes.find((l) => same(laneTitle(l), title));
+    if (!found) missing.push(`дорожка «${title}»`);
+    return found?.id;
+  };
+  const repoLanes: Record<string, number> = {};
+  for (const [repo, title] of Object.entries(desired.lanes.repos)) {
+    const id = laneOf(title);
+    if (id !== undefined) repoLanes[repo] = id;
+  }
+  const archiveLaneId = desired.lanes.archive ? laneOf(desired.lanes.archive) : undefined;
+
   if (missing.length > 0 || !board || !selects.priority) {
     throw new Error(`В аккаунте не хватает: ${missing.join(', ') || 'поля приоритета'}`);
   }
 
-  // Одна дорожка на доске — её и берём; несколько — выбирать владельцу, не угадываем.
-  const laneId = board.lanes.length === 1 ? board.lanes[0].id : undefined;
+  // Дорожка по умолчанию — первая, которая не продукта и не «Архив»: в неё эпики и задачи без своей дорожки.
+  // Дорожки в схеме не заданы, а на доске их несколько — выбирать владельцу, не угадываем.
+  const special = new Set([...Object.values(repoLanes), ...(archiveLaneId === undefined ? [] : [archiveLaneId])]);
+  const laneId =
+    special.size === 0 && board.lanes.length > 1
+      ? undefined
+      : [...board.lanes].sort((a, b) => (a.sort_order ?? 0) - (b.sort_order ?? 0)).find((l) => !special.has(l.id))?.id;
 
   return {
     boardId: board.id,
     ...(laneId === undefined ? {} : { laneId }),
+    ...(Object.keys(repoLanes).length > 0 ? { repoLanes } : {}),
+    ...(archiveLaneId === undefined ? {} : { archiveLaneId }),
     columns,
     types,
     priorityProperty: selects.priority,

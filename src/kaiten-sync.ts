@@ -87,6 +87,7 @@ export function toCardView(card: Card): CardView {
     dueDate: card.due_date && card.due_date_time_present !== true ? card.due_date.slice(0, 10) : card.due_date,
     columnChangedAt: card.column_changed_at ?? undefined,
     createdAt: card.created,
+    laneId: card.lane_id,
   };
 }
 
@@ -238,7 +239,7 @@ export async function runKaitenSync(client: KaitenClient, input: RunInput, mode:
         synced.push({ id: action.task.fm.id, contentHash: action.contentHash, tracker: String(card.id), team: action.fields.team });
         syncedNames.push(action.task.slug);
       } else if (action.kind === 'update') {
-        if (action.patch.title !== undefined || action.patch.properties !== undefined) await client.updateCard(action.cardId, action.patch);
+        if (action.patch.title !== undefined || action.patch.properties !== undefined || action.patch.lane_id !== undefined) await client.updateCard(action.cardId, action.patch);
         if (action.content) {
           await client.updateCard(action.cardId, { description: action.content.description });
           // Чек-листы — только из GET: в списке карточек их нет.
@@ -304,7 +305,8 @@ export function formatPlan(run: Pick<SyncRun, 'plan' | 'checklists'> & Partial<P
     const lists = checklistLine(run.checklists.get(a.task.fm.id));
     if (a.kind === 'create') out.push(`  + ${a.task.slug}: «${a.task.fm.title}» (${a.task.fm.type}, ${a.task.fm.status})${lists}`);
     else if (a.kind === 'update') {
-      const what = [a.patch.title !== undefined ? 'заголовок' : '', a.patch.properties ? `поля ${Object.keys(a.patch.properties).join(', ')}` : '', a.content ? 'описание' : '']
+      const lane = a.patch.lane_id === undefined ? '' : 'дорожка';
+      const what = [a.patch.title !== undefined ? 'заголовок' : '', a.patch.properties ? `поля ${Object.keys(a.patch.properties).join(', ')}` : '', lane, a.content ? 'описание' : '']
         .filter(Boolean)
         .join(', ');
       out.push(`  ~ ${refOf(a.task)} (${a.task.slug}): ${what}${a.content ? lists : ''}${a.firstDelivery && a.content ? ' [первая доставка]' : ''}`);

@@ -46,7 +46,7 @@ import { createHash } from 'node:crypto';
 import { extractChecklists, type Checklist, type ChecklistItem } from '../checklists.js';
 import type { ConfigMapping } from '../config.js';
 import type { MirrorItem } from './task-ops.js';
-import { PRIORITIES, STATUSES, TASK_TYPES, type Priority, type TaskStatus, type TaskType } from './schema.js';
+import { CLOSED_STATUSES, PRIORITIES, STATUSES, TASK_TYPES, type Priority, type TaskStatus, type TaskType } from './schema.js';
 import { contentHash } from './document.js';
 import { epicOf, type TaskRecord } from './tasks-index.js';
 
@@ -70,6 +70,7 @@ export interface CardView {
   columnChangedAt?: string;
   /** Когда карточку завели, ISO — дата создания задачи из карточки (этап 2c). */
   createdAt?: string;
+  laneId?: number;
 }
 
 export interface RenderedContent {
@@ -249,10 +250,44 @@ export function createFields(task: TaskRecord, mapping: ConfigMapping, defaultTe
     // Ключ идемпотентности v2 — вечный id задачи: повтор после обрыва найдёт карточку, а не создаст вторую.
     external_id: task.fm.id,
     column_id: mapping.columns[task.fm.status],
-    lane_id: mapping.laneId,
+    lane_id: productLane(task, mapping),
     type_id: mapping.types?.[task.fm.type],
     properties: props,
   };
+}
+
+// ── дорожки ──────────────────────────────────────────────────────────────
+
+/** Сколько закрытая карточка стоит в «Сделано»/«Отменено», прежде чем уйти в «Архив» (владелец 07.10). */
+export const ARCHIVE_AFTER_DAYS = 30;
+
+/** Дорожка продукта задачи; продукта без дорожки и эпика — дорожка по умолчанию. */
+export function productLane(task: TaskRecord, mapping: ConfigMapping): number | undefined {
+  return (task.fm.repo !== undefined ? mapping.repoLanes?.[task.fm.repo] : undefined) ?? mapping.laneId;
+}
+
+/**
+ * Куда переложить карточку; `undefined` — оставить, где лежит. Дорожка —
+ * раскладка доски, а продукт хранит поле «Репозиторий»: по «Архиву» его
+ * иначе не узнать (владелец 07.10). Поэтому ручной перенос между дорожками
+ * не откатываем, а двигаем только по событиям:
+ *   · закрыта больше `ARCHIVE_AFTER_DAYS` дней назад — в «Архив»;
+ *   · открыта снова, а лежит в «Архиве», — в дорожку продукта;
+ *   · сменился продукт (поле «Репозиторий» расходится с файлом) — в дорожку
+ *     нового продукта, если карточка не в «Архиве».
+ */
+export function laneMove(task: TaskRecord, card: CardView, mapping: ConfigMapping, repoChanged: boolean, now: number): number | undefined {
+  if (card.laneId === undefined) return undefined;
+  const status = reverse<TaskStatus>(mapping.columns, STATUSES).get(card.columnId ?? -1) ?? task.fm.status;
+  const closed = CLOSED_STATUSES.includes(status);
+  const archive = mapping.archiveLaneId;
+  const inArchive = archive !== undefined && card.laneId === archive;
+  let target: number | undefined;
+  if (archive !== undefined && closed && card.columnChangedAt !== undefined && now - Date.parse(card.columnChangedAt) > ARCHIVE_AFTER_DAYS * 86_400_000) {
+    target = archive;
+  } else if (inArchive && !closed) target = productLane(task, mapping);
+  else if (repoChanged && !inArchive) target = productLane(task, mapping);
+  return target !== undefined && target !== card.laneId ? target : undefined;
 }
 
 function sameValue(a: unknown, b: unknown): boolean {
@@ -268,8 +303,8 @@ export type SyncAction =
       kind: 'update';
       task: TaskRecord;
       cardId: number;
-      /** Заголовок и поля файла, разошедшиеся с карточкой. */
-      patch: { title?: string; properties?: Record<string, unknown> };
+      /** Заголовок и поля файла, разошедшиеся с карточкой; дорожка — `laneMove`. */
+      patch: { title?: string; properties?: Record<string, unknown>; lane_id?: number };
       /** Описание и чек-листы — если содержимое файла ещё не доставлено. */
       content: RenderedContent | null;
       contentHash: string;
@@ -318,6 +353,8 @@ export interface PlanInput {
   firstLoad?: { closedSince: string; withCancelled?: boolean };
   /** Только эти задачи (id) — пробный прогон на одной карточке. */
   only?: ReadonlySet<string>;
+  /** «Сейчас», мс — от него отсчитывается переезд в «Архив»; по умолчанию часы машины. */
+  now?: number;
 }
 
 function reverse<T extends string>(values: Partial<Record<T, number>> | Record<string, number> | undefined, allowed: readonly T[]): Map<number, T> {
@@ -465,13 +502,16 @@ export function planKaitenSync(input: PlanInput): SyncPlan {
       names[task.fm.id] = `${task.fm.tracker} (${task.slug})`;
     }
 
-    const patch: { title?: string; properties?: Record<string, unknown> } = {};
+    const patch: { title?: string; properties?: Record<string, unknown>; lane_id?: number } = {};
     if (!sameValue(card.title, task.fm.title)) patch.title = task.fm.title;
     const wanted = fileProperties(task, mapping);
     const diff = Object.fromEntries(Object.entries(wanted).filter(([k, v]) => !sameValue(card.properties[k], v)));
     if (Object.keys(diff).length > 0) patch.properties = diff;
+    const repoKey = mapping.repoProperty ? key(mapping.repoProperty.id) : null;
+    const lane = laneMove(task, card, mapping, repoKey !== null && repoKey in diff, input.now ?? Date.now());
+    if (lane !== undefined) patch.lane_id = lane;
     const stale = task.fm.content_hash !== hash;
-    if (stale || patch.title !== undefined || patch.properties !== undefined) {
+    if (stale || patch.title !== undefined || patch.properties !== undefined || patch.lane_id !== undefined) {
       others.push({
         kind: 'update',
         task,

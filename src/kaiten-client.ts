@@ -94,10 +94,18 @@ const CardListSchema = z.array(CardSchema);
 const ColumnSchema = z
   .object({ id: z.number(), title: z.string().default(''), type: z.number().optional(), sort_order: z.number().optional() })
   .passthrough();
-const LaneSchema = z.object({ id: z.number(), title: z.string().nullable().optional() }).passthrough();
+const LaneSchema = z.object({ id: z.number(), title: z.string().nullable().optional(), sort_order: z.number().optional() }).passthrough();
 
 export const SpaceSchema = z
-  .object({ id: z.number(), uid: z.string().optional(), title: z.string().default(''), archived: z.boolean().optional() })
+  .object({
+    id: z.number(),
+    uid: z.string().optional(),
+    title: z.string().default(''),
+    archived: z.boolean().optional(),
+    /** Пространство-«папка», в котором лежит это; `null` — верхний уровень (живьём 07.10). */
+    parent_entity_uid: z.string().nullable().optional(),
+    boards: z.array(z.object({ id: z.number() }).passthrough()).optional(),
+  })
   .passthrough();
 export type Space = z.infer<typeof SpaceSchema>;
 
@@ -422,8 +430,22 @@ export class KaitenClient {
     return this.request('GET', '/spaces', { schema: z.array(SpaceSchema) });
   }
 
-  async createSpace(title: string): Promise<unknown> {
-    return this.request('POST', '/spaces', { body: { title }, schema: z.unknown() });
+  /** `parentUid` — сразу внутри пространства-«папки» (живьём 07.10). */
+  async createSpace(title: string, parentUid?: string): Promise<unknown> {
+    return this.request('POST', '/spaces', { body: { title, ...(parentUid ? { parent_entity_uid: parentUid } : {}) }, schema: z.unknown() });
+  }
+
+  /**
+   * Переименовать пространство и/или перенести в «папку». id пространства и
+   * досок не меняются, ограничения доски продолжают действовать (живьём 07.10).
+   */
+  async updateSpace(id: number, patch: { title?: string; parent_entity_uid?: string }): Promise<Space> {
+    return this.request('PATCH', `/spaces/${id}`, { body: patch, schema: SpaceSchema });
+  }
+
+  /** Дорожка доски; `PATCH /cards {lane_id}` переносит карточку между дорожками (живьём 07.10). */
+  async createLane(boardId: number, lane: { title: string; sort_order: number }): Promise<unknown> {
+    return this.request('POST', `/boards/${boardId}/lanes`, { body: lane, schema: z.unknown() });
   }
 
   /** Доски пространства — сразу с колонками и дорожками. */

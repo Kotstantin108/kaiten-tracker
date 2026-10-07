@@ -20,7 +20,12 @@ const SelectMappingSchema = z.object({ id: z.number(), values: z.record(z.string
 /** Блок id, который пишет `setup --apply` и читает импорт. */
 export const MappingSchema = z.object({
   boardId: z.number(),
+  /** Дорожка по умолчанию: эпики и задачи без своей дорожки продукта. */
   laneId: z.number().optional(),
+  /** Дорожка продукта по имени репозитория (`repos[].lane`). */
+  repoLanes: z.record(z.string(), z.number()).optional(),
+  /** Дорожка «Архив»: закрытые больше месяца назад (`kaiten.archiveLane`). */
+  archiveLaneId: z.number().optional(),
   columns: z.record(z.string(), z.number()),
   types: z.record(z.string(), z.number()).optional(),
   priorityProperty: SelectMappingSchema.optional(),
@@ -39,6 +44,8 @@ export const RepoSchema = z.object({
   label: z.string().min(1),
   /** Путь к рабочей копии — только у репозиториев, из которых импорт читает задачи. */
   path: z.string().min(1).optional(),
+  /** Дорожка продукта на доске: `Приложение`. Нет — карточки в дорожке по умолчанию. */
+  lane: z.string().min(1).optional(),
   url: z.string().optional(),
   branch: z.string().default('main'),
   tasksDirName: z.string().optional(),
@@ -55,6 +62,15 @@ export const ProjectSchema = z.object({
     board: z.string().min(1),
     /** Имя поля-выбора репозитория этого проекта. */
     repoField: z.string().min(1),
+    /**
+     * Родительское пространство («папка»): в нём пространство разработки и
+     * пространства отделов. Нет — пространство разработки на верхнем уровне.
+     */
+    folder: z.string().min(1).optional(),
+    /** Пространства отделов в папке — ключи шаблонов `DEPARTMENTS` (`setup-plan.ts`). */
+    departments: z.array(z.string().min(1)).default([]),
+    /** Дорожка закрытых больше месяца назад карточек: `Архив`. */
+    archiveLane: z.string().min(1).optional(),
   }),
   repos: z.array(RepoSchema).min(1),
   /**
