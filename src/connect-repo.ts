@@ -14,7 +14,7 @@
  *   --tasks     рабочая копия репозитория задач (с kaiten.json) или его адрес (хранилище на этой машине)
  *   --repo      репозиторий кода проекта (поле `repo` задач)
  *   --push      что делать с веткой перед ревью (по умолчанию branch: отправить ветку, PR — человек)
- *   --rules     файл правил агента (по умолчанию CLAUDE.md, если есть; иначе AGENTS.md, если есть; иначе новый CLAUDE.md)
+ *   --rules     файл правил агента (по умолчанию тот, где блок kaiten уже есть; иначе CLAUDE.md, если есть; иначе AGENTS.md; иначе новый CLAUDE.md)
  *
  * Коды выхода: 0 — ок; 2 — ошибка аргументов.
  */
@@ -27,8 +27,9 @@ import { parseArgs } from 'node:util';
 
 import { loadOwnerProject } from './owner-project.js';
 import { gitText } from './task-store.js';
-import { planConnect, PROJECT_FILE_PATH, PUSH_POLICIES, SKILL_PATH, type PushPolicy } from './core/repo-connect.js';
+import { planConnect, PROJECT_FILE_PATH, PUSH_POLICIES, rulesState, SKILL_PATH, type PushPolicy } from './core/repo-connect.js';
 
+const RULES_FILES = ['CLAUDE.md', 'AGENTS.md'];
 const TOOL_SKILL = fileURLToPath(new URL('../skills/kaiten/SKILL.md', import.meta.url));
 
 function fail(message: string): never {
@@ -74,7 +75,9 @@ function main(): void {
   const push = (values.push ?? 'branch') as PushPolicy;
   if (!PUSH_POLICIES.includes(push)) fail(`--push: ${PUSH_POLICIES.join(', ')}`);
 
-  const rulesFile = values.rules ?? (existsSync(join(dir, 'CLAUDE.md')) ? 'CLAUDE.md' : existsSync(join(dir, 'AGENTS.md')) ? 'AGENTS.md' : 'CLAUDE.md');
+  // Блок правил уже где-то есть — обновляем его там, а не дописываем второй в CLAUDE.md.
+  const withBlock = RULES_FILES.find((name) => rulesState(read(join(dir, name))) !== 'missing');
+  const rulesFile = values.rules ?? withBlock ?? RULES_FILES.find((name) => existsSync(join(dir, name))) ?? 'CLAUDE.md';
   const changes = planConnect({
     tasks: tasksUrl,
     repo,

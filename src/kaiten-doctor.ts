@@ -144,13 +144,14 @@ function repoChecks(workDir: string): RepoFacts {
   const checks: Check[] = [{ level: 'ok', what: `репозиторий подключён: продукт ${parsed.file.repo}` }];
 
   const root = dirname(path);
+  const refresh = `Это делает владелец проекта, из папки kaiten-tracker: npm run connect-repo -- "${root}" --tasks ${parsed.file.tasks} --repo ${parsed.file.repo} --apply`;
   const skill = skillState(readFileSync(TOOL_SKILL, 'utf8'), readOrNull(join(root, SKILL_PATH)));
   if (skill === 'fresh') checks.push({ level: 'ok', what: 'скилл kaiten в репозитории — свежий' });
-  else checks.push({ level: 'warn', what: skill === 'missing' ? 'скилла kaiten в репозитории нет: агент не знает, как вести задачи' : 'скилл kaiten в репозитории устарел', fix: OWNER });
+  else checks.push({ level: 'warn', what: skill === 'missing' ? 'скилла kaiten в репозитории нет: агент не знает, как вести задачи' : 'скилл kaiten в репозитории устарел', fix: refresh });
 
   const rules = ['CLAUDE.md', 'AGENTS.md'].map((name) => rulesState(readOrNull(join(root, name))));
   if (rules.includes('fresh')) checks.push({ level: 'ok', what: 'правила про задачи в репозитории есть' });
-  else checks.push({ level: 'warn', what: rules.includes('stale') ? 'правила про задачи в репозитории устарели' : 'правил про задачи в CLAUDE.md нет: агент может чинить мимо задач', fix: OWNER });
+  else checks.push({ level: 'warn', what: rules.includes('stale') ? 'правила про задачи в репозитории устарели' : 'правил про задачи в CLAUDE.md нет: агент может чинить мимо задач', fix: refresh });
 
   return { checks, project: { store: defaultStorePath(storeNameOf(parsed.file.tasks)), repo: parsed.file.repo, tasksUrl: parsed.file.tasks } };
 }
