@@ -101,6 +101,36 @@
   (`role_ids` молча игнорируется). Роли — `GET /tree-entity-roles`.
 - Тариф и доступные возможности — `GET /companies/current` (`features`,
   `current_client_tariff`).
+- Доска: `PATCH /boards/{id}` отвечает 405 — правка идёт через пространство:
+  `PATCH /spaces/{space}/boards/{id} {description, default_card_type_id}`.
+  Описание сохраняется строкой как есть (markdown не меняется). Командой
+  `kaiten` описание доски и тип по умолчанию не читаются: тип карточки она
+  задаёт сама.
+
+## Документы
+
+Проверено живьём 15.10.2026.
+
+- Дерево: `GET /tree-entities?parent_entity_uid=<uid>&levels_count=1|2`
+  (глубже 2 — 400), узлы `entity_type: space | document_group | document`;
+  полное дерево — рекурсивно по `has_children`.
+- Папка: `POST /document-groups {title, sort_order, parent_entity_uid}`;
+  документ: `POST /documents {title, sort_order, parent_entity_uid}`.
+  `sort_order` обязателен и больше нуля. Документ без родителя ложится в
+  корень компании.
+- `POST` молча выбрасывает содержимое — документ всегда пустой; текст —
+  вторым запросом `PATCH /documents/{uid} {data: <ProseMirror JSON>}`,
+  только целиком. `GET` отдаёт `data` строкой с JSON.
+- Блокировки нет: `version`/`updated` в `PATCH` игнорируются, последняя
+  запись выигрывает. Правки через API не создают контрольных точек истории.
+- Документ, созданный через API, получает схему v1: абзацы, заголовки,
+  списки, таблицы, код, цитаты; чек-листы, ссылки на карточки, вкладки — 500.
+- Выдача доступа к документу по почте (`POST /documents/{uid}/users {email}`)
+  с незнакомым адресом **заводит пользователя компании** и шлёт приглашение.
+- `DELETE` безвозвратен; документ или папку с вложенными узлами удалить
+  нельзя. `clone_uid` кладёт копию рядом с источником, игнорируя родителя.
+- Поиск: по заголовку — `GET /documents?query=`, по тексту —
+  `GET /documents?version=2&query=`.
 
 ## Автоматизации
 
