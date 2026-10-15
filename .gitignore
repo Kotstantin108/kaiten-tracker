@@ -7,3 +7,6 @@ tmp/
 .playwright-mcp/
 kaiten.settings.json
 src/__*.tmp.ts
+wrangler.jsonc
+.wrangler/
+.dev.vars

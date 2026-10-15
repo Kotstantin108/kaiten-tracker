@@ -1,0 +1,14 @@
+// Скопируйте в wrangler.jsonc (он в .gitignore) и подставьте id своего KV.
+// Секреты задаются не здесь, а командой `npx wrangler secret put <ИМЯ>`:
+//   SERVER_SECRET — случайная строка от 32 символов;
+//   KAITEN_DOMAIN — домен компании в Kaiten (например, acme.kaiten.ru);
+//   PUBLIC_URL    — адрес сервера, например https://kaiten-agent.<поддомен>.workers.dev
+{
+  "name": "kaiten-agent",
+  "main": "src/agent-server/worker.ts",
+  "compatibility_date": "2026-09-15",
+  // Нужен для входа клиентов по Client ID Metadata Document (OAuth).
+  "compatibility_flags": ["global_fetch_strictly_public"],
+  "kv_namespaces": [{ "binding": "OAUTH_KV", "id": "<id пространства KV>" }],
+  "observability": { "enabled": true }
+}

@@ -109,6 +109,11 @@ export const SpaceSchema = z
   .passthrough();
 export type Space = z.infer<typeof SpaceSchema>;
 
+export const CurrentUserSchema = z
+  .object({ id: z.number(), full_name: z.string().nullable().optional(), email: z.string().nullable().optional() })
+  .passthrough();
+export type CurrentUser = z.infer<typeof CurrentUserSchema>;
+
 export const BoardSchema = z
   .object({
     id: z.number(),
@@ -216,7 +221,8 @@ export class KaitenClient {
     const domain = options.domain.replace(/^https?:\/\//, '').replace(/\/+$/, '');
     this.base = `https://${domain}/api/latest`;
     this.token = options.token;
-    this.fetchImpl = options.fetchImpl ?? fetch;
+    // Глобальный fetch нельзя вызывать как метод чужого объекта: в Workers это «Illegal invocation».
+    this.fetchImpl = options.fetchImpl ?? ((input, init) => fetch(input, init));
     this.sleep = options.sleep ?? defaultSleep;
     this.maxRetries = options.maxRetries ?? 5;
     this.rateLimitFloor = options.rateLimitFloor ?? 2;
@@ -428,6 +434,11 @@ export class KaitenClient {
 
   async listSpaces(): Promise<Space[]> {
     return this.request('GET', '/spaces', { schema: z.array(SpaceSchema) });
+  }
+
+  /** Владелец токена (живьём: `GET /users/current` отдаёт id, имя, почту). */
+  async currentUser(): Promise<CurrentUser> {
+    return this.request('GET', '/users/current', { schema: CurrentUserSchema });
   }
 
   /** `parentUid` — сразу внутри пространства-«папки» (живьём 07.10). */
