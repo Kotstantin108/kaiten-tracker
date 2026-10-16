@@ -42,15 +42,40 @@ async function deriveKey(secret: string, purpose: string, usage: 'AES-GCM' | 'HM
     : crypto.subtle.deriveKey(params, base, { name: 'HMAC', hash: 'SHA-256', length: 256 }, false, ['sign', 'verify']);
 }
 
-/** Зашифровать токен Kaiten в ключ агента. */
-export async function sealToken(token: string, secret: string): Promise<string> {
-  const key = await deriveKey(secret, 'token', 'AES-GCM');
+async function sealText(purpose: string, text: string, secret: string): Promise<string> {
+  const key = await deriveKey(secret, purpose, 'AES-GCM');
   const iv = crypto.getRandomValues(new Uint8Array(12));
-  const sealed = new Uint8Array(await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, key, encoder.encode(token)));
+  const sealed = new Uint8Array(await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, key, encoder.encode(text)));
   const out = new Uint8Array(iv.length + sealed.length);
   out.set(iv);
   out.set(sealed, iv.length);
-  return PREFIX + toBase64Url(out);
+  return toBase64Url(out);
+}
+
+async function openText(purpose: string, sealed: string, secret: string): Promise<string | null> {
+  const bytes = fromBase64Url(sealed);
+  if (!bytes || bytes.length < 12 + 16) return null;
+  const key = await deriveKey(secret, purpose, 'AES-GCM');
+  try {
+    return decoder.decode(await crypto.subtle.decrypt({ name: 'AES-GCM', iv: bytes.slice(0, 12) }, key, bytes.slice(12)));
+  } catch {
+    return null;
+  }
+}
+
+/** Зашифровать токен Kaiten в ключ агента. */
+export async function sealToken(token: string, secret: string): Promise<string> {
+  return PREFIX + (await sealText('token', token, secret));
+}
+
+/** Зашифровать данные, которые сервер хранит у себя (подтверждения, копии страниц). */
+export async function sealData(value: unknown, secret: string): Promise<string> {
+  return sealText('store', JSON.stringify(value), secret);
+}
+
+export async function openData(sealed: string, secret: string): Promise<unknown> {
+  const text = await openText('store', sealed, secret);
+  return text === null ? null : (JSON.parse(text) as unknown);
 }
 
 /** Похоже ли значение на ключ агента (без расшифровки). */
@@ -61,15 +86,8 @@ export function looksLikeAgentKey(value: string): boolean {
 /** Расшифровать ключ агента; `null` — ключ чужой, испорчен или выпущен другим секретом. */
 export async function openKey(agentKey: string, secret: string): Promise<string | null> {
   if (!looksLikeAgentKey(agentKey)) return null;
-  const bytes = fromBase64Url(agentKey.slice(PREFIX.length));
-  if (!bytes || bytes.length < 12 + 16 + 1) return null;
-  const key = await deriveKey(secret, 'token', 'AES-GCM');
-  try {
-    const plain = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: bytes.slice(0, 12) }, key, bytes.slice(12));
-    return decoder.decode(plain);
-  } catch {
-    return null;
-  }
+  const token = await openText('token', agentKey.slice(PREFIX.length), secret);
+  return token ? token : null;
 }
 
 /** Подпись HMAC секретом сервера под своё назначение (коды предпросмотра, ссылки подтверждения). */

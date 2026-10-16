@@ -27,6 +27,7 @@ import {
   typeRuleFor,
 } from './kaiten-agent.js';
 import { checkCode, issueCode } from './preview.js';
+import { Refusal, runTool } from './refusal.js';
 import { applicable, type CardState, demandedProperties, isSet, needsChildren, type Restriction, verdict } from './restrictions.js';
 
 export interface TaskDeps {
@@ -37,24 +38,7 @@ export interface TaskDeps {
   describeError: (error: unknown) => string;
 }
 
-type ToolResult = { content: Array<{ type: 'text'; text: string }>; isError?: boolean };
-const ok = (text: string): ToolResult => ({ content: [{ type: 'text', text }] });
-const fail = (text: string): ToolResult => ({ content: [{ type: 'text', text }], isError: true });
-
-/** Отказ со списком — то, что агент обязан исполнить. */
-class Refusal extends Error {
-  constructor(
-    readonly title: string,
-    readonly items: string[],
-  ) {
-    super(title);
-  }
-  render(): string {
-    return this.items.length === 1 ? `${this.title}: ${this.items[0]}` : `${this.title}:\n${this.items.map((x, i) => `${i + 1}. ${x}`).join('\n')}`;
-  }
-}
-
-const cardRef = z.union([z.number().int().positive(), z.string().min(1)]).describe('id карточки или ссылка на неё');
+export const cardRef = z.union([z.number().int().positive(), z.string().min(1)]).describe('id карточки или ссылка на неё');
 const fieldsArg = z
   .record(z.string(), z.union([z.string(), z.number(), z.array(z.string())]))
   .optional()
@@ -226,14 +210,7 @@ function cardSummary(ctx: BoardContext, domain: string, card: Card): string {
 // ── регистрация ─────────────────────────────────────────────────────────────
 
 export function registerTaskTools(server: McpServer, deps: TaskDeps): void {
-  const run = async (body: () => Promise<string>): Promise<ToolResult> => {
-    try {
-      return ok(await body());
-    } catch (error) {
-      if (error instanceof Refusal) return fail(error.render());
-      return fail(deps.describeError(error));
-    }
-  };
+  const run = (body: () => Promise<string>) => runTool(body, deps.describeError);
   const loadCard = async (ref: number | string): Promise<{ card: Card; ctx: BoardContext }> => {
     const id = cardIdOf(ref);
     if (id === null) throw new Refusal('Не понял, какая карточка', ['укажите id карточки или ссылку на неё']);

@@ -124,6 +124,85 @@ ${tokenField()}
   );
 }
 
+export function loginPage(next: string, error?: string): string {
+  return page(
+    'Вход',
+    `<h1>Войдите, чтобы подтвердить действие агента</h1>
+<p>Подтверждать может только человек. Агент войти сюда не может: у него нет вашего токена Kaiten.</p>
+<form method="post" action="/login" class="card">
+${error ? `<p class="warn">${escapeHtml(error)}</p>` : ''}
+<input type="hidden" name="next" value="${escapeHtml(next)}">
+${tokenField()}
+<button type="submit">Войти</button>
+</form>`,
+  );
+}
+
+type DiffLine = { kind: 'same' | 'add' | 'del'; text: string };
+
+/** Построчная разница (LCS); для очень длинных страниц — просто «было» и «стало». */
+export function lineDiff(before: string, after: string): DiffLine[] {
+  const a = before.split('\n');
+  const b = after.split('\n');
+  if (a.length * b.length > 4_000_000) return [...a.map((text) => ({ kind: 'del' as const, text })), ...b.map((text) => ({ kind: 'add' as const, text }))];
+  const lcs: number[][] = Array.from({ length: a.length + 1 }, () => new Array<number>(b.length + 1).fill(0));
+  for (let i = a.length - 1; i >= 0; i--) for (let j = b.length - 1; j >= 0; j--) lcs[i][j] = a[i] === b[j] ? lcs[i + 1][j + 1] + 1 : Math.max(lcs[i + 1][j], lcs[i][j + 1]);
+  const out: DiffLine[] = [];
+  let i = 0;
+  let j = 0;
+  while (i < a.length || j < b.length) {
+    if (i < a.length && j < b.length && a[i] === b[j]) {
+      out.push({ kind: 'same', text: a[i++] });
+      j++;
+    } else if (j < b.length && (i >= a.length || lcs[i][j + 1] >= lcs[i + 1][j])) out.push({ kind: 'add', text: b[j++] });
+    else out.push({ kind: 'del', text: a[i++] });
+  }
+  return out;
+}
+
+function renderDiff(lines: DiffLine[]): string {
+  const keep = lines.map((l, i) => l.kind !== 'same' || lines.slice(Math.max(0, i - 2), i + 3).some((x) => x.kind !== 'same'));
+  const out: string[] = [];
+  let skipped = 0;
+  lines.forEach((line, i) => {
+    if (!keep[i]) {
+      skipped++;
+      return;
+    }
+    if (skipped) out.push(`<div class="muted">… без изменений: ${skipped} строк …</div>`);
+    skipped = 0;
+    const sign = line.kind === 'add' ? '+' : line.kind === 'del' ? '−' : ' ';
+    out.push(`<div class="d-${line.kind}">${sign} ${escapeHtml(line.text) || '&nbsp;'}</div>`);
+  });
+  if (skipped) out.push(`<div class="muted">… без изменений: ${skipped} строк …</div>`);
+  return out.join('');
+}
+
+export interface ConfirmView {
+  docTitle: string;
+  summary: string;
+  by: string;
+  before: string;
+  after: string;
+}
+
+export function confirmPage(view: ConfirmView, csrf: string): string {
+  return page(
+    'Подтверждение',
+    `<style>.diff{font:13px/1.45 ui-monospace,Consolas,monospace;white-space:pre-wrap;word-break:break-word;background:var(--bg);border:1px solid var(--line);border-radius:8px;padding:10px;max-height:60vh;overflow:auto}
+.d-add{background:rgba(46,160,67,.18)}.d-del{background:rgba(248,81,73,.18);text-decoration:line-through}</style>
+<h1>Агент просит подтвердить</h1>
+<p><strong>${escapeHtml(view.summary)}</strong></p>
+<p class="muted">Документ «${escapeHtml(view.docTitle)}». Запрошено от имени: ${escapeHtml(view.by)}. Перед записью сервер сохранит копию — её можно будет откатить.</p>
+<div class="diff">${renderDiff(lineDiff(view.before, view.after))}</div>
+<form method="post" class="card">
+<input type="hidden" name="csrf" value="${escapeHtml(csrf)}">
+<button type="submit" name="decision" value="apply">Применить</button>
+<button type="submit" name="decision" value="reject" class="secondary">Отклонить</button>
+</form>`,
+  );
+}
+
 export function messagePage(title: string, message: string): string {
   return page(title, `<h1>${escapeHtml(title)}</h1><p>${escapeHtml(message)}</p>`);
 }

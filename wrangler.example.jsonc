@@ -9,6 +9,6 @@
   "compatibility_date": "2026-09-15",
   // Нужен для входа клиентов по Client ID Metadata Document (OAuth).
   "compatibility_flags": ["global_fetch_strictly_public"],
-  "kv_namespaces": [{ "binding": "OAUTH_KV", "id": "<id пространства KV>" }],
+  "kv_namespaces": [{ "binding": "OAUTH_KV", "id": "<id пространства KV>" }, { "binding": "AGENT_KV", "id": "<id второго пространства KV>" }],
   "observability": { "enabled": true }
 }

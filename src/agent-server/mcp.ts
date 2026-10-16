@@ -13,6 +13,8 @@ import { CfWorkerJsonSchemaValidator } from '@modelcontextprotocol/sdk/validatio
 import { KaitenApiError } from '../kaiten-client.js';
 import { gatedFetch } from './gate.js';
 import { AgentKaiten, Catalog } from './kaiten-agent.js';
+import { registerDocTools } from './docs.js';
+import type { Store } from './store.js';
 import { registerTaskTools } from './tasks.js';
 
 export interface AgentContext {
@@ -22,6 +24,12 @@ export interface AgentContext {
   token: string;
   /** Секрет сервера — подпись кодов предпросмотра. */
   secret: string;
+  /** Хранилище подтверждений и копий; без него режим «Документы» не включается. */
+  store?: Store;
+  /** Адрес сервера — для ссылок подтверждения. */
+  publicUrl?: string;
+  /** Ключ агента, с которым пришёл запрос, — подтверждённое действие выполнится по нему. */
+  agentKey?: string;
   /** Подменяется в тестах. */
   fetchImpl?: typeof fetch;
 }
@@ -110,7 +118,11 @@ export function buildServer(ctx: AgentContext): McpServer {
     },
   );
 
-  registerTaskTools(server, { kaiten, catalog: new Catalog(kaiten), domain: domainOf(ctx), secret: ctx.secret, describeError });
+  const catalog = new Catalog(kaiten);
+  registerTaskTools(server, { kaiten, catalog, domain: domainOf(ctx), secret: ctx.secret, describeError });
+  if (ctx.store && ctx.publicUrl && ctx.agentKey) {
+    registerDocTools(server, { kaiten, catalog, domain: domainOf(ctx), secret: ctx.secret, store: ctx.store, publicUrl: ctx.publicUrl, agentKey: ctx.agentKey, describeError });
+  }
 
   return server;
 }
