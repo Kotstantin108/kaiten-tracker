@@ -36,6 +36,7 @@ import { STATUSES, TASK_TYPES, type TaskStatus, type TaskType } from './core/sch
 import { filterTasks, refOf, resolveTask, SearchQueryError, searchTasks, sortTasks, type TaskFilter, type TaskIndex, type TaskRecord } from './core/tasks-index.js';
 import {
   findTask,
+  foreignCardFiles,
   loadTasks,
   parse,
   printNotices,
@@ -123,7 +124,9 @@ ${FILTER_HELP}
 
 Заголовок, «Суть», статус, приоритет, исполнитель и срок, постановка с
 пунктами, журнал; для задачи — её эпик и соседние задачи, для эпика — все его
-задачи. Ссылки на другие задачи и вложения показаны командами kaiten.
+задачи. Ссылки на другие задачи и вложения показаны командами kaiten. В
+конце — файлы, которые люди приложили прямо в карточку Kaiten (их нет среди
+вложений задачи); открыть их — в карточке.
 ${TASK_REF_HELP}
 
 Большую задачу можно читать по частям:
@@ -276,7 +279,7 @@ function count(values: Values, flag: string, max: number): number | undefined {
   return n;
 }
 
-function show(args: string[]): void {
+async function show(args: string[]): Promise<void> {
   const { values, positionals } = parse(
     'show',
     args,
@@ -306,6 +309,11 @@ function show(args: string[]): void {
     const lines = task.body.split('\n').length;
     if (lines > LONG_TASK_LINES) console.log(`Задача большая (${lines} строк). По частям: kaiten show ${refOf(task)} --outline, --section "<раздел>", --todo.\n`);
     process.stdout.write(formatShow(index.tasks, task, attachments));
+    const foreign = await foreignCardFiles(ctx, task, attachments);
+    if (foreign && 'unreachable' in foreign) console.log('\nФайлы карточки Kaiten не прочитаны: Kaiten не ответил.');
+    else if (foreign && foreign.files.length > 0) {
+      console.log(`\nФайлы в карточке Kaiten, которых нет в задаче (открыть — в карточке): ${foreign.files.map((f) => `${f.name} (${formatSize(f.size)})`).join(', ')}`);
+    }
   }
 }
 

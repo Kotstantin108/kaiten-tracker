@@ -26,8 +26,12 @@ import {
   toKaitenValue,
   typeRuleFor,
 } from './kaiten-agent.js';
+import { ALLOWED_EXTENSIONS, decodeBase64, fileProblems, MAX_INLINE_BYTES } from './card-files.js';
+import { addWorkingDays, isDate, todayIn, workingDaysText } from './due.js';
+import { type CommentPending, savePending, type UploadPending } from './pending.js';
 import { checkCode, issueCode } from './preview.js';
 import { Refusal, runTool } from './refusal.js';
+import type { Store } from './store.js';
 import { applicable, type CardState, demandedProperties, isSet, needsChildren, type Restriction, verdict } from './restrictions.js';
 
 export interface TaskDeps {
@@ -36,7 +40,54 @@ export interface TaskDeps {
   domain: string;
   secret: string;
   describeError: (error: unknown) => string;
+  /** Для подтверждений человеком (комментарий заказчику, страница загрузки); без них такие действия — отказ. */
+  store?: Store;
+  publicUrl?: string;
+  agentKey?: string;
+  /** Часы — подменяются в тестах (срок «+N рабочих дней»). */
+  now?: () => Date;
 }
+
+interface Person {
+  id: number;
+  full_name?: string | null;
+  email?: string | null;
+  username?: string | null;
+}
+
+const personLabel = (p: Person): string => p.full_name?.trim() || p.email || `#${p.id}`;
+
+/**
+ * Человек по имени, части имени или почте — среди тех, у кого есть доступ к
+ * пространству доски. Не нашёлся или нашлось несколько — проблема в отказ.
+ */
+async function findPerson(deps: TaskDeps, ctx: BoardContext, query: string, me: Person, problems: string[]): Promise<Person | null> {
+  const people: Person[] = await deps.catalog.people(ctx.spaceId);
+  const all = people.some((p) => p.id === me.id) ? people : [...people, me];
+  const q = normalizeTitle(query);
+  const mail = query.trim().toLowerCase();
+  let found = all.filter((p) => (p.email ?? '').toLowerCase() === mail || normalizeTitle(p.full_name ?? '') === q || (p.username ? normalizeTitle(p.username) === q : false));
+  if (found.length === 0) {
+    const words = q.split(' ').filter(Boolean);
+    found = all.filter((p) => {
+      const name = normalizeTitle(p.full_name ?? '').split(' ');
+      return words.length > 0 && words.every((w) => name.some((n) => n.startsWith(w)));
+    });
+  }
+  if (found.length === 1) return found[0];
+  if (found.length > 1) problems.push(`«${query}» — несколько человек: ${found.map((p) => `${personLabel(p)}${p.email ? ` (${p.email})` : ''}`).join(', ')}; назовите одного, можно почтой`);
+  else problems.push(`«${query}» нет среди тех, у кого есть доступ к пространству доски; есть: ${all.slice(0, 30).map(personLabel).join(', ')}${all.length > 30 ? '…' : ''}`);
+  return null;
+}
+
+/** Почему комментарий требует подтверждения человеком; `null` — не требует. */
+function commentConfirmReason(ctx: BoardContext, card: Card): string | null {
+  if (card.service_id !== null && card.service_id !== undefined && card.service_id !== '') return 'карточка — обращение Service Desk, комментарий уйдёт заказчику';
+  if (ctx.parsed?.rules.comments === 'confirm') return 'на этой доске комментарии получают гости или заказчики';
+  return null;
+}
+
+const confirmTail = 'Ссылка одноразовая, действует 30 минут. Сами по ней не переходите.';
 
 export const cardRef = z.union([z.number().int().positive(), z.string().min(1)]).describe('id карточки или ссылка на неё');
 const fieldsArg = z
@@ -197,9 +248,14 @@ async function boardRulesText(deps: TaskDeps, ctx: BoardContext): Promise<string
       if (f) demanded.set(key, f);
     }
     const lane = rule.lane === 'choose' ? `выбрать: ${ctx.board.lanes.map(laneTitle).join(', ')}` : rule.lane === 'default' ? laneTitle(defaultLane(ctx) ?? { id: 0, title: null, sort_order: 0 }) : rule.lane;
+    const due =
+      rule.due === 'none'
+        ? 'не ставится'
+        : `${rule.due === 'required' ? 'обязателен' : 'можно указать'} (due, ГГГГ-ММ-ДД)${rule.due_default ? `; не назван — +${workingDaysText(rule.due_default)}` : ''}; потом агент его не меняет`;
     lines.push(
       `Тип «${type.name}»: название ${rule.title ? `«${rule.title}»` : 'свободное'}; дорожка — ${lane}; родитель — ${rule.parent === 'none' ? 'не нужен' : `обязателен, тип «${rule.parent}»`}.`,
       demanded.size ? `  Обязательно при создании: ${[...demanded.values()].map((f) => describeField(ctx, f)).join('; ')}.` : '  Обязательных полей при создании нет.',
+      `  Ответственный: ${rule.responsible === 'required' ? 'обязательно назвать (responsible) — кому поручено' : 'вы, если пользователь не назвал другого (responsible)'}. Срок: ${due}.`,
     );
   }
   for (const column of ctx.board.columns) {
@@ -212,6 +268,11 @@ async function boardRulesText(deps: TaskDeps, ctx: BoardContext): Promise<string
   const rules = ctx.parsed?.rules;
   lines.push(`Дубли: ${rules?.duplicates === 'off' ? 'не проверяются' : rules?.duplicates === 'space' ? 'одинаковое название среди открытых карточек пространства запрещено' : 'одинаковое название среди открытых карточек доски запрещено'}.`);
   if (rules?.synced) lines.push('Карточки с external_id ведёт git: такие агент только комментирует.');
+  lines.push(
+    rules?.comments === 'confirm'
+      ? 'Комментарии: только после подтверждения человеком — на доске их получают гости или заказчики.'
+      : 'Комментарий к обращению Service Desk — только после подтверждения человеком: он уходит заказчику.',
+  );
   lines.push('Создание — в два шага: create_card без confirm_code даёт предпросмотр и код; покажите предпросмотр пользователю и повторите вызов с тем же содержимым и кодом.');
   lines.push(...warningLines(ctx));
   return lines.join('\n');
@@ -334,6 +395,9 @@ export function registerTaskTools(server: McpServer, deps: TaskDeps): void {
           const items = [...(list.items ?? [])].sort((a, b) => (a.sort_order ?? 0) - (b.sort_order ?? 0));
           lines.push(`Чек-лист «${list.name ?? ''}»:`, ...items.map((i) => `  [${i.checked ? 'x' : ' '}] ${i.text ?? ''}`));
         }
+        const responsible = (card.members ?? []).filter((m) => m.type === 2).map((m) => m.full_name?.trim()).filter(Boolean);
+        if (responsible.length) lines.push(`Ответственный: ${responsible.join(', ')}`);
+        if (card.due_date) lines.push(`Срок: ${card.due_date.slice(0, 10)}`);
         const files = card.files ?? [];
         if (files.length > 0) lines.push(`Файлы (открыть — в карточке Kaiten): ${files.map((f) => `${f.name} (${fileSize(Number(f.size))})`).join(', ')}`);
         if (card.description) lines.push('', 'Описание:', card.description);
@@ -359,6 +423,8 @@ export function registerTaskTools(server: McpServer, deps: TaskDeps): void {
         parent: cardRef.optional().describe('родительская карточка, если правила её требуют'),
         fields: fieldsArg,
         description: z.string().optional().describe('описание; без него Kaiten подставит шаблон типа'),
+        responsible: z.string().optional().describe('кому поручено: имя или почта; не указан — вы сами (если правила типа не требуют назвать)'),
+        due: z.string().optional().describe('срок датой ГГГГ-ММ-ДД, если правила типа его разрешают; после создания срок не меняется'),
         user_request: z.string().min(1).describe('исходная просьба пользователя дословно — попадёт в комментарий к карточке'),
         confirm_code: z.string().optional().describe('код из предпросмотра'),
       },
@@ -407,6 +473,31 @@ export function registerTaskTools(server: McpServer, deps: TaskDeps): void {
           problems.push(`у типа «${type?.name}» родителя по правилам доски нет`);
         }
 
+        const me = await deps.kaiten.currentUser();
+        let responsible: Person = me;
+        if (args.responsible !== undefined && args.responsible.trim()) {
+          responsible = (await findPerson(deps, ctx, args.responsible, me, problems)) ?? me;
+        } else if (rule?.responsible === 'required') {
+          problems.push('укажите ответственного (responsible): кому поручено — имя или почта; если себе — ваше имя');
+        }
+
+        const today = todayIn(me.timezone, (deps.now ?? (() => new Date()))());
+        let due: string | null = null;
+        let dueNote = '';
+        if (rule && type) {
+          if (args.due !== undefined) {
+            if (rule.due === 'none') problems.push(`у типа «${type.name}» срок при создании не ставится — уберите due`);
+            else if (!isDate(args.due.trim())) problems.push('срок (due) — дата ГГГГ-ММ-ДД, например 2026-10-21');
+            else if (args.due.trim() < today) problems.push(`срок ${args.due.trim()} уже прошёл: сегодня ${today}`);
+            else due = args.due.trim();
+          } else if (rule.due !== 'none' && rule.due_default) {
+            due = addWorkingDays(today, rule.due_default);
+            dueNote = ` — по умолчанию, +${workingDaysText(rule.due_default)}`;
+          } else if (rule.due === 'required') {
+            problems.push('укажите срок (due) датой ГГГГ-ММ-ДД — спросите пользователя: после создания срок не изменить');
+          }
+        }
+
         const properties = convertFields(ctx, args.fields, problems);
         if (type) {
           const { required } = await deps.catalog.typeFields(type);
@@ -431,9 +522,12 @@ export function registerTaskTools(server: McpServer, deps: TaskDeps): void {
           properties,
           description: args.description,
           parent_id: parent?.id,
+          // В коде предпросмотра — и кому, и срок: подтверждённый код не переписать на другого человека.
+          responsible_id: responsible.id,
+          due_date: due,
           user_request: args.user_request,
         };
-        const me = await deps.kaiten.currentUser();
+        const quietComments = ctx.parsed?.rules.comments === 'confirm';
         const preview = [
           `Доска: ${ctx.board.title}; колонка: ${column.title}; дорожка: ${lane ? laneTitle(lane) : '—'}; тип: ${type.name}`,
           `Название: ${payload.title}`,
@@ -442,7 +536,10 @@ export function registerTaskTools(server: McpServer, deps: TaskDeps): void {
             return f ? `${f.name}: ${displayValue(f, value)}` : '';
           }).filter(Boolean),
           ...(parent ? [`Родитель: #${parent.id} «${parent.title ?? ''}»`] : []),
-          `Ответственный: ${me.full_name?.trim() || me.email || 'вы'}`,
+          `Ответственный: ${personLabel(responsible)}`,
+          ...(responsible.id !== me.id ? [`Участник: ${personLabel(me)} — автор поручения`] : []),
+          ...(due ? [`Срок: ${due}${dueNote}`] : []),
+          ...(quietComments ? ['Комментарий с просьбой пользователя не пишем: на доске комментарии получают гости или заказчики.'] : []),
           ...(args.description ? ['Описание:', args.description] : ['Описание: шаблон типа']),
           ...warningLines(ctx),
         ].join('\n');
@@ -463,16 +560,19 @@ export function registerTaskTools(server: McpServer, deps: TaskDeps): void {
           type_id: payload.type_id,
           properties,
           ...(payload.description ? { description: payload.description } : {}),
+          ...(due ? { due_date: due } : {}),
         });
         const url = cardUrl(deps.domain, ctx.spaceId, created.id);
-        const followUps: Array<[string, () => Promise<unknown>]> = [
-          ...(parent ? ([[`связь с родителем #${parent.id}`, () => deps.kaiten.addChild(parent.id, created.id)]] as Array<[string, () => Promise<unknown>]>) : []),
+        type Step = [string, () => Promise<unknown>];
+        const followUps: Step[] = [
+          ...(parent ? ([[`связь с родителем #${parent.id}`, () => deps.kaiten.addChild(parent.id, created.id)]] as Step[]) : []),
           ['метка «агент»', () => deps.kaiten.addTag(created.id, 'агент')],
-          ['комментарий с просьбой пользователя', () => deps.kaiten.addComment(created.id, `Заведено ИИ-агентом по просьбе: «${args.user_request}»`)],
-          ['ответственный', async () => {
-            await deps.kaiten.addMember(created.id, me.id);
-            await deps.kaiten.makeResponsible(created.id, me.id);
+          ...(quietComments ? [] : ([['комментарий с просьбой пользователя', () => deps.kaiten.addComment(created.id, `Заведено ИИ-агентом по просьбе: «${args.user_request}»`)]] as Step[])),
+          [`ответственный — ${personLabel(responsible)}`, async () => {
+            await deps.kaiten.addMember(created.id, responsible.id);
+            await deps.kaiten.makeResponsible(created.id, responsible.id);
           }],
+          ...(responsible.id !== me.id ? ([['вы — участником карточки', () => deps.kaiten.addMember(created.id, me.id)]] as Step[]) : []),
         ];
         const failed: string[] = [];
         for (const [label, step] of followUps) {
@@ -560,15 +660,84 @@ export function registerTaskTools(server: McpServer, deps: TaskDeps): void {
     'add_comment',
     {
       title: 'Комментарий',
-      description: 'Добавляет комментарий к карточке от имени пользователя.',
+      description:
+        'Добавляет комментарий к карточке от имени пользователя. Если комментарий уйдёт заказчику или гостю (Service Desk, доска с гостями), ' +
+        'сервер не отправит его сразу, а даст ссылку: пользователь откроет её и нажмёт «Отправить».',
       inputSchema: { card: cardRef, text: z.string().min(1) },
     },
     (args) =>
       run(async () => {
         const { card, ctx } = await loadCard(args.card);
         requireOpen(ctx);
-        await deps.kaiten.addComment(card.id, args.text);
-        return `Комментарий добавлен к #${card.id}.`;
+        const reason = commentConfirmReason(ctx, card);
+        if (!reason) {
+          await deps.kaiten.addComment(card.id, args.text);
+          return `Комментарий добавлен к #${card.id}.`;
+        }
+        if (!deps.store || !deps.publicUrl || !deps.agentKey) {
+          throw new Refusal('Комментарий не отправлен', [`${reason} — нужно подтверждение человеком, а на этом подключении оно недоступно; напишите комментарий в Kaiten сами`]);
+        }
+        const me = await deps.kaiten.currentUser();
+        const pending: CommentPending = {
+          kind: 'comment',
+          userId: me.id,
+          agentKey: deps.agentKey,
+          by: personLabel(me),
+          cardId: card.id,
+          cardTitle: card.title ?? '',
+          boardTitle: ctx.board.title,
+          reason,
+          text: args.text,
+        };
+        const id = await savePending(deps.store, deps.secret, pending);
+        return (
+          `НУЖНО ПОДТВЕРЖДЕНИЕ ЧЕЛОВЕКА — комментарий к #${card.id} пока не отправлен: ${reason}.\n\n` +
+          `Покажите пользователю ссылку и попросите открыть её и нажать «Отправить»: ${deps.publicUrl.replace(/\/+$/, '')}/confirm/${id}\n${confirmTail}`
+        );
+      }),
+  );
+
+  server.registerTool(
+    'attach_file',
+    {
+      title: 'Приложить файл',
+      description:
+        `Кладёт файл в карточку. Файл у вас — передайте name и content_base64 (до ${MAX_INLINE_BYTES / 1024 / 1024} МБ). ` +
+        'Файл у пользователя (приложил в чат, лежит у него на компьютере) — вызовите без content_base64: сервер даст одноразовую ссылку, ' +
+        `пользователь откроет её и выберет файл (до 10 МБ). Типы: ${ALLOWED_EXTENSIONS.join(', ')}.`,
+      inputSchema: {
+        card: cardRef,
+        name: z.string().optional().describe('имя файла с расширением, например «счёт 2026-10.pdf»; только вместе с content_base64'),
+        content_base64: z.string().optional().describe('содержимое файла в base64'),
+      },
+    },
+    (args) =>
+      run(async () => {
+        const { card, ctx } = await loadCard(args.card);
+        requireOpen(ctx);
+        if (!card.uid) throw new Refusal('Файл не приложить', ['Kaiten не отдал адрес файлов карточки — приложите файл в Kaiten сами']);
+        const existing = (card.files ?? []).map((f) => f.name);
+        if (args.content_base64 !== undefined) {
+          const problems: string[] = [];
+          const name = args.name?.trim() ?? '';
+          if (!name) problems.push('укажите name — имя файла с расширением');
+          const bytes = decodeBase64(args.content_base64);
+          if (!bytes) problems.push('content_base64 — не base64');
+          else if (name) problems.push(...fileProblems(name, bytes, existing, MAX_INLINE_BYTES));
+          if (problems.length > 0 || !bytes) throw new Refusal('Файл не приложен — исправьте', problems);
+          await deps.kaiten.uploadCardFile(card.uid, name, bytes);
+          return `Файл «${name}» приложен к #${card.id}.`;
+        }
+        if (!deps.store || !deps.publicUrl || !deps.agentKey) {
+          throw new Refusal('Страница загрузки на этом подключении недоступна', ['передайте файл в content_base64 или приложите его в Kaiten сами']);
+        }
+        const me = await deps.kaiten.currentUser();
+        const pending: UploadPending = { kind: 'upload', userId: me.id, agentKey: deps.agentKey, by: personLabel(me), cardId: card.id, cardUid: card.uid, cardTitle: card.title ?? '' };
+        const id = await savePending(deps.store, deps.secret, pending);
+        return (
+          `Файл выберет пользователь. Покажите ему ссылку: ${deps.publicUrl.replace(/\/+$/, '')}/upload/${id}\n` +
+          `До 10 МБ; типы: ${ALLOWED_EXTENSIONS.join(', ')}. ${confirmTail}`
+        );
       }),
   );
 

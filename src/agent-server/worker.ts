@@ -13,11 +13,11 @@
 import { AuthorizationError, CimdFetchError, OAuthProvider, type OAuthHelpers } from '@cloudflare/workers-oauth-provider';
 
 import { KaitenApiError, KaitenClient } from '../kaiten-client.js';
-import { applyPending, dropPending, loadPending } from './docs.js';
+import { confirmRoute, type HumanDeps, uploadRoute } from './human-pages.js';
 import { looksLikeAgentKey, openKey, sealToken } from './key.js';
-import { handleMcp, kaitenFor } from './mcp.js';
-import { authorizePage, confirmPage, consentViewFromForm, homePage, htmlHeaders, keyPage, loginPage, messagePage } from './pages.js';
-import { checkCsrf, csrfToken, makeSession, readSession, sessionCookie, sessionValue } from './session.js';
+import { handleMcp } from './mcp.js';
+import { authorizePage, consentViewFromForm, homePage, htmlHeaders, keyPage, loginPage, messagePage } from './pages.js';
+import { makeSession, sessionCookie } from './session.js';
 import type { Store } from './store.js';
 
 interface Env {
@@ -130,35 +130,14 @@ async function login(request: Request, env: Env): Promise<Response> {
   const { form, token } = await readToken(request);
   const raw = String(form.get('next') ?? '');
   // Возврат — только на свою страницу подтверждения: никаких внешних адресов.
-  const next = /^\/confirm\/[A-Za-z0-9_-]+$/.test(raw) ? raw : '/';
+  const next = /^\/(confirm|upload)\/[A-Za-z0-9_-]+$/.test(raw) ? raw : '/';
   const user = token ? await kaitenUser(env, token) : null;
   if (!user) return html(loginPage(next, token ? 'Kaiten не принял этот токен.' : 'Вставьте токен Kaiten.'), 400);
   const headers = await withSession(new Headers({ Location: next }), user.id, env);
   return new Response(null, { status: 303, headers });
 }
 
-async function confirm(request: Request, env: Env, id: string): Promise<Response> {
-  const cookie = sessionValue(request.headers.get('Cookie'));
-  const session = await readSession(cookie, env.SERVER_SECRET);
-  if (!session || !cookie) return html(loginPage(`/confirm/${id}`));
-  const store = kvStore(env.AGENT_KV);
-  const pending = await loadPending(store, env.SERVER_SECRET, id);
-  if (!pending) return html(messagePage('Ссылка не действует', 'Она устарела (30 минут) или уже использована. Попросите агента повторить действие.'), 410);
-  if (pending.userId !== session.userId) return html(messagePage('Не ваше подтверждение', 'Это действие запросил другой человек — подтверждает только он.'), 403);
-  if (request.method === 'GET') {
-    return html(confirmPage({ docTitle: pending.docTitle, summary: pending.summary, by: pending.by, before: pending.before, after: pending.after }, await csrfToken(cookie, id, env.SERVER_SECRET)));
-  }
-  const form = await request.formData();
-  if (!(await checkCsrf(cookie, id, String(form.get('csrf') ?? ''), env.SERVER_SECRET))) return html(messagePage('Ошибка', 'Форма устарела — откройте ссылку заново.'), 400);
-  // Одноразово: сначала гасим ссылку, потом выполняем — повторная отправка формы ничего не сделает.
-  await dropPending(store, id);
-  if (form.get('decision') !== 'apply') return html(messagePage('Отклонено', 'Ничего не записано. Агент узнает об этом, когда вы ему скажете.'));
-  const token = await openKey(pending.agentKey, env.SERVER_SECRET);
-  if (!token) return html(messagePage('Не применено', 'Ключ агента больше не действует — подключите агента заново.'), 400);
-  const kaiten = kaitenFor({ domain: env.KAITEN_DOMAIN, token, secret: env.SERVER_SECRET });
-  const result = await applyPending({ kaiten, store, secret: env.SERVER_SECRET, domain: env.KAITEN_DOMAIN.replace(/^https?:\/\//, '').replace(/\/+$/, '') }, pending);
-  return html(messagePage(result.startsWith('Применено') ? 'Готово' : 'Не применено', result));
-}
+const humanDeps = (env: Env): HumanDeps => ({ store: kvStore(env.AGENT_KV), secret: env.SERVER_SECRET, domain: env.KAITEN_DOMAIN });
 
 const defaultHandler: ExportedHandler<Env> = {
   async fetch(request, env) {
@@ -166,8 +145,10 @@ const defaultHandler: ExportedHandler<Env> = {
     if (url.pathname === '/authorize') return authorize(request, env);
     if (url.pathname === '/key' && request.method === 'POST') return issueKey(request, env);
     if (url.pathname === '/login' && request.method === 'POST') return login(request, env);
-    const confirmMatch = /^\/confirm\/([A-Za-z0-9_-]{10,64})$/.exec(url.pathname);
-    if (confirmMatch && (request.method === 'GET' || request.method === 'POST')) return confirm(request, env, confirmMatch[1]);
+    const human = /^\/(confirm|upload)\/([A-Za-z0-9_-]{10,64})$/.exec(url.pathname);
+    if (human && (request.method === 'GET' || request.method === 'POST')) {
+      return human[1] === 'confirm' ? confirmRoute(request, humanDeps(env), human[2]) : uploadRoute(request, humanDeps(env), human[2]);
+    }
     if (url.pathname === '/' && request.method === 'GET') return html(homePage(url.origin));
     return html(messagePage('Не найдено', 'Такой страницы нет.'), 404);
   },

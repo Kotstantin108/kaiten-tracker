@@ -21,7 +21,7 @@
 
 import { contentHash, foreignFieldChanges, parseTaskDocument, serializeTaskDocument, TaskParseError } from './document.js';
 import { lintTask, SLUG_RE } from './lint.js';
-import { CLOSED_STATUSES, FrontmatterSchema, type Frontmatter, type Priority, type TaskStatus, type TaskType } from './schema.js';
+import { CLOSED_STATUSES, FrontmatterSchema, JOURNAL_FILE, type Frontmatter, type Priority, type TaskStatus, type TaskType } from './schema.js';
 import { renderSkeleton } from './skeleton.js';
 import { buildIndex, refOf, type TaskRecord } from './tasks-index.js';
 
@@ -313,8 +313,7 @@ function setItems(body: string, texts: readonly string[], value: boolean): { bod
 /** Вложения больше — не в задачи: репозиторий задач загружают целиком. */
 export const ATTACHMENT_MAX_BYTES = 5 * 1024 * 1024;
 
-/** Имя журнала задачи среди файлов карточки Kaiten — вложение так назвать нельзя. */
-export const JOURNAL_FILE = 'ЖУРНАЛ.md';
+export { JOURNAL_FILE };
 
 /**
  * Что не так с именем вложения; `null` — годится. Имя — относительный путь

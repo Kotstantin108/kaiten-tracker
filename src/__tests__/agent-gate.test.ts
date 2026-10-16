@@ -57,6 +57,30 @@ describe('checkKaitenCall', () => {
     expect(checkKaitenCall('PATCH', '/documents/d1', body({ data: { type: 'doc', content: [] } }))).toBeNull();
   });
 
+  it('срок — только при создании; время, владелец и ответственный — никогда', () => {
+    expect(checkKaitenCall('POST', '/cards', body({ title: 'a', board_id: 1, due_date: '2026-10-21' }))).toBeNull();
+    expect(checkKaitenCall('POST', '/cards', body({ title: 'a', board_id: 1, due_date_time_present: true }))).toMatch(/due_date_time_present/);
+    expect(checkKaitenCall('POST', '/cards', body({ title: 'a', board_id: 1, responsible_id: 5 }))).toMatch(/responsible_id/);
+  });
+
+  it('файл — только по UUID карточки, одним полем file, без пути в имени и до 10 МБ', () => {
+    const uid = '0a1b2c3d-0000-4000-8000-000000000001';
+    const form = (name: string, size = 3, field = 'file'): FormData => {
+      const f = new FormData();
+      f.append(field, new Blob([new Uint8Array(size)]), name);
+      return f;
+    };
+    expect(checkKaitenCall('POST', `/cards/${uid}/files`, form('счёт.pdf'))).toBeNull();
+    expect(checkKaitenCall('POST', '/cards/123/files', form('счёт.pdf'))).toMatch(/недоступен/);
+    expect(checkKaitenCall('POST', `/cards/${uid}/files`, form('img/a.png'))).toMatch(/имя файла/);
+    expect(checkKaitenCall('POST', `/cards/${uid}/files`, form('a\\b.png'))).toMatch(/имя файла/);
+    expect(checkKaitenCall('POST', `/cards/${uid}/files`, form('a.pdf', 3, 'other'))).toMatch(/только поле file/);
+    expect(checkKaitenCall('POST', `/cards/${uid}/files`, form('big.pdf', 10 * 1024 * 1024 + 1))).toMatch(/10 МБ/);
+    expect(checkKaitenCall('POST', `/cards/${uid}/files`, body({ name: 'a' }))).toMatch(/формой/);
+    expect(checkKaitenCall('POST', '/cards/1/comments', form('a.pdf'))).toMatch(/форма/);
+    expect(checkKaitenCall('PATCH', `/cards/${uid}/files/${uid}`, body({ name: 'x' }))).toMatch(/недоступен/);
+  });
+
   it('тело записи — только JSON-объект', () => {
     expect(checkKaitenCall('POST', '/cards/1/comments', '[1]')).toMatch(/JSON/);
     expect(checkKaitenCall('POST', '/cards/1/comments', 'не json')).toMatch(/JSON/);

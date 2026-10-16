@@ -203,6 +203,54 @@ export function confirmPage(view: ConfirmView, csrf: string): string {
   );
 }
 
+export interface CommentConfirmView {
+  cardTitle: string;
+  cardId: number;
+  boardTitle: string;
+  reason: string;
+  by: string;
+  text: string;
+}
+
+export function commentConfirmPage(view: CommentConfirmView, csrf: string): string {
+  return page(
+    'Подтверждение комментария',
+    `<h1>Отправить комментарий?</h1>
+<p><strong>${escapeHtml(view.reason)}</strong>.</p>
+<p class="muted">Карточка #${view.cardId} «${escapeHtml(view.cardTitle)}», доска «${escapeHtml(view.boardTitle)}». Запрошено от имени: ${escapeHtml(view.by)}.</p>
+<pre>${escapeHtml(view.text)}</pre>
+<form method="post" class="card">
+<input type="hidden" name="csrf" value="${escapeHtml(csrf)}">
+<button type="submit" name="decision" value="apply">Отправить</button>
+<button type="submit" name="decision" value="reject" class="secondary">Отклонить</button>
+</form>`,
+  );
+}
+
+export interface UploadView {
+  cardTitle: string;
+  cardId: number;
+  by: string;
+  extensions: readonly string[];
+  maxMb: number;
+}
+
+export function uploadPage(view: UploadView, csrf: string, error?: string): string {
+  return page(
+    'Загрузка файла',
+    `<h1>Приложить файл к карточке</h1>
+<p>Карточка #${view.cardId} «${escapeHtml(view.cardTitle)}». Запрошено от имени: ${escapeHtml(view.by)}.</p>
+<form method="post" enctype="multipart/form-data" class="card">
+${error ? `<p class="warn">${escapeHtml(error)}</p>` : ''}
+<input type="hidden" name="csrf" value="${escapeHtml(csrf)}">
+<label for="file">Файл</label>
+<input id="file" name="file" type="file" required accept="${escapeHtml(view.extensions.map((e) => `.${e}`).join(','))}">
+<p class="muted">До ${view.maxMb} МБ; типы: ${escapeHtml(view.extensions.join(', '))}. Файл увидят все, у кого есть доступ к карточке.</p>
+<button type="submit">Загрузить</button>
+</form>`,
+  );
+}
+
 export function messagePage(title: string, message: string): string {
   return page(title, `<h1>${escapeHtml(title)}</h1><p>${escapeHtml(message)}</p>`);
 }

@@ -252,6 +252,19 @@ describe('статус — сначала карточка', { timeout: 30_000 }
     await expect(s.moveCardFirst(s.ctx, s.task, 'cancelled', s.fake.client)).rejects.toThrow('Kaiten не разрешил — Из «В работе» — не в «Отменено»');
   });
 
+  it('kaiten show: файлы карточки, которых нет в задаче; без связи — одна строка без подробностей', async () => {
+    const s = await setup(true);
+    const { foreignCardFiles } = await import('../kaiten-cli.js');
+    const file = (name: string, size: number) => ({ id: `00000000-0000-4000-8000-${String(size).padStart(12, '0')}`, name, content: new Uint8Array(size) });
+    s.fake.cards.set(s.cardId, { ...s.fake.cards.get(s.cardId)!, files: [file('ЖУРНАЛ.md', 10), file('draft.MD', 20), file('выгрузка.xlsx', 2048)] });
+    expect(await foreignCardFiles(s.ctx, s.task, ['DRAFT.md'], s.fake.client)).toEqual({ files: [{ name: 'выгрузка.xlsx', size: 2048 }] });
+    expect(s.fake.writes).toEqual([]);
+    s.fake.failOn = () => ({ status: 500, body: {} });
+    expect(await foreignCardFiles(s.ctx, s.task, [], s.fake.client)).toEqual({ unreachable: true });
+    const noCard = { ...s.task, fm: { ...s.task.fm, tracker: undefined } };
+    expect(await foreignCardFiles(s.ctx, noCard, [], s.fake.client)).toBeNull();
+  });
+
   it('карточка из списка владельца — не трогаем', async () => {
     const s = await setup(true);
     const ignored = { ...s.task, fm: { ...s.task.fm, tracker: '123' } };

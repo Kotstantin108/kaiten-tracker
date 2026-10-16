@@ -37,6 +37,13 @@ export type Priority = (typeof PRIORITIES)[number];
 
 export const CREATED_VIA = ['agent', 'human'] as const;
 
+/**
+ * Имя журнала задачи среди файлов карточки Kaiten — вложение так назвать
+ * нельзя. Здесь, а не в `task-ops.ts`: его же проверяет агентский сервер, а
+ * ему не нужен разбор задач.
+ */
+export const JOURNAL_FILE = 'ЖУРНАЛ.md';
+
 export type FieldOwner = 'file' | 'cli' | 'kaiten';
 
 /** ULID: 26 символов Crockford base32, первый — не больше 7 (48 бит времени). */

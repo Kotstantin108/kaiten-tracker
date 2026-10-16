@@ -73,6 +73,13 @@ export const CardSchema = z
      */
     due_date: z.string().nullable().optional(),
     due_date_time_present: z.boolean().optional(),
+    /** Обращение Service Desk: сервис, через который оно пришло; комментарий уходит заказчику (живьём 16.10: поле есть у карточки). */
+    service_id: z.union([z.number(), z.string()]).nullable().optional(),
+    /** Участники; `type` 2 — ответственный (живьём 29.09). */
+    members: z
+      .array(z.object({ id: z.number(), full_name: z.string().nullable().optional(), type: z.number().optional() }).passthrough())
+      .nullable()
+      .optional(),
     /** Когда карточку перенесли в текущую колонку (живьём 28.09: в списке есть). */
     column_changed_at: z.string().nullable().optional(),
     /** Родители карточки; `null` — родителей нет (снято с живого аккаунта 23.09.2026). */
@@ -134,9 +141,28 @@ export const SpaceSchema = z
 export type Space = z.infer<typeof SpaceSchema>;
 
 export const CurrentUserSchema = z
-  .object({ id: z.number(), full_name: z.string().nullable().optional(), email: z.string().nullable().optional() })
+  .object({
+    id: z.number(),
+    full_name: z.string().nullable().optional(),
+    email: z.string().nullable().optional(),
+    /** Часовой пояс из профиля, например `Europe/Moscow` (живьём 16.10 — `UTC`). */
+    timezone: z.string().nullable().optional(),
+  })
   .passthrough();
 export type CurrentUser = z.infer<typeof CurrentUserSchema>;
+
+/** Участник пространства (`GET /spaces/{id}/users`); унаследованных от родителя в списке нет (живьём 16.10). */
+export const SpaceUserSchema = z
+  .object({
+    id: z.number(),
+    full_name: z.string().nullable().optional(),
+    email: z.string().nullable().optional(),
+    username: z.string().nullable().optional(),
+    activated: z.boolean().optional(),
+    virtual: z.boolean().optional(),
+  })
+  .passthrough();
+export type SpaceUser = z.infer<typeof SpaceUserSchema>;
 
 export const BoardSchema = z
   .object({
@@ -514,6 +540,10 @@ export class KaitenClient {
 
   async listSpaces(): Promise<Space[]> {
     return this.listAll('/spaces', SpaceSchema);
+  }
+
+  async listSpaceUsers(spaceId: number): Promise<SpaceUser[]> {
+    return this.listAll(`/spaces/${spaceId}/users`, SpaceUserSchema);
   }
 
   /** Владелец токена (живьём: `GET /users/current` отдаёт id, имя, почту). */

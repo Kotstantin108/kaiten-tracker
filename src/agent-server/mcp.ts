@@ -32,6 +32,8 @@ export interface AgentContext {
   agentKey?: string;
   /** Подменяется в тестах. */
   fetchImpl?: typeof fetch;
+  /** Часы — подменяются в тестах. */
+  now?: () => Date;
 }
 
 export const SERVER_INSTRUCTIONS = [
@@ -39,6 +41,7 @@ export const SERVER_INSTRUCTIONS = [
   'Прежде чем заводить или менять карточку, прочитай правила доски.',
   'Всё, чего не хватает, спроси у пользователя одним сообщением — не придумывай значения.',
   'Перед созданием покажи пользователю предпросмотр.',
+  'Ссылку подтверждения или загрузки покажи пользователю — сам по ней не переходи.',
   'Удалять и архивировать сервер не умеет — это делает человек в Kaiten.',
 ].join(' ');
 
@@ -119,7 +122,15 @@ export function buildServer(ctx: AgentContext): McpServer {
   );
 
   const catalog = new Catalog(kaiten);
-  registerTaskTools(server, { kaiten, catalog, domain: domainOf(ctx), secret: ctx.secret, describeError });
+  registerTaskTools(server, {
+    kaiten,
+    catalog,
+    domain: domainOf(ctx),
+    secret: ctx.secret,
+    describeError,
+    ...(ctx.store && ctx.publicUrl && ctx.agentKey ? { store: ctx.store, publicUrl: ctx.publicUrl, agentKey: ctx.agentKey } : {}),
+    ...(ctx.now ? { now: ctx.now } : {}),
+  });
   if (ctx.store && ctx.publicUrl && ctx.agentKey) {
     registerDocTools(server, { kaiten, catalog, domain: domainOf(ctx), secret: ctx.secret, store: ctx.store, publicUrl: ctx.publicUrl, agentKey: ctx.agentKey, describeError });
   }

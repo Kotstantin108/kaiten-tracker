@@ -35,6 +35,7 @@ import {
 } from './doc-page.js';
 import type { AgentKaiten, Catalog, KaitenDocument } from './kaiten-agent.js';
 import { openData, sealData } from './key.js';
+import { dropPending as drop, pendingKind, readPending, savePending } from './pending.js';
 import { docOf, markdownToNodes, nodesToMarkdown, parseDocData, type PMNode, plainText } from './prosemirror.js';
 import { Refusal, runTool } from './refusal.js';
 import type { Store } from './store.js';
@@ -61,7 +62,6 @@ export interface DocDeps {
  */
 export const HUMAN_PAGES_WRITABLE = true;
 
-const PENDING_TTL = 30 * 60;
 const SNAPSHOT_TTL = 30 * 86400;
 
 /** Адрес документа в интерфейсе Kaiten (снят из браузера 16.10.2026). */
@@ -214,6 +214,7 @@ export async function commitWrite(deps: Pick<DocDeps, 'kaiten' | 'store' | 'secr
 }
 
 const PendingSchema = z.object({
+  kind: z.literal('doc').optional(),
   userId: z.number(),
   agentKey: z.string(),
   docTitle: z.string(),
@@ -231,17 +232,9 @@ const PendingSchema = z.object({
 });
 export type Pending = z.infer<typeof PendingSchema>;
 
-function randomId(): string {
-  const bytes = crypto.getRandomValues(new Uint8Array(18));
-  let binary = '';
-  for (const b of bytes) binary += String.fromCharCode(b);
-  return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
-}
-
 async function askHuman(deps: DocDeps, userId: number, pending: Omit<Pending, 'userId' | 'agentKey'>): Promise<string> {
-  const id = randomId();
-  const value: Pending = { ...pending, userId, agentKey: deps.agentKey };
-  await deps.store.put(`pending:${id}`, await sealData(value, deps.secret), PENDING_TTL);
+  const value: Pending = { ...pending, kind: 'doc', userId, agentKey: deps.agentKey };
+  const id = await savePending(deps.store, deps.secret, value);
   return (
     `НУЖНО ПОДТВЕРЖДЕНИЕ ЧЕЛОВЕКА — пока ничего не записано.\n${pending.summary}\n\n` +
     `Покажите пользователю ссылку и попросите открыть её и нажать «Применить»: ${deps.publicUrl.replace(/\/+$/, '')}/confirm/${id}\n` +
@@ -249,17 +242,15 @@ async function askHuman(deps: DocDeps, userId: number, pending: Omit<Pending, 'u
   );
 }
 
+/** Правка документа, ждущая подтверждения; запись другого вида — `null`. */
 export async function loadPending(store: Store, secret: string, id: string): Promise<Pending | null> {
-  if (!/^[A-Za-z0-9_-]{10,64}$/.test(id)) return null;
-  const sealed = await store.get(`pending:${id}`);
-  if (!sealed) return null;
-  const parsed = PendingSchema.safeParse(await openData(sealed, secret));
+  const raw = await readPending(store, secret, id);
+  if (pendingKind(raw) !== 'doc') return null;
+  const parsed = PendingSchema.safeParse(raw);
   return parsed.success ? parsed.data : null;
 }
 
-export async function dropPending(store: Store, id: string): Promise<void> {
-  await store.delete(`pending:${id}`);
-}
+export const dropPending = drop;
 
 /** Выполнить подтверждённое действие (вызывает страница подтверждения). */
 export async function applyPending(deps: Pick<DocDeps, 'kaiten' | 'store' | 'secret' | 'domain'>, pending: Pending): Promise<string> {

@@ -7,7 +7,7 @@
 
 import { z } from 'zod';
 
-import { type Card, type CardType, CardTypeSchema, type CustomProperty, KaitenClient, type SelectValue, type Space } from '../kaiten-client.js';
+import { type Card, type CardType, CardTypeSchema, type CustomProperty, KaitenClient, type SelectValue, type Space, type SpaceUser } from '../kaiten-client.js';
 import { type BoardRules, coverageProblems, normalizeTitle, type ParsedDescription, parseBoardDescription, typeRule } from './board-rules.js';
 import { applicable, demandedProperties, parseRestrictions, type Restriction } from './restrictions.js';
 
@@ -181,7 +181,9 @@ const fieldKey = (id: number): string => `id_${id}`;
 export class Catalog {
   private types?: Promise<CardType[]>;
   private properties?: Promise<CustomProperty[]>;
+  private spaceList?: Promise<Space[]>;
   private spaces?: Promise<Map<number, Space>>;
+  private peopleBySpace = new Map<number, Promise<SpaceUser[]>>();
   private values = new Map<number, Promise<SelectValue[]>>();
   private restrictionsBySpace = new Map<number, Promise<Restriction[]>>();
 
@@ -197,14 +199,45 @@ export class Catalog {
     return this.properties;
   }
 
+  allSpaces(): Promise<Space[]> {
+    this.spaceList ??= this.kaiten.listSpaces();
+    return this.spaceList;
+  }
+
   /** Пространство, в котором лежит доска. */
   async spaceOf(boardId: number): Promise<Space | null> {
-    this.spaces ??= this.kaiten.listSpaces().then((list) => {
+    this.spaces ??= this.allSpaces().then((list) => {
       const map = new Map<number, Space>();
       for (const space of list) for (const board of space.boards ?? []) map.set(board.id, space);
       return map;
     });
     return (await this.spaces).get(boardId) ?? null;
+  }
+
+  /**
+   * Люди с доступом к пространству: его участники и участники пространств
+   * выше. Kaiten наследует доступ от родителя, а в списке дочернего
+   * пространства унаследованных нет (живьём 16.10: у многих — пусто).
+   * Отключённые и виртуальные — не адресаты.
+   */
+  people(spaceId: number): Promise<SpaceUser[]> {
+    if (!this.peopleBySpace.has(spaceId)) {
+      this.peopleBySpace.set(
+        spaceId,
+        (async () => {
+          const spaces = await this.allSpaces();
+          const byUid = new Map(spaces.map((s) => [s.uid, s]));
+          const out = new Map<number, SpaceUser>();
+          const seen = new Set<number>();
+          for (let cur = spaces.find((s) => s.id === spaceId); cur && !seen.has(cur.id); cur = cur.parent_entity_uid ? byUid.get(cur.parent_entity_uid) : undefined) {
+            seen.add(cur.id);
+            for (const user of await this.kaiten.listSpaceUsers(cur.id)) if (user.activated !== false && !user.virtual && !out.has(user.id)) out.set(user.id, user);
+          }
+          return [...out.values()];
+        })(),
+      );
+    }
+    return this.peopleBySpace.get(spaceId) as Promise<SpaceUser[]>;
   }
 
   async field(propertyId: number): Promise<FieldInfo | null> {

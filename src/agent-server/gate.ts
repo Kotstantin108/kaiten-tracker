@@ -12,7 +12,10 @@
  *     пользователя компании и шлёт приглашение — выдача доступа запрещена целиком;
  *   · `POST /documents` без родителя кладёт документ в корень компании;
  *     `clone_uid` кладёт копию рядом с источником, игнорируя родителя;
- *   · `PATCH /cards/{id} {condition: 3}` — удаление через правку.
+ *   · `PATCH /cards/{id} {condition: 3}` — удаление через правку;
+ *   · файл по числовому id карточки ложится с постоянной публичной ссылкой —
+ *     загрузка только по UUID; путь в имени Kaiten отрезает, а переименовать
+ *     или удалить файл агент не может — имя без «/» и «\».
  */
 
 type Body = Record<string, unknown> | null;
@@ -22,14 +25,34 @@ interface Rule {
   path: RegExp;
   /** Проверка тела записи; строка — причина отказа. */
   check?: (body: Body) => string | null;
+  /** Тело — файл формой (`multipart/form-data`), а не JSON. */
+  form?: (form: FormData) => string | null;
 }
 
 const ID = '[0-9]+';
 const UID = '[0-9a-zA-Z-]+';
-const re = (pattern: string): RegExp => new RegExp(`^${pattern}$`);
+const UUID = '[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}';
+const re =(pattern: string): RegExp => new RegExp(`^${pattern}$`);
 
 /** Поля карточки, которых агент не трогает никогда: удаление, архив, сроки, владелец. */
 const CARD_FORBIDDEN = ['condition', 'archived', 'due_date', 'due_date_time_present', 'owner_id', 'responsible_id', 'board_id'];
+/** Больше — не пускаем: и страница загрузки, и инструмент ограничены этим же или меньшим. */
+export const MAX_UPLOAD_BYTES = 10 * 1024 * 1024;
+
+/** При создании можно поставить срок (его требуют правила типа), но не время и не владельца. */
+const CREATE_FORBIDDEN = CARD_FORBIDDEN.filter((key) => key !== 'board_id' && key !== 'due_date');
+
+function oneFile(form: FormData): string | null {
+  const keys = [...form.keys()];
+  if (keys.length !== 1 || keys[0] !== 'file') return 'в форме — только поле file';
+  const file = form.get('file');
+  if (!(file instanceof Blob)) return 'file — не файл';
+  if (file.size > MAX_UPLOAD_BYTES) return 'файл больше 10 МБ';
+  const name = file instanceof File ? file.name : '';
+  if (!name.trim() || /[/\\]/.test(name)) return 'имя файла пустое или с «/», «\\»';
+  return null;
+}
+
 /** Поля документа, которых агент не трогает: доступ, публикация, архив, восстановление, копирование. */
 const DOCUMENT_FORBIDDEN = ['access', 'public', 'published_version', 'slug', 'archived', 'backup_version', 'clone_uid', 'clone_version', 'key'];
 
@@ -41,7 +64,7 @@ function forbidKeys(keys: readonly string[]): (body: Body) => string | null {
 }
 
 const RULES: readonly Rule[] = [
-  { method: 'POST', path: re('/cards'), check: forbidKeys(CARD_FORBIDDEN.filter((key) => key !== 'board_id')) },
+  { method: 'POST', path: re('/cards'), check: forbidKeys(CREATE_FORBIDDEN) },
   { method: 'PATCH', path: re(`/cards/${ID}`), check: forbidKeys(CARD_FORBIDDEN) },
   { method: 'POST', path: re(`/cards/${ID}/comments`) },
   { method: 'POST', path: re(`/cards/${ID}/checklists`) },
@@ -51,6 +74,7 @@ const RULES: readonly Rule[] = [
   { method: 'POST', path: re(`/cards/${ID}/blockers`) },
   { method: 'POST', path: re(`/cards/${ID}/tags`) },
   { method: 'POST', path: re(`/cards/${ID}/external-links`) },
+  { method: 'POST', path: re(`/cards/${UUID}/files`), form: oneFile },
   // Ответственный ставится только при создании — это проверяет инструмент;
   // заслонка лишь не пускает выше роли участника карточки.
   { method: 'POST', path: re(`/cards/${ID}/members`) },
@@ -87,6 +111,8 @@ export function checkKaitenCall(method: string, apiPath: string, rawBody?: Reque
   if (verb === 'GET') return READ_FORBIDDEN.test(apiPath) ? 'чтение настроек компании закрыто' : null;
   const rule = RULES.find((r) => r.method === verb && r.path.test(apiPath));
   if (!rule) return `${verb} ${apiPath} агенту недоступен`;
+  if (rule.form) return rawBody instanceof FormData ? rule.form(rawBody) : 'файл — только формой';
+  if (rawBody instanceof FormData) return 'форма здесь не принимается';
   const body = parseBody(rawBody);
   if (body === 'invalid') return 'тело запроса — не JSON-объект';
   return rule.check ? rule.check(body) : null;

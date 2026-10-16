@@ -14,6 +14,7 @@ import { z } from 'zod';
 
 import { loadTasksRepoConfig, projectFromTasksRepo, storeNameOf, TASKS_REPO_CONFIG, type LoadedProject, type People } from './config.js';
 import type { Priority, TaskStatus } from './core/schema.js';
+import { JOURNAL_FILE } from './core/task-ops.js';
 import { buildIndex, belongsToProject, resolveTask, type TaskIndex, type TaskRecord } from './core/tasks-index.js';
 import { localCopyDir, loadSettings, PROJECT_FILE, readProjectFile, type KaitenSettings } from './kaiten-context.js';
 import { formatProblems } from './kaiten-format.js';
@@ -246,6 +247,31 @@ export function attachmentRefs(entries: readonly StoreEntry[]): Map<string, Atta
     out.set(m[1], [...(out.get(m[1]) ?? []), { name: m[2], sha: e.sha, size: e.size }]);
   }
   return out;
+}
+
+export type ForeignFiles = { files: Array<{ name: string; size: number }> } | { unreachable: true } | null;
+
+/**
+ * Файлы карточки Kaiten, которых нет в задаче: их приложили люди прямо в
+ * Kaiten (выгрузка замечаний, счёт). Вложения задачи и журнал приходят из git —
+ * их `kaiten show` показывает и так. Нет карточки или входа в Kaiten — `null`
+ * (строки нет); Kaiten не ответил — `unreachable`, без подробностей.
+ */
+export async function foreignCardFiles(ctx: Context, task: TaskRecord, attachments: readonly string[], client?: KaitenClient): Promise<ForeignFiles> {
+  const cardId = task.fm.tracker !== undefined && /^\d+$/.test(task.fm.tracker) ? Number(task.fm.tracker) : null;
+  if (cardId === null || ctx.loaded.project.ignoreCards.includes(cardId)) return null;
+  const login = settings().kaiten;
+  if (!login && !client) return null;
+  const timed: typeof fetch = (input, init) => fetch(input, { ...init, signal: AbortSignal.timeout(8000) });
+  const kaiten = client ?? new KaitenClient({ domain: login?.domain ?? '', token: login?.token ?? '', maxRetries: 1, fetchImpl: timed });
+  try {
+    const card = await kaiten.getCard(cardId);
+    const own = new Set([...attachments, JOURNAL_FILE].map((name) => name.toLowerCase()));
+    const files = (card.files ?? []).filter((f) => !own.has(f.name.toLowerCase())).map((f) => ({ name: f.name, size: Number(f.size) }));
+    return { files };
+  } catch {
+    return { unreachable: true };
+  }
 }
 
 /** Содержимое вложения по git-объекту — по требованию: читаются только отправляемые. */

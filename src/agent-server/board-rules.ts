@@ -28,8 +28,15 @@ const TypeRuleSchema = z
     title: z.string().min(1, 'шаблон названия пуст').optional(),
     lane: z.string().min(1).default('default'),
     parent: z.string().min(1).default('none'),
+    /** `self` — ответственный сам пользователь, если не назвал другого; `required` — агент обязан назвать. */
+    responsible: z.enum(['self', 'required']).default('self'),
+    /** Срок при создании: не ставится, можно или обязателен. Менять его потом агент не может. */
+    due: z.enum(['none', 'optional', 'required']).default('none'),
+    /** Срок, если агент его не назвал: столько рабочих дней от сегодня. */
+    due_default: z.number().int().min(1).max(60).optional(),
   })
-  .strict();
+  .strict()
+  .refine((rule) => rule.due_default === undefined || rule.due !== 'none', { message: 'due_default без due: optional или required', path: ['due_default'] });
 export type TypeRule = z.infer<typeof TypeRuleSchema>;
 
 const BoardRulesSchema = z
@@ -46,6 +53,12 @@ const BoardRulesSchema = z
      * агенту карточки, которые git потом перезапишет.
      */
     synced: z.boolean().default(true),
+    /**
+     * `confirm` — комментарий агента уходит только после подтверждения
+     * человеком: на доске гости или заказчики, им приходит письмо. Карточки
+     * Service Desk подтверждаются всегда, и без этого ключа.
+     */
+    comments: z.enum(['free', 'confirm']).default('free'),
     /** Тип → правило; `"*"` — любой тип доски. */
     types: z.record(z.string().min(1), TypeRuleSchema).refine((t) => Object.keys(t).length > 0, 'не задано ни одного типа'),
   })

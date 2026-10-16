@@ -142,7 +142,7 @@ kaiten doctor --offline  # без проверок, которым нужна с
 
 ```bash
 kaiten list                   # открытые задачи продукта текущего репозитория
-kaiten show PRJ-123           # задача целиком, её эпик и соседние; по частям: --outline, --section, --todo, --log N
+kaiten show PRJ-123           # задача целиком, её эпик и соседние, файлы из карточки Kaiten; по частям: --outline, --section, --todo, --log N
 kaiten search таймаут вебхук  # по задачам и текстовым вложениям; a|b — варианты, --regex, --lines
 kaiten files PRJ-123          # вложения задачи
 kaiten pull                   # свежие задачи и отправка своих изменений
