@@ -11,7 +11,7 @@ import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 
 import type { Card, CardType } from '../kaiten-client.js';
-import { fieldHint, normalizeTitle, titleProblem } from './board-rules.js';
+import { fieldHint, normalizeTitle, parseBoardDescription, titleProblem } from './board-rules.js';
 import {
   type AgentKaiten,
   allowedTypes,
@@ -113,7 +113,20 @@ function restrictionProblems(ctx: BoardContext, blocking: Restriction[], state: 
 }
 
 function requireOpen(ctx: BoardContext): void {
-  if (ctx.closed.length > 0) throw new Refusal(`Доска «${ctx.board.title}» закрыта для записи агентом — правила в её описании не готовы`, ctx.closed);
+  if (ctx.closed.length > 0) throw new Refusal(`Доска «${ctx.board.title}» закрыта для записи агентом`, ctx.closed);
+}
+
+/** Предупреждения об описании доски — хвостом к ответу: подсказка, не отказ. */
+function warningLines(ctx: BoardContext): string[] {
+  return ctx.warnings.length ? ['', 'Предупреждения об описании доски (запись не мешают):', ...ctx.warnings.map((w) => `- ${w}`)] : [];
+}
+
+/** Состояние доски одной строкой для list_boards — по тем же правилам разбора. */
+export function boardState(description: string | null | undefined): string {
+  const parsed = parseBoardDescription(description);
+  if (!parsed.ok) return `закрыта: ${parsed.problems[0]}`;
+  if (parsed.value.rules.access === 'read') return 'только чтение (access: read)';
+  return parsed.value.defaults ? 'правила по умолчанию' : 'есть правила для агента';
 }
 
 function requireNotSynced(ctx: BoardContext, card: Card): void {
@@ -167,7 +180,9 @@ async function boardRulesText(deps: TaskDeps, ctx: BoardContext): Promise<string
     if (ctx.board.description) lines.push('', 'Описание доски:', ctx.board.description);
     return lines.join('\n');
   }
-  lines.push('', ctx.board.description ?? '', '', '— Что проверяет сервер —');
+  if (ctx.board.description) lines.push('', ctx.board.description);
+  if (ctx.parsed?.defaults) lines.push('', 'Блока правил у доски нет — действуют правила по умолчанию.');
+  lines.push('', '— Что проверяет сервер —');
   lines.push(`Создавать можно в колонках: ${creationColumns(ctx).map((c) => c.title).join(', ')}.`);
   for (const type of allowedTypes(ctx)) {
     const rule = typeRuleFor(ctx, type);
@@ -183,7 +198,7 @@ async function boardRulesText(deps: TaskDeps, ctx: BoardContext): Promise<string
     }
     const lane = rule.lane === 'choose' ? `выбрать: ${ctx.board.lanes.map(laneTitle).join(', ')}` : rule.lane === 'default' ? laneTitle(defaultLane(ctx) ?? { id: 0, title: null, sort_order: 0 }) : rule.lane;
     lines.push(
-      `Тип «${type.name}»: название «${rule.title}»; дорожка — ${lane}; родитель — ${rule.parent === 'none' ? 'не нужен' : `обязателен, тип «${rule.parent}»`}.`,
+      `Тип «${type.name}»: название ${rule.title ? `«${rule.title}»` : 'свободное'}; дорожка — ${lane}; родитель — ${rule.parent === 'none' ? 'не нужен' : `обязателен, тип «${rule.parent}»`}.`,
       demanded.size ? `  Обязательно при создании: ${[...demanded.values()].map((f) => describeField(ctx, f)).join('; ')}.` : '  Обязательных полей при создании нет.',
     );
   }
@@ -196,8 +211,9 @@ async function boardRulesText(deps: TaskDeps, ctx: BoardContext): Promise<string
   }
   const rules = ctx.parsed?.rules;
   lines.push(`Дубли: ${rules?.duplicates === 'off' ? 'не проверяются' : rules?.duplicates === 'space' ? 'одинаковое название среди открытых карточек пространства запрещено' : 'одинаковое название среди открытых карточек доски запрещено'}.`);
-  if (rules?.synced) lines.push('Карточки с доски ведёт git: существующие агент только комментирует.');
+  if (rules?.synced) lines.push('Карточки с external_id ведёт git: такие агент только комментирует.');
   lines.push('Создание — в два шага: create_card без confirm_code даёт предпросмотр и код; покажите предпросмотр пользователю и повторите вызов с тем же содержимым и кодом.');
+  lines.push(...warningLines(ctx));
   return lines.join('\n');
 }
 
@@ -248,8 +264,7 @@ export function registerTaskTools(server: McpServer, deps: TaskDeps): void {
           lines.push(path(space));
           for (const { id } of space.boards ?? []) {
             const board = await deps.kaiten.getBoard(id);
-            const has = /```ya?ml/.test(board.description ?? '');
-            lines.push(`  доска ${id} «${board.title}» — ${has ? 'есть правила для агента' : 'только чтение (нет правил)'}`);
+            lines.push(`  доска ${id} «${board.title}» — ${boardState(board.description)}`);
           }
         }
         return lines.join('\n') || 'Досок нет.';
@@ -374,7 +389,7 @@ export function registerTaskTools(server: McpServer, deps: TaskDeps): void {
           } else if (named && named.id !== lane?.id) {
             problems.push('дорожку выбирать не нужно — карточка ложится в дорожку по умолчанию');
           }
-          const titleIssue = titleProblem(rule.title, args.title);
+          const titleIssue = rule.title ? titleProblem(rule.title, args.title) : null;
           if (titleIssue) problems.push(titleIssue);
         }
 
@@ -429,6 +444,7 @@ export function registerTaskTools(server: McpServer, deps: TaskDeps): void {
           ...(parent ? [`Родитель: #${parent.id} «${parent.title ?? ''}»`] : []),
           `Ответственный: ${me.full_name?.trim() || me.email || 'вы'}`,
           ...(args.description ? ['Описание:', args.description] : ['Описание: шаблон типа']),
+          ...warningLines(ctx),
         ].join('\n');
 
         if (!args.confirm_code) {
@@ -512,7 +528,7 @@ export function registerTaskTools(server: McpServer, deps: TaskDeps): void {
           ...(Object.keys(properties).length ? { properties } : {}),
         });
         const after = await deps.kaiten.getCard(card.id);
-        return `Готово: ${cardSummary(ctx, deps.domain, after)}`;
+        return [`Готово: ${cardSummary(ctx, deps.domain, after)}`, ...warningLines(ctx)].join('\n');
       }),
   );
 

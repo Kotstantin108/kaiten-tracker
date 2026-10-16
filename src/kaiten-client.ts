@@ -127,6 +127,8 @@ export const SpaceSchema = z
     /** Пространство-«папка», в котором лежит это; `null` — верхний уровень (живьём 07.10). */
     parent_entity_uid: z.string().nullable().optional(),
     boards: z.array(z.object({ id: z.number() }).passthrough()).optional(),
+    /** Типы карточек, разрешённые в пространстве; `null` или пусто — ограничения нет (живьём 16.10). */
+    allowed_card_type_ids: z.array(z.number()).nullable().optional(),
   })
   .passthrough();
 export type Space = z.infer<typeof SpaceSchema>;

@@ -325,8 +325,8 @@ async function cardLinksFor(deps: DocDeps, refs: Array<number | string>, rules: 
       problems.push(`карточка «${String(ref)}» не найдена или недоступна`);
       continue;
     }
-    const spaceId = card.board_id ? await deps.catalog.spaceOf(card.board_id) : null;
-    out.push({ cardId: card.id, link: { title: `#${card.id} ${card.title ?? ''}`.trim(), url: cardUrl(deps.domain, spaceId ?? 0, card.id) } });
+    const space = card.board_id ? await deps.catalog.spaceOf(card.board_id) : null;
+    out.push({ cardId: card.id, link: { title: `#${card.id} ${card.title ?? ''}`.trim(), url: cardUrl(deps.domain, space?.id ?? 0, card.id) } });
     const typeName = types.find((t) => t.id === card.type_id)?.name;
     if (wanted.length && typeName && !wanted.includes(typeName)) problems.push(`#${card.id} — «${typeName}», а связывать страницу этой папки нужно с: ${wanted.join(', ')}`);
   }

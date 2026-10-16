@@ -108,8 +108,35 @@ function fakeKaiten() {
       id: 20,
       title: 'Без правил',
       description: null,
-      columns: [{ id: 201, title: 'Очередь', type: 1, sort_order: 1 }],
+      default_card_type_id: 300,
+      columns: [
+        { id: 201, title: 'Очередь', type: 1, sort_order: 1 },
+        { id: 202, title: 'В работе', type: 2, sort_order: 2 },
+      ],
       lanes: [{ id: 21, title: null, sort_order: 1 }],
+    },
+    40: {
+      id: 40,
+      title: 'Сломанные правила',
+      description: '## Доска\nx\n## Правила\nблок забыли',
+      default_card_type_id: 300,
+      columns: [{ id: 401, title: 'Очередь', type: 1, sort_order: 1 }],
+      lanes: [{ id: 41, title: null, sort_order: 1 }],
+    },
+    50: {
+      id: 50,
+      title: 'Только чтение',
+      description: '## Правила\n```yaml\nversion: 1\naccess: read\ntypes:\n  "*": {}\n```',
+      default_card_type_id: 300,
+      columns: [{ id: 501, title: 'Очередь', type: 1, sort_order: 1 }],
+      lanes: [{ id: 51, title: null, sort_order: 1 }],
+    },
+    60: {
+      id: 60,
+      title: 'Без типа',
+      description: null,
+      columns: [{ id: 601, title: 'Очередь', type: 1, sort_order: 1 }],
+      lanes: [{ id: 61, title: null, sort_order: 1 }],
     },
     30: {
       id: 30,
@@ -119,7 +146,8 @@ function fakeKaiten() {
       columns: [
         { id: 301, title: 'Входящие', type: 1, sort_order: 1 },
         { id: 302, title: 'Бэклог', type: 1, sort_order: 2 },
-        { id: 303, title: 'Сделано', type: 3, sort_order: 3 },
+        { id: 304, title: 'Ревью', type: 2, sort_order: 3 },
+        { id: 303, title: 'Сделано', type: 3, sort_order: 4 },
       ],
       lanes: [{ id: 31, title: '', sort_order: 1 }],
     },
@@ -151,11 +179,13 @@ function fakeKaiten() {
         },
       ],
     },
+    { id: 700, title: 'Задача из git без правил', board_id: 20, column_id: 201, lane_id: 21, type_id: 300, properties: {}, external_id: 'T-2' },
+    { id: 701, title: 'Обычная', board_id: 20, column_id: 201, lane_id: 21, type_id: 300, properties: {} },
   ];
   let nextId = 900;
   const routes: Array<[string, RegExp, (m: RegExpExecArray, body: Record<string, unknown>) => unknown]> = [
     ['GET', /^\/users\/current$/, () => ({ id: 7, full_name: 'Alice', email: 'alice@example.com' })],
-    ['GET', /^\/spaces$/, () => [{ id: 1, uid: 'u1', title: 'Acme', boards: [{ id: 10 }, { id: 20 }, { id: 30 }] }]],
+    ['GET', /^\/spaces$/, () => [{ id: 1, uid: 'u1', title: 'Acme', boards: [10, 20, 30, 40, 50, 60].map((id) => ({ id })) }]],
     ['GET', /^\/boards\/(\d+)$/, (m) => boards[Number(m[1])]],
     ['GET', /^\/card-types$/, () => [
       { id: 100, name: 'Сделка', card_properties: [{ property_uid: 'p-src', required: false }, { property_uid: 'p-seg', required: false }] },
@@ -247,14 +277,33 @@ describe('правила доски', () => {
     if (parsed.ok) expect(parsed.value.rules.types['Сделка'].lane).toBe('choose');
   });
 
-  it('нет описания, нет блока, сломанный YAML, лишний ключ — закрыто с причиной', () => {
-    expect(parseBoardDescription(null)).toEqual({ ok: false, problems: ['у доски нет описания для агентов'] });
-    const noBlock = parseBoardDescription('## Доска\nx\n## Этапы\nx\n## Поля\nx');
-    expect(!noBlock.ok && noBlock.problems.join()).toMatch(/нет блока правил/);
-    const broken = parseBoardDescription('## Доска\n## Этапы\n## Поля\n## Правила\n```yaml\ntypes: [\n```');
+  it('нет блока — правила по умолчанию, git-карточки только комментируются', () => {
+    const empty = parseBoardDescription(null);
+    expect(empty.ok && empty.value.defaults).toBe(true);
+    expect(empty.ok && empty.value.rules).toMatchObject({ access: 'write', duplicates: 'board', synced: true, types: { '*': { lane: 'default', parent: 'none' } } });
+    expect(empty.ok && empty.value.warnings.join()).toMatch(/нет описания/);
+    const textOnly = parseBoardDescription('## Доска\nx\n## Этапы\nx\n## Поля\nx');
+    expect(textOnly.ok && textOnly.value.defaults && textOnly.value.warnings).toEqual([]);
+    const stray = parseBoardDescription('## Доска\nx\n```yaml\nversion: 1\n```');
+    expect(stray.ok && stray.value.warnings.join()).toMatch(/вне раздела «## Правила» не читается/);
+  });
+
+  it('блок есть, но сломан — закрыто с причиной', () => {
+    const noBlock = parseBoardDescription('## Доска\nx\n## Правила\nсм. ниже');
+    expect(!noBlock.ok && noBlock.problems.join()).toMatch(/нет блока ```yaml/);
+    const broken = parseBoardDescription('## Правила\n```yaml\ntypes: [\n```');
     expect(!broken.ok && broken.problems.join()).toMatch(/YAML/);
-    const extra = parseBoardDescription('## Доска\n## Этапы\n## Поля\n## Правила\n```yaml\nversion: 1\nlol: 1\ntypes:\n  A:\n    title: "{x}"\n```');
+    const extra = parseBoardDescription('## Правила\n```yaml\nversion: 1\nlol: 1\ntypes:\n  A:\n    title: "{x}"\n```');
     expect(!extra.ok && extra.problems.join()).toMatch(/lol|Unrecognized/);
+  });
+
+  it('неполное описание — предупреждения, не отказ; synced по умолчанию — да', () => {
+    const parsed = parseBoardDescription('## Правила\n```yaml\nversion: 1\ntypes:\n  A: {}\n```');
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok) return;
+    expect(parsed.value.warnings).toEqual(['в описании нет раздела «Доска»', 'в описании нет раздела «Этапы»', 'в описании нет раздела «Поля»']);
+    expect(parsed.value.rules.synced).toBe(true);
+    expect(parsed.value.rules.types.A.title).toBeUndefined();
   });
 
   it('шаблон названия: литералы буквально, части непустые', () => {
@@ -297,14 +346,53 @@ describe('правила доски', () => {
 // ── инструменты ─────────────────────────────────────────────────────────────
 
 describe('инструменты задач', () => {
-  it('доска без правил — закрыта, запись отказывает с причиной', async () => {
+  it('доска без правил — открыта на умолчаниях: очередь, тип доски, свободное название', async () => {
     const fake = fakeKaiten();
     const rules = await tool(fake, 'board_rules', { board_id: 20 });
-    expect(rules.text).toMatch(/ЗАКРЫТА/);
-    const create = await tool(fake, 'create_card', { ...GOOD, board_id: 20, title: 'x' });
-    expect(create.isError).toBe(true);
-    expect(create.text).toMatch(/закрыта для записи/);
-    expect(fake.writes).toEqual([]);
+    expect(rules.text).toMatch(/действуют правила по умолчанию/);
+    expect(rules.text).toMatch(/Создавать можно в колонках: Очередь\./);
+    expect(rules.text).toMatch(/Тип «Story»: название свободное; дорожка — по умолчанию; родитель — не нужен/);
+    expect(rules.text).toMatch(/нет описания для агентов/);
+    const preview = await tool(fake, 'create_card', { board_id: 20, title: 'Позвонить поставщику', user_request: 'x' });
+    expect(preview.isError).toBe(false);
+    expect(preview.text).toMatch(/колонка: Очередь; дорожка: по умолчанию; тип: Story/);
+    const twin = await tool(fake, 'create_card', { board_id: 20, title: 'обычная', user_request: 'x' });
+    expect(twin.text).toMatch(/такая карточка уже есть/);
+    const synced = await tool(fake, 'update_card', { card: 700, description: 'x' });
+    expect(synced.text).toMatch(/ведут разработчики через git/);
+    const plain = await tool(fake, 'update_card', { card: 701, description: 'новое' });
+    expect(plain.isError).toBe(false);
+    expect(fake.writes).toEqual([{ method: 'PATCH', path: '/cards/701', body: { description: 'новое' } }]);
+  });
+
+  it('сломанный блок, access: read, доска без типа — закрыты, причина в отказе', async () => {
+    const fake = fakeKaiten();
+    const broken = await tool(fake, 'create_card', { board_id: 40, title: 'x', user_request: 'x' });
+    expect(broken.text).toMatch(/закрыта для записи агентом[\s\S]*нет блока ```yaml/);
+    const readOnly = await tool(fake, 'add_comment', { card: 701, text: 'x' }).then(() => tool(fake, 'create_card', { board_id: 50, title: 'x', user_request: 'x' }));
+    expect(readOnly.text).toMatch(/только чтение \(access: read/);
+    const noType = await tool(fake, 'board_rules', { board_id: 60 });
+    expect(noType.text).toMatch(/ЗАКРЫТА[\s\S]*нет типа по умолчанию/);
+    expect(fake.writes.map((w) => w.path)).toEqual(['/cards/701/comments']);
+  });
+
+  it('неописанная колонка — предупреждение в правилах, предпросмотре и переносе', async () => {
+    const fake = fakeKaiten();
+    const rules = await tool(fake, 'board_rules', { board_id: 30 });
+    expect(rules.text).toMatch(/Предупреждения об описании доски[\s\S]*не описана колонка «Ревью»/);
+    const preview = await tool(fake, 'create_card', { board_id: 30, title: 'Новая задача', user_request: 'x' });
+    expect(preview.isError).toBe(false);
+    expect(preview.text).toMatch(/не описана колонка «Ревью»/);
+    const moved = await tool(fake, 'move_card', { card: 701, column: 'В работе' });
+    expect(moved.text).toMatch(/^Готово:[\s\S]*нет описания для агентов/);
+  });
+
+  it('список досок — состояние по тем же правилам', async () => {
+    const list = await tool(fakeKaiten(), 'list_boards', {});
+    expect(list.text).toMatch(/доска 10 «Продажи» — есть правила для агента/);
+    expect(list.text).toMatch(/доска 20 «Без правил» — правила по умолчанию/);
+    expect(list.text).toMatch(/доска 40 «Сломанные правила» — закрыта: в разделе «Правила» нет блока/);
+    expect(list.text).toMatch(/доска 50 «Только чтение» — только чтение \(access: read\)/);
   });
 
   it('правила доски — с вариантами и пояснениями полей', async () => {

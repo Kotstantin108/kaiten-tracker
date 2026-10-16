@@ -7,7 +7,7 @@
 
 import { z } from 'zod';
 
-import { type Card, type CardType, CardTypeSchema, type CustomProperty, KaitenClient, type SelectValue } from '../kaiten-client.js';
+import { type Card, type CardType, CardTypeSchema, type CustomProperty, KaitenClient, type SelectValue, type Space } from '../kaiten-client.js';
 import { type BoardRules, coverageProblems, normalizeTitle, type ParsedDescription, parseBoardDescription, typeRule } from './board-rules.js';
 import { applicable, demandedProperties, parseRestrictions, type Restriction } from './restrictions.js';
 
@@ -169,6 +169,10 @@ export interface BoardContext {
   parsed: ParsedDescription | null;
   /** Почему доска закрыта для записи; пусто — открыта. */
   closed: string[];
+  /** Что не так с описанием, но запись не мешает: агенту — подсказка. */
+  warnings: string[];
+  /** Типы, разрешённые пространству; пусто — ограничения нет. */
+  spaceTypeIds: number[];
 }
 
 const fieldKey = (id: number): string => `id_${id}`;
@@ -177,7 +181,7 @@ const fieldKey = (id: number): string => `id_${id}`;
 export class Catalog {
   private types?: Promise<CardType[]>;
   private properties?: Promise<CustomProperty[]>;
-  private spaces?: Promise<Map<number, number>>;
+  private spaces?: Promise<Map<number, Space>>;
   private values = new Map<number, Promise<SelectValue[]>>();
   private restrictionsBySpace = new Map<number, Promise<Restriction[]>>();
 
@@ -193,11 +197,11 @@ export class Catalog {
     return this.properties;
   }
 
-  /** id доски → id пространства. */
-  async spaceOf(boardId: number): Promise<number | null> {
+  /** Пространство, в котором лежит доска. */
+  async spaceOf(boardId: number): Promise<Space | null> {
     this.spaces ??= this.kaiten.listSpaces().then((list) => {
-      const map = new Map<number, number>();
-      for (const space of list) for (const board of space.boards ?? []) map.set(board.id, space.id);
+      const map = new Map<number, Space>();
+      for (const space of list) for (const board of space.boards ?? []) map.set(board.id, space);
       return map;
     });
     return (await this.spaces).get(boardId) ?? null;
@@ -244,18 +248,22 @@ export class Catalog {
     const board = await this.kaiten.getBoard(boardId);
     board.columns.sort((a, b) => a.sort_order - b.sort_order);
     board.lanes.sort((a, b) => a.sort_order - b.sort_order);
-    const spaceId = await this.spaceOf(boardId);
-    if (spaceId === null) throw new Error('Доска не найдена среди доступных пространств');
+    const space = await this.spaceOf(boardId);
+    if (space === null) throw new Error('Доска не найдена среди доступных пространств');
+    const spaceId = space.id;
     const types = await this.cardTypes();
     const restrictions = await this.restrictions(spaceId);
     const parsedResult = parseBoardDescription(board.description);
     const fields = new Map<string, FieldInfo>();
-    const ctx: BoardContext = { board, spaceId, types, fields, restrictions, parsed: null, closed: [] };
+    const spaceTypeIds = space.allowed_card_type_ids ?? [];
+    const ctx: BoardContext = { board, spaceId, types, fields, restrictions, parsed: null, closed: [], warnings: [], spaceTypeIds };
     if (!parsedResult.ok) {
       ctx.closed = parsedResult.problems;
       return ctx;
     }
     ctx.parsed = parsedResult.value;
+    ctx.warnings = [...parsedResult.value.warnings];
+    if (ctx.parsed.rules.access === 'read') ctx.closed.push('владелец доски оставил агенту только чтение (access: read в правилах)');
 
     // Поля, которые обязаны быть описаны: обязательные в разрешённых типах и
     // требуемые ограничениями этой доски (создание и перенос в любую колонку).
@@ -277,24 +285,31 @@ export class Catalog {
         mustDescribe.add(info.name);
       }
     }
-    ctx.closed = [
-      ...coverageProblems(ctx.parsed, board.columns.map((c) => c.title), [...mustDescribe]),
-      ...ruleProblems(ctx),
-    ];
+    ctx.warnings.push(...coverageProblems(ctx.parsed, board.columns.map((c) => c.title), [...mustDescribe]));
+    ctx.closed.push(...ruleProblems(ctx));
     return ctx;
   }
+}
+
+/**
+ * Типы доски для `"*"`: у доски в Kaiten своего набора типов нет — это типы,
+ * разрешённые пространству, а если ограничения нет — тип доски по умолчанию.
+ */
+export function boardTypes(ctx: BoardContext): CardType[] {
+  const fallback = ctx.types.find((t) => t.id === ctx.board.default_card_type_id);
+  const allowed = ctx.spaceTypeIds.length > 0 ? ctx.types.filter((t) => ctx.spaceTypeIds.includes(t.id) && !t.archived) : [];
+  if (allowed.length === 0) return fallback ? [fallback] : [];
+  return fallback && allowed.some((t) => t.id === fallback.id) ? [fallback, ...allowed.filter((t) => t.id !== fallback.id)] : allowed;
 }
 
 /** Типы, которые правила разрешают заводить на доске. */
 export function allowedTypes(ctx: BoardContext): CardType[] {
   const rules = ctx.parsed?.rules;
   if (!rules) return [];
-  if (rules.types['*']) {
-    const fallback = ctx.types.find((t) => t.id === ctx.board.default_card_type_id);
-    const named = Object.keys(rules.types).filter((n) => n !== '*').map((n) => ctx.types.find((t) => t.name === n)).filter((t): t is CardType => !!t);
-    return fallback ? [fallback, ...named.filter((t) => t.id !== fallback.id)] : named;
-  }
-  return Object.keys(rules.types).map((name) => ctx.types.find((t) => t.name === name)).filter((t): t is CardType => !!t);
+  const named = Object.keys(rules.types).filter((n) => n !== '*').map((n) => ctx.types.find((t) => t.name === n)).filter((t): t is CardType => !!t);
+  if (!rules.types['*']) return named;
+  const base = boardTypes(ctx);
+  return [...base, ...named.filter((t) => !base.some((b) => b.id === t.id))];
 }
 
 /** Колонки, куда агент может заводить карточки: очереди (тип 1), суженные правилами. */
@@ -321,6 +336,7 @@ function ruleProblems(ctx: BoardContext): string[] {
     else if (column.type !== 1) problems.push(`в правилах колонка «${name}» — не очередь: создавать можно только в очередях`);
   }
   if (creationColumns(ctx).length === 0) problems.push('на доске нет колонки-очереди для новых карточек');
+  if (allowedTypes(ctx).length === 0) problems.push('непонятно, какой тип карточки заводить: у доски нет типа по умолчанию — задайте его в Kaiten или перечислите типы в блоке правил');
   for (const [name, rule] of Object.entries(rules.types)) {
     if (name !== '*' && !ctx.types.some((t) => t.name === name)) problems.push(`в правилах тип «${name}», которого нет в Kaiten`);
     if (rule.lane !== 'choose' && rule.lane !== 'default' && !ctx.board.lanes.some((l) => l.title === rule.lane)) {
