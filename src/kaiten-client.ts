@@ -251,7 +251,7 @@ export class KaitenClient {
     }
   }
 
-  private async request<T>(
+  protected async request<T>(
     method: 'GET' | 'POST' | 'PATCH',
     path: string,
     opts: { query?: Record<string, string | number | undefined>; body?: unknown; schema: z.ZodType<T> },

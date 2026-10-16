@@ -10,14 +10,18 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { WebStandardStreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js';
 import { CfWorkerJsonSchemaValidator } from '@modelcontextprotocol/sdk/validation/cfworker';
 
-import { KaitenApiError, KaitenClient } from '../kaiten-client.js';
+import { KaitenApiError } from '../kaiten-client.js';
 import { gatedFetch } from './gate.js';
+import { AgentKaiten, Catalog } from './kaiten-agent.js';
+import { registerTaskTools } from './tasks.js';
 
 export interface AgentContext {
   /** Домен компании в Kaiten, например `acme.kaiten.ru`. */
   domain: string;
   /** Токен Kaiten человека — уже расшифрованный из ключа. */
   token: string;
+  /** Секрет сервера — подпись кодов предпросмотра. */
+  secret: string;
   /** Подменяется в тестах. */
   fetchImpl?: typeof fetch;
 }
@@ -45,6 +49,16 @@ function gateMessage(body: string): string | null {
   }
 }
 
+function kaitenMessage(body: string): string | null {
+  try {
+    const parsed: unknown = JSON.parse(body);
+    const message = parsed !== null && typeof parsed === 'object' ? (parsed as { message?: unknown }).message : undefined;
+    return typeof message === 'string' ? message : null;
+  } catch {
+    return null;
+  }
+}
+
 /** Ошибка инструмента — по-русски и без внутренностей: что случилось и что делать. */
 export function describeError(error: unknown): string {
   if (error instanceof KaitenApiError) {
@@ -53,14 +67,18 @@ export function describeError(error: unknown): string {
     if (error.status === 401) return 'Kaiten не принял ключ: токен перевыпущен или отозван. Получите новый ключ на странице сервера.';
     if (error.status === 403) return 'В Kaiten у вас нет прав на это действие.';
     if (error.status === 404) return 'Не найдено в Kaiten (или нет доступа).';
+    // 400 Kaiten — обычно отказ его же ограничения: текст пишет владелец доски.
+    if (error.status === 400) return `Kaiten отказал: ${kaitenMessage(error.body) ?? 'неверный запрос'}`;
     return `Kaiten ответил ошибкой ${error.status}. Попробуйте позже.`;
   }
   return 'Внутренняя ошибка сервера.';
 }
 
-export function kaitenFor(ctx: AgentContext): KaitenClient {
-  const domain = ctx.domain.replace(/^https?:\/\//, '').replace(/\/+$/, '');
-  return new KaitenClient({
+export const domainOf = (ctx: AgentContext): string => ctx.domain.replace(/^https?:\/\//, '').replace(/\/+$/, '');
+
+export function kaitenFor(ctx: AgentContext): AgentKaiten {
+  const domain = domainOf(ctx);
+  return new AgentKaiten({
     domain,
     token: ctx.token,
     fetchImpl: gatedFetch(ctx.fetchImpl ?? fetch, `https://${domain}/api/latest`),
@@ -91,6 +109,8 @@ export function buildServer(ctx: AgentContext): McpServer {
       }
     },
   );
+
+  registerTaskTools(server, { kaiten, catalog: new Catalog(kaiten), domain: domainOf(ctx), secret: ctx.secret, describeError });
 
   return server;
 }

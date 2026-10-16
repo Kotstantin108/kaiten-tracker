@@ -119,7 +119,7 @@ const apiHandler: ExportedHandler<Env> & { fetch: NonNullable<ExportedHandler<En
     const props = (ctx as ExecutionContext & { props?: Partial<AgentProps> }).props;
     const token = props?.key ? await openKey(props.key, env.SERVER_SECRET) : null;
     if (!token) return new Response('Ключ не подходит к этому серверу', { status: 401 });
-    return handleMcp(request, { domain: env.KAITEN_DOMAIN, token });
+    return handleMcp(request, { domain: env.KAITEN_DOMAIN, token, secret: env.SERVER_SECRET });
   },
 };
 

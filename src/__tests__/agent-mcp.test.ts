@@ -27,7 +27,7 @@ function kaiten(routes: Record<string, { status?: number; body: unknown }>) {
 }
 
 async function call(request: Request, fetchImpl: typeof fetch): Promise<{ result?: Record<string, unknown>; error?: unknown }> {
-  const response = await handleMcp(request, { domain: DOMAIN, token: 't', fetchImpl });
+  const response = await handleMcp(request, { domain: DOMAIN, token: 't', secret: 'x'.repeat(40), fetchImpl });
   expect(response.status).toBe(200);
   return (await response.json()) as { result?: Record<string, unknown> };
 }
