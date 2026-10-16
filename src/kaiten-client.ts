@@ -9,7 +9,8 @@
  *     1 = markdown (по умолчанию), 2 = html, 3 = jira wiki; кастомные поля —
  *     `properties: { id_<property_id>: value }`;
  *   · `GET /cards` — фильтры `board_id`, `external_id`, пагинация `limit`
- *     (по умолчанию 100, максимум 100) и `offset`;
+ *     (по умолчанию 100, максимум 100) и `offset`; так же листаются и
+ *     остальные списки — все читаются через `listAll`;
  *   · `PATCH /cards/{id}`;
  *   · 50 rps, остаток в `X-RateLimit-Remaining`, момент сброса в `X-RateLimit-Reset`.
  *
@@ -111,8 +112,6 @@ export const CardSchema = z
   .passthrough();
 
 export type Card = z.infer<typeof CardSchema>;
-
-const CardListSchema = z.array(CardSchema);
 
 const ColumnSchema = z
   .object({ id: z.number(), title: z.string().default(''), type: z.number().optional(), sort_order: z.number().optional() })
@@ -330,24 +329,37 @@ export class KaitenClient {
     await this.sleep(Math.min(waitMs, 60_000));
   }
 
-  /** Карточки доски постранично: 100 за запрос — это максимум API. */
-  async listCards(params: { boardId?: number; externalId?: string; archived?: boolean }): Promise<Card[]> {
-    const out: Card[] = [];
-    const limit = 100;
-    for (let offset = 0; ; offset += limit) {
-      const page = await this.request('GET', '/cards', {
-        query: {
-          board_id: params.boardId,
-          external_id: params.externalId,
-          archived: params.archived === undefined ? undefined : String(params.archived),
-          limit,
-          offset,
-        },
-        schema: CardListSchema,
-      });
+  /**
+   * Весь список постранично: Kaiten отдаёт не больше 100 записей за запрос
+   * (`limit` до 100 и `offset` — живьём 16.10 у всех списков, которые мы
+   * читаем, кроме `/spaces/{id}/boards`). Неполная страница — последняя.
+   * Первая страница длиннее `limit` — список не листается и пришёл целиком.
+   * Страница начинается с той же записи, что прошлая, — `offset` не понят:
+   * отказ, а не молча обрезанный список или бесконечный цикл.
+   */
+  protected async listAll<T>(path: string, item: z.ZodType<T>, query: Record<string, string | number | undefined> = {}): Promise<T[]> {
+    const out: T[] = [];
+    let previousFirst: string | null = null;
+    for (let offset = 0; ; offset += PAGE) {
+      const page = await this.request('GET', path, { query: { ...query, limit: PAGE, offset }, schema: z.array(item) });
+      if (offset === 0 && page.length > PAGE) return page;
+      const first = page.length > 0 ? recordKey(page[0]) : null;
+      if (first !== null && first === previousFirst) {
+        throw new KaitenApiError(`GET ${path}: список не листается — больше ${PAGE} записей не прочитать`, 200, '');
+      }
+      previousFirst = first;
       out.push(...page);
-      if (page.length < limit) return out;
+      if (page.length < PAGE) return out;
     }
+  }
+
+  /** Карточки доски — все страницы. */
+  async listCards(params: { boardId?: number; externalId?: string; archived?: boolean }): Promise<Card[]> {
+    return this.listAll('/cards', CardSchema, {
+      board_id: params.boardId,
+      external_id: params.externalId,
+      archived: params.archived === undefined ? undefined : String(params.archived),
+    });
   }
 
   /**
@@ -490,16 +502,16 @@ export class KaitenClient {
 
   /** Комментарии карточки (живьём 29.09: массив, у комментария `text`, `author`, `created`). */
   async listComments(cardId: number): Promise<unknown[]> {
-    return this.request('GET', `/cards/${cardId}/comments`, { schema: z.array(z.unknown()) });
+    return this.listAll(`/cards/${cardId}/comments`, z.unknown());
   }
 
   /** Ограничения пространства (не документировано, формат снят с живого аккаунта 28.09). */
   async listRestrictions(spaceId: number): Promise<unknown[]> {
-    return this.request('GET', `/spaces/${spaceId}/restrictions`, { schema: z.array(z.unknown()) });
+    return this.listAll(`/spaces/${spaceId}/restrictions`, z.unknown());
   }
 
   async listSpaces(): Promise<Space[]> {
-    return this.request('GET', '/spaces', { schema: z.array(SpaceSchema) });
+    return this.listAll('/spaces', SpaceSchema);
   }
 
   /** Владелец токена (живьём: `GET /users/current` отдаёт id, имя, почту). */
@@ -525,7 +537,7 @@ export class KaitenClient {
     return this.request('POST', `/boards/${boardId}/lanes`, { body: lane, schema: z.unknown() });
   }
 
-  /** Доски пространства — сразу с колонками и дорожками. */
+  /** Доски пространства — сразу с колонками и дорожками; список не листается, приходит целиком (живьём 16.10). */
   async listBoards(spaceId: number): Promise<Board[]> {
     return this.request('GET', `/spaces/${spaceId}/boards`, { schema: z.array(BoardSchema) });
   }
@@ -540,7 +552,7 @@ export class KaitenClient {
   }
 
   async listCardTypes(): Promise<CardType[]> {
-    return this.request('GET', '/card-types', { query: { limit: 100 }, schema: z.array(CardTypeSchema) });
+    return this.listAll('/card-types', CardTypeSchema);
   }
 
   async createCardType(type: { name: string; letter: string; color: number }): Promise<CardType> {
@@ -565,7 +577,7 @@ export class KaitenClient {
   }
 
   async listCustomProperties(): Promise<CustomProperty[]> {
-    return this.request('GET', '/company/custom-properties', { schema: z.array(CustomPropertySchema) });
+    return this.listAll('/company/custom-properties', CustomPropertySchema);
   }
 
   async createCustomProperty(property: { name: string; type: 'select' | 'string' }): Promise<CustomProperty> {
@@ -585,9 +597,7 @@ export class KaitenClient {
   }
 
   async listSelectValues(propertyId: number): Promise<SelectValue[]> {
-    return this.request('GET', `/company/custom-properties/${propertyId}/select-values`, {
-      schema: z.array(SelectValueSchema),
-    });
+    return this.listAll(`/company/custom-properties/${propertyId}/select-values`, SelectValueSchema);
   }
 
   async createSelectValue(propertyId: number, value: string): Promise<SelectValue> {
@@ -634,7 +644,20 @@ export class KaitenClient {
   }
 }
 
-const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+/** Больше 100 записей за запрос Kaiten не отдаёт. */
+const PAGE = 100;
+
+/** Чем запись списка отличается от соседних: `id`, `uid`, иначе — целиком. */
+function recordKey(record: unknown): string {
+  if (record && typeof record === 'object') {
+    const { id, uid } = record as { id?: unknown; uid?: unknown };
+    if (id !== undefined) return `id:${String(id)}`;
+    if (uid !== undefined) return `uid:${String(uid)}`;
+  }
+  return JSON.stringify(record);
+}
+
+const UUID_RE =/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /** Адрес файлов — только UUID: числовой id карточки создал бы публичный файл. */
 function uuid(value: string): string {

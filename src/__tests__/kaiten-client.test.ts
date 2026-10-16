@@ -75,6 +75,35 @@ describe('KaitenClient.listCards', () => {
   });
 });
 
+describe('списки: больше 100 записей не теряются', () => {
+  const rows = (from: number, count: number) => Array.from({ length: count }, (_, i) => ({ id: from + i, name: `тип ${from + i}`, text: `т ${from + i}` }));
+
+  it('справочники и комментарии листаются так же, как карточки', async () => {
+    const { client, calls } = makeClient([{ body: rows(0, 100) }, { body: rows(100, 100) }, { body: rows(200, 1) }]);
+    expect(await client.listComments(5)).toHaveLength(201);
+    expect(calls.map((c) => new URL(c.url).searchParams.get('offset'))).toEqual(['0', '100', '200']);
+    expect(calls.every((c) => new URL(c.url).searchParams.get('limit') === '100')).toBe(true);
+  });
+
+  it('ровно 100 — ещё один запрос, пустая страница — конец', async () => {
+    const { client, calls } = makeClient([{ body: rows(0, 100) }, { body: [] }]);
+    expect(await client.listCardTypes()).toHaveLength(100);
+    expect(calls).toHaveLength(2);
+  });
+
+  it('список, который не листается, приходит целиком с первого запроса', async () => {
+    const { client, calls } = makeClient([{ body: rows(0, 150) }]);
+    expect(await client.listCustomProperties()).toHaveLength(150);
+    expect(calls).toHaveLength(1);
+  });
+
+  it('offset не понят — отказ, а не молча обрезанный список', async () => {
+    const { client, calls } = makeClient([{ body: rows(0, 100) }]);
+    await expect(client.listSpaces()).rejects.toThrow(/не листается/);
+    expect(calls).toHaveLength(2);
+  });
+});
+
 describe('KaitenClient.findCardByExternalId', () => {
   it('отбрасывает частичные совпадения, если фильтр окажется подстрочным', async () => {
     const { client } = makeClient([{ body: [card(1, '20260916_export-csv-old'), card(2, '20260916_export-csv')] }]);

@@ -71,7 +71,7 @@ export class AgentKaiten extends KaitenClient {
 
   /** Дети узла дерева (пространства, папки, документа). */
   async treeChildren(parentUid: string): Promise<TreeNode[]> {
-    return this.request('GET', '/tree-entities', { query: { parent_entity_uid: parentUid, levels_count: 1 }, schema: z.array(TreeNodeSchema) });
+    return this.listAll('/tree-entities', TreeNodeSchema, { parent_entity_uid: parentUid, levels_count: 1 });
   }
 
   async getDocumentGroup(uid: string): Promise<TreeNode> {
@@ -80,7 +80,7 @@ export class AgentKaiten extends KaitenClient {
 
   /** Поиск документов по заголовку. */
   async searchDocuments(query: string): Promise<KaitenDocument[]> {
-    return this.request('GET', '/documents', { query: { query }, schema: z.array(DocumentSchema) });
+    return this.listAll('/documents', DocumentSchema, { query });
   }
 }
 
