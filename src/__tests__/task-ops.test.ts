@@ -263,6 +263,11 @@ describe('вложение', () => {
     for (const good of ['HANDOFF.md', 'report (2).pdf', 'data/photos.json', '_notes.md']) expect(attachmentNameProblem(good), good).toBeNull();
   });
 
+  it('ЖУРНАЛ.md — имя журнала в карточке Kaiten: вложению не годится', () => {
+    for (const bad of ['ЖУРНАЛ.md', 'журнал.md']) expect(attachmentNameProblem(bad), bad).toContain('журнал задачи');
+    expect(attachmentNameProblem('notes/ЖУРНАЛ.md')).toBeNull();
+  });
+
   it('нет задачи или объекта — ошибка', () => {
     expect('error' in applyOp({ kind: 'attach', id: '01K5ZQ3R8F2K9M4N7P0T5V8W3Z', name: 'a.md', blob: BLOB }, texts(), CTX)).toBe(true);
     expect('error' in applyOp({ kind: 'attach', id: ID, name: 'a.md', blob: 'не sha' }, texts(), CTX)).toBe(true);

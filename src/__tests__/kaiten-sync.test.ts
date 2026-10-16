@@ -6,8 +6,8 @@
 import { describe, expect, it } from 'vitest';
 
 import type { ConfigMapping } from '../config.js';
-import { serializeTaskDocument } from '../core/document.js';
-import { DESCRIPTION_LIMIT, linkify, Q41_NOTICE, repoWebBase } from '../core/kaiten-sync-plan.js';
+import { contentHash, serializeTaskDocument } from '../core/document.js';
+import { DESCRIPTION_LIMIT, linkify, Q41_NOTICE, repoWebBase, type AttachmentRef } from '../core/kaiten-sync-plan.js';
 import { FrontmatterSchema, type Frontmatter } from '../core/schema.js';
 import { applyOp, tasksOf } from '../core/task-ops.js';
 import { formatPlan, runKaitenSync, type RunInput } from '../kaiten-sync.js';
@@ -296,6 +296,133 @@ describe('чек-лист — как в файле', () => {
       ['Агент · Старый раздел', ['Пункт']],
     ]);
     expect(w.fake.writes.some((x) => x.startsWith('DELETE'))).toBe(false);
+  });
+});
+
+describe('файлы карточки: вложения и журнал', () => {
+  /** Хранилище вложений: slug → вложения, sha → содержимое. */
+  function withFiles(w: ReturnType<typeof world>) {
+    const refs = new Map<string, AttachmentRef[]>();
+    const blobs = new Map<string, Uint8Array>();
+    const attach = (slug: string, name: string, text: string) => {
+      const content = new TextEncoder().encode(text);
+      const sha = `sha-${slug}-${name}-${text.length}-${blobs.size}`;
+      blobs.set(sha, content);
+      refs.set(slug, [...(refs.get(slug) ?? []).filter((r) => r.name !== name), { name, sha, size: content.length }]);
+    };
+    const extra = (more: Partial<RunInput> = {}): Partial<RunInput> => ({
+      attachments: refs,
+      readFile: (sha) => blobs.get(sha) ?? new Uint8Array(),
+      ...more,
+    });
+    const names = (cardId: number) => (w.fake.cards.get(cardId)?.files ?? []).map((f) => f.name).sort();
+    const text = (cardId: number, name: string) => new TextDecoder().decode(w.fake.cards.get(cardId)?.files?.find((f) => f.name === name)?.content);
+    return { attach, extra, names, text };
+  }
+
+  it('новая карточка получает вложения и журнал; files_hash — в задачу; повтор — без записей', async () => {
+    const [path, text] = task('active/new.md', { status: 'inbox', created_via: 'agent' });
+    const w = world([[path, text], ['active/new.log.md', '## [2026-09-28] Начал\n\nЧерновик готов.\n']]);
+    const f = withFiles(w);
+    f.attach('new', 'DRAFT.md', '# Черновик');
+    f.attach('new', 'img/scheme.md', 'схема');
+    const run = await w.sync(f.extra());
+    expect(run.errors).toEqual([]);
+    const card = [...w.fake.cards.values()][0];
+    expect(f.names(card.id)).toEqual(['DRAFT.md', 'img/scheme.md', 'ЖУРНАЛ.md']);
+    expect(f.text(card.id, 'ЖУРНАЛ.md')).toContain('Черновик готов.');
+    expect(w.texts.get(path)).toMatch(/files_hash: sha256:/);
+
+    const writes = w.fake.writes.length;
+    const second = await w.sync(f.extra());
+    expect(second.plan.actions).toEqual([]);
+    expect(w.fake.writes.length).toBe(writes);
+  });
+
+  it('новая запись журнала: заменяется только ЖУРНАЛ.md — описание, чек-листы и чужие файлы не трогаются', async () => {
+    const [path, text] = task('active/new.md', { status: 'inbox', created_via: 'agent' });
+    const w = world([[path, text], ['active/new.log.md', '## [2026-09-28] Начал\n']]);
+    const f = withFiles(w);
+    await w.sync(f.extra());
+    const card = [...w.fake.cards.values()][0];
+    card.files?.push({ id: '00000000-0000-4000-8000-999999999999', name: 'от заказчика.pdf', content: new Uint8Array([1, 2]) });
+    w.fake.writes.length = 0;
+
+    w.texts.set('active/new.log.md', '## [2026-09-28] Начал\n\n## [2026-09-29] Продолжил\n');
+    const run = await w.sync(f.extra());
+    expect(run.errors).toEqual([]);
+    expect(f.text(card.id, 'ЖУРНАЛ.md')).toContain('Продолжил');
+    expect(f.names(card.id)).toEqual(['ЖУРНАЛ.md', 'от заказчика.pdf']);
+    expect(w.fake.writes.every((x) => x.includes('/files'))).toBe(true);
+    expect(w.fake.writes.some((x) => x.startsWith('DELETE') && x.includes('999999999999'))).toBe(false);
+  });
+
+  it('карточка без files_hash: фон файлы не шлёт; --resend — открытым, закрытым — только через --only', async () => {
+    const [openPath, openText] = task('active/open.md', { tracker: '700' });
+    const [donePath, doneText] = task('archive/2026-09/done.md', { tracker: '701', status: 'done' });
+    const w = world([[openPath, openText], [donePath, doneText], ['active/open.log.md', '## [2026-09-28] Запись\n'], ['archive/2026-09/done.log.md', '## [2026-09-28] Запись\n']]);
+    for (const id of [700, 701]) seedCard(w.fake, { id, title: 'Сделать задачу', board_id: BOARD, properties: { id_4: 'Коротко для фаундера.', id_2: [21] } });
+    const f = withFiles(w);
+    await w.sync(f.extra());
+    expect(f.names(700)).toEqual([]);
+
+    const dry = await runKaitenSync(w.fake.client, { ...w.input(), ...f.extra({ resend: true }) }, 'details');
+    expect(formatPlan(dry).join('\n')).toContain('файлы: загрузить 1: «ЖУРНАЛ.md»');
+    await w.sync(f.extra({ resend: true }));
+    expect(f.names(700)).toEqual(['ЖУРНАЛ.md']);
+    expect(f.names(701)).toEqual([]);
+    expect(w.texts.get(openPath)).toMatch(/files_hash: sha256:/);
+
+    const doneId = tasksOf(w.texts).find((t) => t.slug === 'done')?.fm.id ?? '';
+    await w.sync(f.extra({ resend: true, only: new Set([doneId]) }));
+    expect(f.names(701)).toEqual(['ЖУРНАЛ.md']);
+
+    // Дальше — сам: повторное вложение с тем же именем заменяет файл.
+    f.attach('open', 'R.md', 'v1');
+    await w.sync(f.extra());
+    f.attach('open', 'R.md', 'v2 длиннее');
+    await w.sync(f.extra());
+    expect(f.names(700)).toEqual(['R.md', 'ЖУРНАЛ.md']);
+    expect(f.text(700, 'R.md')).toBe('v2 длиннее');
+  });
+
+  it('обрыв между загрузкой и удалением: повтор нашего файла убирается, совпавший остаётся', async () => {
+    const [path, text] = task('active/open.md', { tracker: '710' });
+    const w = world([[path, text], ['active/open.log.md', '## [2026-09-28] Запись\n']]);
+    seedCard(w.fake, { id: 710, title: 'Сделать задачу', board_id: BOARD, properties: { id_4: 'Коротко для фаундера.', id_2: [21] } });
+    const f = withFiles(w);
+    await w.sync(f.extra({ resend: true }));
+    const card = w.fake.cards.get(710);
+    const journal = card?.files?.[0];
+    if (!card || !journal) throw new Error('нет журнала');
+    card.files?.push({ id: '00000000-0000-4000-8000-000000000777', name: 'ЖУРНАЛ.md', content: new TextEncoder().encode('старый') });
+    const run = await w.sync(f.extra({ resend: true }));
+    expect(formatPlan(run).join('\n')).toContain('убрать повторов 1');
+    expect(card.files?.map((x) => x.id)).toEqual([journal.id]);
+  });
+
+  it('файлы — только по UUID карточки, по подписанной ссылке — без токена', async () => {
+    const [path, text] = task('active/open.md', { tracker: '720' });
+    const w = world([[path, text], ['active/open.log.md', '## [2026-09-28] Запись\n']]);
+    seedCard(w.fake, { id: 720, title: 'Сделать задачу', board_id: BOARD, properties: { id_4: 'Коротко для фаундера.', id_2: [21] } });
+    const f = withFiles(w);
+    await w.sync(f.extra({ resend: true }));
+    await w.sync(f.extra({ resend: true }));
+    expect(w.fake.signedFetches.length).toBeGreaterThan(0);
+    for (const headers of w.fake.signedFetches) expect(JSON.stringify(headers)).not.toMatch(/authorization|secret-token/i);
+    expect(w.fake.numericFileRequests).toEqual([]);
+    await expect(w.fake.client.uploadCardFile('720', 'x.md', new Uint8Array())).rejects.toThrow(/UUID/);
+    expect(w.fake.numericFileRequests).toEqual([]);
+  });
+
+  it('kaiten edit не сбрасывает files_hash', () => {
+    const [path, text] = task('active/open.md', { tracker: '730', files_hash: `sha256:${'a'.repeat(64)}` });
+    const texts = new Map([[path, text]]);
+    const [current] = tasksOf(texts);
+    const edited = text.replace(`files_hash: sha256:${'a'.repeat(64)}\n`, '').replace('- [ ] Ещё', '- [ ] Ещё один');
+    const r = applyOp({ kind: 'edit', id: current.fm.id, text: edited, baseHash: contentHash(current.fm, current.body) }, texts, { date: '2026-09-28' });
+    if ('error' in r) throw new Error(r.error);
+    expect(r.changes[0].text).toContain(`files_hash: sha256:${'a'.repeat(64)}`);
   });
 });
 

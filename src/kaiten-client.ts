@@ -36,9 +36,28 @@
 
 import { z } from 'zod';
 
+/**
+ * Файл карточки (`files` в `GET /cards/{id}`, живьём 16.10): у файлов с
+ * ограниченным доступом `id` — UUID и `type` 11, у старых — число и `type` 1;
+ * `size` приходит строкой.
+ */
+export const CardFileSchema = z
+  .object({
+    id: z.union([z.string(), z.number()]),
+    name: z.string().default(''),
+    size: z.union([z.string(), z.number()]).optional(),
+    type: z.number().optional(),
+  })
+  .passthrough();
+export type CardFile = z.infer<typeof CardFileSchema>;
+
 export const CardSchema = z
   .object({
     id: z.number(),
+    /** UUID карточки — адрес файлов (`/cards/{uid}/files`); есть и в списке, и в карточке. */
+    uid: z.string().optional(),
+    /** Файлы — только в `GET /cards/{id}`. */
+    files: z.array(CardFileSchema).nullable().optional(),
     title: z.string().optional(),
     external_id: z.union([z.string(), z.number(), z.null()]).optional(),
     board_id: z.number().optional(),
@@ -258,7 +277,7 @@ export class KaitenClient {
   protected async request<T>(
     method: 'GET' | 'POST' | 'PATCH' | 'DELETE',
     path: string,
-    opts: { query?: Record<string, string | number | undefined>; body?: unknown; schema: z.ZodType<T> },
+    opts: { query?: Record<string, string | number | undefined>; body?: unknown; form?: FormData; schema: z.ZodType<T> },
   ): Promise<T> {
     const url = new URL(`${this.base}${path}`);
     for (const [key, value] of Object.entries(opts.query ?? {})) {
@@ -267,14 +286,13 @@ export class KaitenClient {
 
     for (let attempt = 0; ; attempt++) {
       this.requestCount++;
+      // Файл — `multipart/form-data`: границу в заголовок ставит сам fetch.
+      const headers: Record<string, string> = { Authorization: `Bearer ${this.token}`, 'X-kaiten-Client': 'kaiten-tracker-import' };
+      if (!opts.form) headers['Content-Type'] = 'application/json';
       const response = await this.send(method, path, url.toString(), {
         method,
-        headers: {
-          Authorization: `Bearer ${this.token}`,
-          'Content-Type': 'application/json',
-          'X-kaiten-Client': 'kaiten-tracker-import',
-        },
-        body: opts.body === undefined ? undefined : JSON.stringify(opts.body),
+        headers,
+        body: opts.form ?? (opts.body === undefined ? undefined : JSON.stringify(opts.body)),
       }, attempt);
       if (response === null) {
         await this.sleep(Math.min(2 ** attempt * 500, 30_000));
@@ -417,6 +435,38 @@ export class KaitenClient {
   /** Удалить чек-лист с пунктами: `DELETE /cards/{card_id}/checklists/{id}` — живьём 16.10. */
   async deleteChecklist(cardId: number, checklistId: number): Promise<unknown> {
     return this.request('DELETE', `/cards/${cardId}/checklists/${checklistId}`, { schema: z.unknown() });
+  }
+
+  // ── Файлы карточки (docs/kaiten-api.md, «Файлы карточки»; живьём 16.10) ──
+  // Только по UUID карточки: с числовым id Kaiten молча кладёт файл с
+  // постоянной публичной ссылкой — поэтому число здесь — отказ до сети.
+
+  /** Загрузить файл: `POST /cards/{uid}/files`, поле `file`. Путь в имени Kaiten отрезает — см. `renameCardFile`. */
+  async uploadCardFile(cardUid: string, name: string, content: Uint8Array): Promise<CardFile> {
+    const form = new FormData();
+    form.append('file', new Blob([new Uint8Array(content)]), name);
+    return this.request('POST', `/cards/${uuid(cardUid)}/files`, { form, schema: CardFileSchema });
+  }
+
+  /** Имя файла: `PATCH /cards/{uid}/files/{id} {name}` — имя с `/` сохраняется. */
+  async renameCardFile(cardUid: string, fileId: string, name: string): Promise<CardFile> {
+    return this.request('PATCH', `/cards/${uuid(cardUid)}/files/${uuid(fileId)}`, { body: { name }, schema: CardFileSchema });
+  }
+
+  async deleteCardFile(cardUid: string, fileId: string): Promise<unknown> {
+    return this.request('DELETE', `/cards/${uuid(cardUid)}/files/${uuid(fileId)}`, { schema: z.unknown() });
+  }
+
+  /**
+   * Содержимое файла: временная подписанная ссылка из `GET /cards/{uid}/files/{id}`
+   * — сразу перед скачиванием, не храним. По ссылке — без токена: он только для API.
+   */
+  async cardFileContent(cardUid: string, fileId: string): Promise<Uint8Array> {
+    const meta = await this.request('GET', `/cards/${uuid(cardUid)}/files/${uuid(fileId)}`, { schema: z.object({ url: z.string() }).passthrough() });
+    if (!/^https:\/\//.test(meta.url)) throw new KaitenApiError('Kaiten не дал ссылку на файл', 0, '');
+    const response = await this.fetchImpl(meta.url, { method: 'GET' });
+    if (!response.ok) throw new KaitenApiError(`файл карточки: ${response.status}`, response.status, '');
+    return new Uint8Array(await response.arrayBuffer());
   }
 
   /**
@@ -582,6 +632,14 @@ export class KaitenClient {
     if (boardId !== undefined) await probe('columns', `/boards/${boardId}/columns`);
     return out;
   }
+}
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/** Адрес файлов — только UUID: числовой id карточки создал бы публичный файл. */
+function uuid(value: string): string {
+  if (!UUID_RE.test(value)) throw new KaitenApiError(`файлы карточки — только по UUID, а не «${value}»`, 0, '');
+  return value;
 }
 
 function retryDelayMs(response: Response, attempt: number): number {

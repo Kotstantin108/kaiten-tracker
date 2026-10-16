@@ -30,6 +30,15 @@
  * списке карточек и сравниваются напрямую: правка их в интерфейсе Kaiten
  * возвращается к файлу (владелец — файл).
  *
+ * ФАЙЛЫ КАРТОЧКИ (`taskFiles`). Вложения задачи и журнал (`ЖУРНАЛ.md`)
+ * лежат в карточке файлами — человек открывает их без командной строки.
+ * Владелец файла с тем же именем — репозиторий; файлы с другими именами
+ * — людей. Что карточка уже получила — `files_hash`, отдельно от
+ * `content_hash`: новая запись журнала меняет только файл журнала, описание
+ * не перерисовывается. Задаче без `files_hash` (появилась до файлов) файлы
+ * доставляет только `--resend` скрипта владельца — так массовая загрузка
+ * проходит через сухой прогон; новой карточке `files_hash` ставится сразу.
+ *
  * КОГДА СОЗДАВАТЬ. Сама — только задачи, рождённые в CLI (`created_via` есть;
  * у перенесённых его нет по решению владельца) и ещё открытые. Перенесённые
  * задачи без карточки — «первая заливка», она идёт только скриптом владельца
@@ -46,7 +55,7 @@ import { createHash } from 'node:crypto';
 
 import { AGENT_PREFIX, extractChecklists, type Checklist, type ChecklistItem } from '../checklists.js';
 import type { ConfigMapping } from '../config.js';
-import type { MirrorItem } from './task-ops.js';
+import { JOURNAL_FILE, type MirrorItem } from './task-ops.js';
 import { CLOSED_STATUSES, PRIORITIES, STATUSES, TASK_TYPES, type Priority, type TaskStatus, type TaskType } from './schema.js';
 import { contentHash } from './document.js';
 import { epicOf, type TaskRecord } from './tasks-index.js';
@@ -377,8 +386,54 @@ function sameValue(a: unknown, b: unknown): boolean {
 
 // ── план ─────────────────────────────────────────────────────────────────
 
+// ── файлы карточки: вложения и журнал ────────────────────────────────────
+
+/** Вложение задачи в репозитории задач: имя внутри папки вложений и git-объект. */
+export interface AttachmentRef {
+  name: string;
+  sha: string;
+  size: number;
+}
+
+/** Файл, который должен лежать в карточке: вложение (содержимое — по `sha`) или журнал (`text`). */
+export interface TaskFile {
+  name: string;
+  sha: string;
+  size: number;
+  text?: string;
+}
+
+/** Что отправить в файлы карточки и хеш, который после этого запишется в `files_hash`. */
+export interface FilesDelivery {
+  wanted: TaskFile[];
+  hash: string;
+}
+
+export function taskFiles(task: TaskRecord, attachments: readonly AttachmentRef[]): TaskFile[] {
+  const files: TaskFile[] = [...attachments].sort((a, b) => a.name.localeCompare(b.name)).map((a) => ({ ...a }));
+  const log = task.log?.trim() ? task.log : null;
+  if (log !== null) {
+    files.push({ name: JOURNAL_FILE, sha: createHash('sha256').update(log).digest('hex'), size: Buffer.byteLength(log, 'utf8'), text: log });
+  }
+  return files;
+}
+
+export function filesHash(files: readonly TaskFile[]): string {
+  const payload = JSON.stringify(files.map((f) => [f.name, f.sha]));
+  return `sha256:${createHash('sha256').update(payload).digest('hex')}`;
+}
+
 export type SyncAction =
-  | { kind: 'create'; task: TaskRecord; fields: CreateFields; content: RenderedContent; contentHash: string; parentRef: string | null }
+  | {
+      kind: 'create';
+      task: TaskRecord;
+      fields: CreateFields;
+      content: RenderedContent;
+      contentHash: string;
+      parentRef: string | null;
+      /** Файлы новой карточки; `files_hash` ставится и без файлов — дальше доставка сама. */
+      files: FilesDelivery | null;
+    }
   | {
       kind: 'update';
       task: TaskRecord;
@@ -390,6 +445,8 @@ export type SyncAction =
       contentHash: string;
       /** Карточка ещё ни разу не получала содержимое (`content_hash` нет) — галочки Kaiten не снимаем. */
       firstDelivery: boolean;
+      /** Файлы — если изменились с последней доставки (или `--resend`). */
+      files: FilesDelivery | null;
     }
   | { kind: 'link'; task: TaskRecord; parentId: number; childId: number };
 
@@ -437,6 +494,11 @@ export interface PlanInput {
    * скрипт владельца (сухой прогон, затем `--apply`) — фон этого не делает.
    */
   resend?: boolean;
+  /**
+   * Вложения задач по slug. Нет — файлы карточек не трогаем совсем (папка
+   * вместо хранилища, тесты без файлов): иначе план счёл бы вложения пропавшими.
+   */
+  attachments?: ReadonlyMap<string, readonly AttachmentRef[]>;
   /** Только эти задачи (id) — пробный прогон на одной карточке. */
   only?: ReadonlySet<string>;
   /** «Сейчас», мс — от него отсчитывается переезд в «Архив»; по умолчанию часы машины. */
@@ -532,6 +594,11 @@ export function planKaitenSync(input: PlanInput): SyncPlan {
   const names: Record<string, string> = {};
   const creates: SyncAction[] = [];
   const others: SyncAction[] = [];
+  const delivery = (task: TaskRecord): FilesDelivery | null => {
+    if (!input.attachments) return null;
+    const wanted = taskFiles(task, input.attachments.get(task.slug) ?? []);
+    return { wanted, hash: filesHash(wanted) };
+  };
 
   for (const task of tasks) {
     if (input.only && !input.only.has(task.fm.id)) continue;
@@ -558,6 +625,7 @@ export function planKaitenSync(input: PlanInput): SyncPlan {
         content: renderContent(task, tasks, input.repoWebBase),
         contentHash: hash,
         parentRef: epic ? epic.fm.id : null,
+        files: delivery(task),
       });
       continue;
     }
@@ -597,7 +665,13 @@ export function planKaitenSync(input: PlanInput): SyncPlan {
     const lane = laneMove(task, card, mapping, repoKey !== null && repoKey in diff, input.now ?? Date.now());
     if (lane !== undefined) patch.lane_id = lane;
     const stale = input.resend === true || task.fm.content_hash !== hash;
-    if (stale || patch.title !== undefined || patch.properties !== undefined || patch.lane_id !== undefined) {
+    // Файлы: сами — только задачам, у которых `files_hash` уже есть (Q10); остальным —
+    // `--resend`, открытым или названным через `--only` (Q11).
+    const files = delivery(task);
+    const filesStale =
+      files !== null &&
+      ((task.fm.files_hash !== undefined && task.fm.files_hash !== files.hash) || (input.resend === true && (!task.closed || input.only !== undefined)));
+    if (stale || filesStale || patch.title !== undefined || patch.properties !== undefined || patch.lane_id !== undefined) {
       others.push({
         kind: 'update',
         task,
@@ -606,6 +680,7 @@ export function planKaitenSync(input: PlanInput): SyncPlan {
         content: stale ? renderContent(task, tasks, input.repoWebBase) : null,
         contentHash: hash,
         firstDelivery: task.fm.content_hash === undefined,
+        files: filesStale ? files : null,
       });
     }
 

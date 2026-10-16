@@ -84,6 +84,8 @@ export interface AdoptItem {
 export interface SyncedItem {
   id: string;
   contentHash: string;
+  /** Файлы, которые карточка получила (`files_hash`); нет — поле не меняется. */
+  filesHash?: string;
   tracker?: string;
   /** Команда, с которой создана карточка (по умолчанию проекта), — чтобы следующая сверка не переносила её отдельным коммитом. */
   team?: string;
@@ -311,6 +313,9 @@ function setItems(body: string, texts: readonly string[], value: boolean): { bod
 /** Вложения больше — не в задачи: репозиторий задач загружают целиком. */
 export const ATTACHMENT_MAX_BYTES = 5 * 1024 * 1024;
 
+/** Имя журнала задачи среди файлов карточки Kaiten — вложение так назвать нельзя. */
+export const JOURNAL_FILE = 'ЖУРНАЛ.md';
+
 /**
  * Что не так с именем вложения; `null` — годится. Имя — относительный путь
  * внутри папки вложений задачи: без выхода наружу и без знаков, которые
@@ -319,6 +324,7 @@ export const ATTACHMENT_MAX_BYTES = 5 * 1024 * 1024;
 export function attachmentNameProblem(name: string): string | null {
   if (!name.trim()) return 'пустое имя файла';
   if (name.length > 200) return 'имя файла длиннее 200 знаков';
+  if (name.toLowerCase() === JOURNAL_FILE.toLowerCase()) return `${JOURNAL_FILE} — так в карточке Kaiten называется журнал задачи, выберите другое имя`;
   if (name.includes('\\')) return 'в имени файла — прямой слэш, не обратный';
   const parts = name.split('/');
   if (parts.some((p) => p === '' || p === '.' || p === '..')) return 'имя файла — без «..», «.» и слэша в начале или в конце';
@@ -505,12 +511,12 @@ export function applyOp(op: Op, texts: TaskTexts, ctx: OpContext): OpResult {
       }
       const parsed = FrontmatterSchema.safeParse(raw.data);
       if (!parsed.success) return { error: parsed.error.issues.map((i) => `${i.path.join('.') || '(шапка)'}: ${i.message}`).join('; ') };
-      const foreign = foreignFieldChanges(task.fm, parsed.data).filter((f) => f !== 'updated' && f !== 'content_hash');
+      const foreign = foreignFieldChanges(task.fm, parsed.data).filter((f) => f !== 'updated' && f !== 'content_hash' && f !== 'files_hash');
       if (foreign.length > 0) return { error: `эти поля правятся не в тексте задачи: ${foreign.join(', ')} — верните их как были` };
       // Поля не-файла не тронуты, значит «изменилось ли» решает хеш файловой части.
       if (contentHash(parsed.data, raw.body) === op.baseHash) return { changes: [], summary: `задача ${ref} без изменений`, warnings: [] };
       // «Доставлено в Kaiten» правкой не подделать: берётся из задачи, не из текста.
-      const out = write(task, { ...parsed.data, content_hash: task.fm.content_hash }, raw.body, ctx);
+      const out = write(task, { ...parsed.data, content_hash: task.fm.content_hash, files_hash: task.fm.files_hash }, raw.body, ctx);
       if ('error' in out) return out;
       return { changes: [{ path: task.path, text: out.text }], summary: `задача ${ref} изменена`, warnings: out.warnings };
     }
@@ -594,8 +600,14 @@ function applySynced(items: readonly SyncedItem[], texts: TaskTexts): OpResult {
   for (const item of items) {
     const task = all.find((x) => x.fm.id === item.id);
     if (!task) continue;
-    const fm: Frontmatter = { ...task.fm, content_hash: item.contentHash, ...(item.tracker ? { tracker: item.tracker } : {}), ...(item.team ? { team: item.team } : {}) };
-    if (fm.content_hash === task.fm.content_hash && fm.tracker === task.fm.tracker && fm.team === task.fm.team) continue;
+    const fm: Frontmatter = {
+      ...task.fm,
+      content_hash: item.contentHash,
+      ...(item.filesHash ? { files_hash: item.filesHash } : {}),
+      ...(item.tracker ? { tracker: item.tracker } : {}),
+      ...(item.team ? { team: item.team } : {}),
+    };
+    if (fm.content_hash === task.fm.content_hash && fm.files_hash === task.fm.files_hash && fm.tracker === task.fm.tracker && fm.team === task.fm.team) continue;
     changes.push({ path: task.path, text: serializeTaskDocument(fm, task.body) });
   }
   return { changes, summary: `отметки Kaiten: ${changes.length}`, warnings: [] };

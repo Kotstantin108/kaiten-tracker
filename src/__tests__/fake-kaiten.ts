@@ -22,8 +22,17 @@ export interface FakeChecklist {
   items: FakeItem[];
 }
 
+/** Файл карточки с ограниченным доступом: id — UUID, размер строкой (живьём 16.10). */
+export interface FakeFile {
+  id: string;
+  name: string;
+  content: Uint8Array;
+}
+
 export interface FakeCard {
   id: number;
+  uid?: string;
+  files?: FakeFile[];
   title: string;
   board_id: number;
   column_id?: number;
@@ -51,6 +60,16 @@ export interface FakeKaiten {
   /** Поле «Суть», без которого карточку не создать (ограничение доски). */
   requiredSummaryKey: string | null;
   failOn?: (method: string, path: string) => { status: number; body: unknown } | null;
+  /** Запросы файлов по числовому id карточки — так Kaiten молча делает файл публичным. */
+  numericFileRequests: string[];
+  /** Заголовки скачиваний по подписанной ссылке — токена там быть не должно. */
+  signedFetches: Array<Record<string, string>>;
+}
+
+const SIGNED_HOST = 'https://files.example.com/';
+
+function fakeUuid(n: number): string {
+  return `00000000-0000-4000-8000-${String(n).padStart(12, '0')}`;
 }
 
 export function fakeKaiten(options: { requiredSummaryKey?: string | null; firstId?: number } = {}): FakeKaiten {
@@ -60,25 +79,69 @@ export function fakeKaiten(options: { requiredSummaryKey?: string | null; firstI
     writes: [],
     requiredSummaryKey: options.requiredSummaryKey ?? null,
     client: undefined as unknown as KaitenClient,
+    numericFileRequests: [],
+    signedFetches: [],
   };
 
   const json = (status: number, body: unknown): Response => new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
+  const fileView = (f: FakeFile, card: FakeCard): Record<string, unknown> => ({ id: f.id, name: f.name, size: String(f.content.length), type: 11, card_id: card.id });
+  const cardView = (c: FakeCard): Record<string, unknown> => {
+    const { files, ...rest } = c;
+    return { ...rest, files: (files ?? []).map((f) => fileView(f, c)) };
+  };
   const listView = (c: FakeCard): Record<string, unknown> => {
-    const { description: _d, checklists, comments: _c, ...rest } = c;
+    const { description: _d, checklists, comments: _c, files: _f, ...rest } = c;
     return { ...rest, checklists: checklists.map(({ items: _i, ...l }) => l) };
   };
   const findChecklist = (id: number): FakeChecklist | undefined => [...fake.cards.values()].flatMap((c) => c.checklists).find((l) => l.id === id);
+  const byUid = (uid: string): FakeCard | undefined => [...fake.cards.values()].find((c) => c.uid === uid);
 
   const impl = async (input: Parameters<typeof fetch>[0], init?: RequestInit): Promise<Response> => {
-    const url = new URL(String(input));
+    const raw = String(input);
+    if (raw.startsWith(SIGNED_HOST)) {
+      fake.signedFetches.push(Object.fromEntries(new Headers(init?.headers).entries()));
+      const file = [...fake.cards.values()].flatMap((c) => c.files ?? []).find((f) => f.id === raw.slice(SIGNED_HOST.length));
+      return file ? new Response(new Uint8Array(file.content), { status: 200 }) : new Response('', { status: 404 });
+    }
+    const url = new URL(raw);
     const method = init?.method ?? 'GET';
     const path = url.pathname.replace(/^\/api\/latest/, '');
-    const body = (init?.body ? JSON.parse(String(init.body)) : {}) as Record<string, unknown>;
+    const form = init?.body instanceof FormData ? init.body : null;
+    const body = (init?.body && !form ? JSON.parse(String(init.body)) : {}) as Record<string, unknown>;
     if (method !== 'GET') fake.writes.push(`${method} ${path}`);
     const failure = fake.failOn?.(method, path);
     if (failure) return json(failure.status, failure.body);
 
     let m: RegExpExecArray | null;
+    // Файлы карточки — по UUID (живьём 16.10); по числу — нарушение, а не маршрут.
+    if (/^\/cards\/\d+\/files/.test(path)) {
+      fake.numericFileRequests.push(`${method} ${path}`);
+      return json(400, { message: 'файлы — только по UUID' });
+    }
+    if (method === 'POST' && (m = /^\/cards\/([0-9a-f-]{36})\/files$/.exec(path))) {
+      const card = byUid(m[1]);
+      const file = form?.get('file');
+      if (!card || !(file instanceof Blob)) return json(400, {});
+      // Как живьём: путь в имени сервер отрезает.
+      const name = ((file as File).name ?? '').split('/').at(-1) ?? '';
+      const created: FakeFile = { id: fakeUuid(nextId++), name, content: new Uint8Array(await file.arrayBuffer()) };
+      card.files = [...(card.files ?? []), created];
+      return json(200, fileView(created, card));
+    }
+    if ((m = /^\/cards\/([0-9a-f-]{36})\/files\/([0-9a-f-]{36})$/.exec(path))) {
+      const card = byUid(m[1]);
+      const file = card?.files?.find((f) => f.id === m?.[2]);
+      if (!card || !file) return json(404, {});
+      if (method === 'GET') return json(200, { ...fileView(file, card), url: `${SIGNED_HOST}${file.id}` });
+      if (method === 'PATCH') {
+        if (typeof body.name === 'string') file.name = body.name;
+        return json(200, fileView(file, card));
+      }
+      if (method === 'DELETE') {
+        card.files = (card.files ?? []).filter((f) => f !== file);
+        return json(200, { id: file.id });
+      }
+    }
     if (method === 'GET' && path === '/cards') {
       const board = url.searchParams.get('board_id');
       const ext = url.searchParams.get('external_id');
@@ -91,19 +154,21 @@ export function fakeKaiten(options: { requiredSummaryKey?: string | null; firstI
     if ((m = /^\/cards\/(\d+)$/.exec(path))) {
       const card = fake.cards.get(Number(m[1]));
       if (!card) return json(404, { message: 'not found' });
-      if (method === 'GET') return json(200, card);
+      if (method === 'GET') return json(200, cardView(card));
       if (method === 'PATCH') {
         const { properties, ...rest } = body;
         Object.assign(card, rest);
         if (properties) card.properties = { ...card.properties, ...(properties as Record<string, unknown>) };
-        return json(200, card);
+        return json(200, cardView(card));
       }
     }
     if (method === 'POST' && path === '/cards') {
       const props = (body.properties ?? {}) as Record<string, unknown>;
       if (fake.requiredSummaryKey && !props[fake.requiredSummaryKey]) return json(400, { error_text: 'Нельзя создать карточку без «Сути»' });
+      const id = nextId++;
       const card: FakeCard = {
-        id: nextId++,
+        id,
+        uid: fakeUuid(id),
         title: String(body.title),
         board_id: Number(body.board_id),
         column_id: body.column_id as number | undefined,
@@ -119,7 +184,7 @@ export function fakeKaiten(options: { requiredSummaryKey?: string | null; firstI
         created: '2026-09-28T10:00:00.000Z',
       };
       fake.cards.set(card.id, card);
-      return json(200, card);
+      return json(200, cardView(card));
     }
     if (method === 'POST' && (m = /^\/cards\/(\d+)\/children$/.exec(path))) {
       const child = fake.cards.get(Number(body.card_id));
@@ -181,6 +246,7 @@ export function seedCard(fake: FakeKaiten, card: Partial<FakeCard> & { id: numbe
     checklists: [],
     comments: [],
     archived: false,
+    uid: fakeUuid(card.id),
     ...card,
   };
   fake.cards.set(full.id, full);

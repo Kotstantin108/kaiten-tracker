@@ -8,7 +8,10 @@
  *   · создание сначала ищет карточку по `external_id` = id задачи — повтор
  *     найдёт созданную, а не сделает вторую;
  *   · обновление идемпотентно: те же поля и описание ещё раз;
- *   · пункты чек-листов только добавляются и отмечаются, не удаляются.
+ *   · чек-листы и файлы каждый раз сравниваются с тем, что в карточке сейчас:
+ *     повтор доделывает недоделанное. Файл заменяется так: сначала новый,
+ *     потом удаление старого; два файла с одним именем после обрыва — лишний
+ *     удалит следующий проход (остаётся тот, что совпал с задачей).
  * Одновременные прогоны на одном хранилище исключает замок (`KAITEN_LOCK`
  * берут фон, `pull` и скрипт владельца) — от них `external_id` не спасает.
  *
@@ -44,6 +47,7 @@ import {
   type PlanInput,
   type SyncAction,
   type SyncPlan,
+  type TaskFile,
 } from './core/kaiten-sync-plan.js';
 import type { AdoptItem, Op, SyncedItem } from './core/task-ops.js';
 import { refOf, type TaskRecord } from './core/tasks-index.js';
@@ -67,6 +71,8 @@ export interface SyncRun {
   adopted: Map<number, ReturnType<typeof adoptedTask>>;
   /** Что станет с чек-листами карточек (по id задачи) — в сухом прогоне с подробностями и при записи. */
   checklists: Map<string, ChecklistDiff>;
+  /** Что станет с файлами карточек (по id задачи) — там же. */
+  files: Map<string, FilesDiff>;
   ops: SyncOp[];
   errors: SyncError[];
   /** Сколько действий дошло до Kaiten. */
@@ -130,6 +136,73 @@ async function applyChecklists(client: KaitenClient, cardId: number, diff: Check
   for (const { listId, itemId, ...patch } of diff.updateItems) await client.updateChecklistItem(cardId, listId, itemId, patch);
 }
 
+/**
+ * Файлы карточки против файлов задачи. Наш — файл с тем же именем и UUID
+ * (старые файлы с числовым id мы не загружали — не трогаем); остальные
+ * файлы карточки — людей. Совпадение содержимого: при равном размере файл
+ * скачивается и сравнивается, иначе он заменяется.
+ */
+export interface FilesDiff {
+  upload: TaskFile[];
+  replace: Array<{ file: TaskFile; old: string[] }>;
+  /** Повторы нашего файла (обрыв между загрузкой и удалением) — лишние. */
+  duplicates: Array<{ name: string; id: string }>;
+}
+
+function emptyFiles(diff: FilesDiff): boolean {
+  return diff.upload.length === 0 && diff.replace.length === 0 && diff.duplicates.length === 0;
+}
+
+function sameBytes(a: Uint8Array, b: Uint8Array): boolean {
+  return a.length === b.length && a.every((x, i) => x === b[i]);
+}
+
+async function diffFiles(client: KaitenClient, card: Card, wanted: readonly TaskFile[], content: (file: TaskFile) => Uint8Array): Promise<FilesDiff> {
+  const diff: FilesDiff = { upload: [], replace: [], duplicates: [] };
+  if (wanted.length > 0 && !card.uid) throw new KaitenApiError('Kaiten не отдал UUID карточки — файлы не загрузить', 0, '');
+  const uid = card.uid ?? '';
+  for (const file of wanted) {
+    const ours = (card.files ?? []).filter((f): f is typeof f & { id: string } => typeof f.id === 'string' && f.name === file.name);
+    if (ours.length === 0) {
+      diff.upload.push(file);
+      continue;
+    }
+    let keep: string | undefined;
+    for (const f of ours) {
+      if (Number(f.size) !== file.size) continue;
+      if (sameBytes(await client.cardFileContent(uid, f.id), content(file))) {
+        keep = f.id;
+        break;
+      }
+    }
+    if (keep === undefined) diff.replace.push({ file, old: ours.map((f) => f.id) });
+    else for (const f of ours) if (f.id !== keep) diff.duplicates.push({ name: f.name, id: f.id });
+  }
+  return diff;
+}
+
+/** Загрузить файл под его именем; не вышло назвать (путь в имени) — убрать загруженный: безымянный ничей. */
+async function uploadAs(client: KaitenClient, uid: string, file: TaskFile, content: Uint8Array): Promise<void> {
+  const uploaded = await client.uploadCardFile(uid, file.name, content);
+  if (uploaded.name === file.name || typeof uploaded.id !== 'string') return;
+  try {
+    await client.renameCardFile(uid, uploaded.id, file.name);
+  } catch (error) {
+    await client.deleteCardFile(uid, uploaded.id);
+    throw error;
+  }
+}
+
+async function applyFiles(client: KaitenClient, card: Card, diff: FilesDiff, content: (file: TaskFile) => Uint8Array): Promise<void> {
+  const uid = card.uid ?? '';
+  for (const file of diff.upload) await uploadAs(client, uid, file, content(file));
+  for (const { file, old } of diff.replace) {
+    await uploadAs(client, uid, file, content(file));
+    for (const id of old) await client.deleteCardFile(uid, id);
+  }
+  for (const { id } of diff.duplicates) await client.deleteCardFile(uid, id);
+}
+
 function describe(action: SyncAction): string {
   const ref = refOf(action.task);
   if (action.kind === 'create') return `создать карточку для ${ref}`;
@@ -145,6 +218,8 @@ export interface RunInput extends Omit<PlanInput, 'cards'> {
   onlyCards?: ReadonlySet<number>;
   /** Дата операции `YYYY-MM-DD`; по умолчанию сегодня. */
   date?: string;
+  /** Содержимое вложения по git-объекту (`attachments` в плане). */
+  readFile?: (sha: string) => Uint8Array;
 }
 
 function fullOf(card: Card): FullCard {
@@ -166,18 +241,29 @@ export async function runKaitenSync(client: KaitenClient, input: RunInput, mode:
   const cards = (await client.listCards({ boardId: input.boardId })).map(toCardView);
   const plan = planKaitenSync({ ...input, cards });
   const adopt = planAdoption({ ...input, cards, onlyCards: input.onlyCards ?? (input.only ? new Set() : undefined) });
-  const run: SyncRun = { plan, adopt, adopted: new Map(), checklists: new Map(), ops: [], errors: [], done: 0 };
+  const run: SyncRun = { plan, adopt, adopted: new Map(), checklists: new Map(), files: new Map(), ops: [], errors: [], done: 0 };
   if (mode === 'plan') return run;
   const adoptCtx = { mapping: input.mapping, people: input.people ?? {}, date: input.date ?? localDate(new Date().toISOString()) };
+  const content = (file: TaskFile): Uint8Array => {
+    if (file.text !== undefined) return new TextEncoder().encode(file.text);
+    if (!input.readFile) throw new Error(`нет содержимого вложения ${file.name}`);
+    return input.readFile(file.sha);
+  };
 
   if (mode === 'details') {
     for (const candidate of adopt.candidates) run.adopted.set(candidate.card.id, adoptedTask(candidate, fullOf(await client.getCard(candidate.card.id)), adoptCtx));
     for (const action of plan.actions) {
-      if (action.kind === 'update' && action.content) {
-        const card = await client.getCard(action.cardId);
-        run.checklists.set(action.task.fm.id, diffChecklists(action.content.checklists, existingLists(card), action.firstDelivery));
-      } else if (action.kind === 'create') {
-        run.checklists.set(action.task.fm.id, diffChecklists(action.content.checklists, [], true));
+      try {
+        if (action.kind === 'update' && (action.content || action.files)) {
+          const card = await client.getCard(action.cardId);
+          if (action.content) run.checklists.set(action.task.fm.id, diffChecklists(action.content.checklists, existingLists(card), action.firstDelivery));
+          if (action.files) run.files.set(action.task.fm.id, await diffFiles(client, card, action.files.wanted, content));
+        } else if (action.kind === 'create') {
+          run.checklists.set(action.task.fm.id, diffChecklists(action.content.checklists, [], true));
+          if (action.files) run.files.set(action.task.fm.id, { upload: action.files.wanted, replace: [], duplicates: [] });
+        }
+      } catch (error) {
+        run.errors.push({ what: describe(action), message: apiErrorText(error) });
       }
     }
     return run;
@@ -238,22 +324,36 @@ export async function runKaitenSync(client: KaitenClient, input: RunInput, mode:
         created.set(action.task.fm.id, card.id);
         const parentId = parentCardId(action, input.tasks, created);
         if (parentId !== null) await client.addChild(parentId, card.id);
-        synced.push({ id: action.task.fm.id, contentHash: action.contentHash, tracker: String(card.id), team: action.fields.team });
+        if (action.files && action.files.wanted.length > 0) {
+          // Файлов в ответе создания и в списке нет — только в GET.
+          const full = await client.getCard(card.id);
+          const files = await diffFiles(client, full, action.files.wanted, content);
+          run.files.set(action.task.fm.id, files);
+          await applyFiles(client, full, files, content);
+        }
+        synced.push({ id: action.task.fm.id, contentHash: action.contentHash, filesHash: action.files?.hash, tracker: String(card.id), team: action.fields.team });
         syncedNames.push(action.task.slug);
       } else if (action.kind === 'update') {
         if (action.patch.title !== undefined || action.patch.properties !== undefined || action.patch.lane_id !== undefined) await client.updateCard(action.cardId, action.patch);
-        if (action.content) {
-          // Описание и чек-листы — только из GET: в списке карточек их нет. Совпавшее
-          // описание не переписываем: повторная доставка (`--resend`) без лишних записей.
-          const card = await client.getCard(action.cardId);
+        // Описание, чек-листы и файлы — только из GET: в списке карточек их нет.
+        const card = action.content || action.files ? await client.getCard(action.cardId) : null;
+        if (card && action.content) {
+          // Совпавшее описание не переписываем: повторная доставка (`--resend`) без лишних записей.
           if (card.description !== action.content.description) await client.updateCard(action.cardId, { description: action.content.description });
           const diff = diffChecklists(action.content.checklists, existingLists(card), action.firstDelivery);
           run.checklists.set(action.task.fm.id, diff);
           if (!emptyDiff(diff)) await applyChecklists(client, action.cardId, diff);
-          if (action.task.fm.content_hash !== action.contentHash) {
-            synced.push({ id: action.task.fm.id, contentHash: action.contentHash });
-            syncedNames.push(refOf(action.task));
-          }
+        }
+        if (card && action.files) {
+          const files = await diffFiles(client, card, action.files.wanted, content);
+          run.files.set(action.task.fm.id, files);
+          if (!emptyFiles(files)) await applyFiles(client, card, files, content);
+        }
+        const contentHash = action.content ? action.contentHash : (action.task.fm.content_hash ?? action.contentHash);
+        const filesHash = action.files?.hash;
+        if (contentHash !== action.task.fm.content_hash || (filesHash !== undefined && filesHash !== action.task.fm.files_hash)) {
+          synced.push({ id: action.task.fm.id, contentHash, filesHash });
+          syncedNames.push(refOf(action.task));
         }
       } else {
         await client.addChild(action.parentId, action.childId);
@@ -306,8 +406,17 @@ function checklistLine(diff: ChecklistDiff | undefined): string {
   return parts.length > 0 ? `; чек-листы: ${parts.join(', ')}` : '; чек-листы без изменений';
 }
 
+function filesLine(diff: FilesDiff | undefined): string {
+  if (!diff) return '';
+  const parts: string[] = [];
+  if (diff.upload.length > 0) parts.push(`загрузить ${diff.upload.length}: ${quoted(diff.upload.map((f) => f.name))}`);
+  if (diff.replace.length > 0) parts.push(`заменить ${diff.replace.length}: ${quoted(diff.replace.map((r) => r.file.name))}`);
+  if (diff.duplicates.length > 0) parts.push(`убрать повторов ${diff.duplicates.length}: ${quoted(diff.duplicates.map((d) => d.name))}`);
+  return parts.length > 0 ? `; файлы: ${parts.join(', ')}` : '; файлы без изменений';
+}
+
 /** План для владельца: что будет сделано и чего не будет. */
-export function formatPlan(run: Pick<SyncRun, 'plan' | 'checklists'> & Partial<Pick<SyncRun, 'adopt' | 'adopted'>>): string[] {
+export function formatPlan(run: Pick<SyncRun, 'plan' | 'checklists'> & Partial<Pick<SyncRun, 'adopt' | 'adopted' | 'files'>>): string[] {
   const { plan } = run;
   const out: string[] = [];
   const count = (kind: SyncAction['kind']): number => plan.actions.filter((a) => a.kind === kind).length;
@@ -322,13 +431,20 @@ export function formatPlan(run: Pick<SyncRun, 'plan' | 'checklists'> & Partial<P
   }
   for (const a of plan.actions) {
     const lists = checklistLine(run.checklists.get(a.task.fm.id));
-    if (a.kind === 'create') out.push(`  + ${a.task.slug}: «${a.task.fm.title}» (${a.task.fm.type}, ${a.task.fm.status})${lists}`);
+    const files = filesLine(run.files?.get(a.task.fm.id));
+    if (a.kind === 'create') out.push(`  + ${a.task.slug}: «${a.task.fm.title}» (${a.task.fm.type}, ${a.task.fm.status})${lists}${files}`);
     else if (a.kind === 'update') {
       const lane = a.patch.lane_id === undefined ? '' : 'дорожка';
-      const what = [a.patch.title !== undefined ? 'заголовок' : '', a.patch.properties ? `поля ${Object.keys(a.patch.properties).join(', ')}` : '', lane, a.content ? 'описание' : '']
+      const what = [
+        a.patch.title !== undefined ? 'заголовок' : '',
+        a.patch.properties ? `поля ${Object.keys(a.patch.properties).join(', ')}` : '',
+        lane,
+        a.content ? 'описание' : '',
+        a.files ? 'файлы' : '',
+      ]
         .filter(Boolean)
         .join(', ');
-      out.push(`  ~ ${refOf(a.task)} (${a.task.slug}): ${what}${a.content ? lists : ''}${a.firstDelivery && a.content ? ' [первая доставка]' : ''}`);
+      out.push(`  ~ ${refOf(a.task)} (${a.task.slug}): ${what}${a.content ? lists : ''}${a.files ? files : ''}${a.firstDelivery && a.content ? ' [первая доставка]' : ''}`);
     } else out.push(`  → ${refOf(a.task)} в эпик ${a.parentId}`);
   }
   for (const m of plan.mirror) {

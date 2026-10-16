@@ -201,6 +201,13 @@ async function boardRulesText(deps: TaskDeps, ctx: BoardContext): Promise<string
   return lines.join('\n');
 }
 
+function fileSize(bytes: number): string {
+  if (!Number.isFinite(bytes)) return 'размер неизвестен';
+  if (bytes < 1024) return `${bytes} Б`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(0)} КБ`;
+  return `${(bytes / 1024 / 1024).toFixed(1)} МБ`;
+}
+
 function cardSummary(ctx: BoardContext, domain: string, card: Card): string {
   const column = ctx.board.columns.find((c) => c.id === card.column_id)?.title ?? '?';
   const lane = ctx.board.lanes.find((l) => l.id === card.lane_id);
@@ -308,8 +315,12 @@ export function registerTaskTools(server: McpServer, deps: TaskDeps): void {
         if (card.parents_ids?.length) lines.push(`Родители: ${card.parents_ids.map((id) => `#${id}`).join(', ')}`);
         if (card.children_ids?.length) lines.push(`Дети: ${card.children_ids.map((id) => `#${id}`).join(', ')}`);
         for (const list of card.checklists ?? []) {
-          lines.push(`Чек-лист «${list.name ?? ''}»:`, ...(list.items ?? []).map((i) => `  [${i.checked ? 'x' : ' '}] ${i.text ?? ''}`));
+          // Порядок — как в интерфейсе: в ответе API пункты идут не по `sort_order`.
+          const items = [...(list.items ?? [])].sort((a, b) => (a.sort_order ?? 0) - (b.sort_order ?? 0));
+          lines.push(`Чек-лист «${list.name ?? ''}»:`, ...items.map((i) => `  [${i.checked ? 'x' : ' '}] ${i.text ?? ''}`));
         }
+        const files = card.files ?? [];
+        if (files.length > 0) lines.push(`Файлы (открыть — в карточке Kaiten): ${files.map((f) => `${f.name} (${fileSize(Number(f.size))})`).join(', ')}`);
         if (card.description) lines.push('', 'Описание:', card.description);
         if (ctx.parsed?.rules.synced && card.external_id) lines.push('', 'Карточку ведёт git: агент может только комментировать.');
         return lines.join('\n');

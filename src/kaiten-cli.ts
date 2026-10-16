@@ -17,7 +17,7 @@ import type { Priority, TaskStatus } from './core/schema.js';
 import { buildIndex, belongsToProject, resolveTask, type TaskIndex, type TaskRecord } from './core/tasks-index.js';
 import { localCopyDir, loadSettings, PROJECT_FILE, readProjectFile, type KaitenSettings } from './kaiten-context.js';
 import { formatProblems } from './kaiten-format.js';
-import { repoWebBase } from './core/kaiten-sync-plan.js';
+import { repoWebBase, type AttachmentRef } from './core/kaiten-sync-plan.js';
 import { KaitenClient } from './kaiten-client.js';
 import { apiErrorText, runKaitenSync, type SyncRun } from './kaiten-sync.js';
 import { KAITEN_LOCK, KAITEN_QUEUE, recordOp, sendInBackground, setKaitenErrors, syncStore, takeNotices, tryLock, withLockAsync } from './store-write.js';
@@ -237,6 +237,26 @@ export function today(now = new Date()): string {
 
 // ── отправка и сообщения о ней ───────────────────────────────────────────
 
+/** Вложения задач из хранилища (`attachments/<slug>/<имя>`) — для файлов карточек. */
+export function attachmentRefs(entries: readonly StoreEntry[]): Map<string, AttachmentRef[]> {
+  const out = new Map<string, AttachmentRef[]>();
+  for (const e of entries) {
+    const m = /^attachments\/([^/]+)\/(.+)$/.exec(e.path);
+    if (!m) continue;
+    out.set(m[1], [...(out.get(m[1]) ?? []), { name: m[2], sha: e.sha, size: e.size }]);
+  }
+  return out;
+}
+
+/** Содержимое вложения по git-объекту — по требованию: читаются только отправляемые. */
+export function blobReader(store: string): (sha: string) => Uint8Array {
+  return (sha) => {
+    const blob = readBlobs(store, [sha]).get(sha);
+    if (!blob) throw new Error('вложение задачи не прочитать на этой машине — kaiten pull');
+    return blob;
+  };
+}
+
 /**
  * Шаг Kaiten после отправки в git (решение 16): только при включённом
  * `sync.kaiten`. Тот же план, что показывает `npm run kaiten-sync`, без
@@ -260,10 +280,13 @@ export async function syncWithKaiten(ctx: Context, client?: KaitenClient, onLock
     onLocked?.();
     let run: SyncRun;
     try {
+      const loaded = loadTasks(ctx);
       run = await runKaitenSync(
         kaiten,
         {
-          tasks: loadTasks(ctx).index.tasks,
+          tasks: loaded.index.tasks,
+          attachments: attachmentRefs(loaded.entries),
+          readFile: blobReader(ctx.store),
           mapping,
           ignore: ctx.loaded.project.ignoreCards,
           repoWebBase: repoWebBase(ctx.loaded.project.tasksRepo?.url),

@@ -95,7 +95,7 @@ types:                   # какие типы можно заводить; "*" 
 `childCardsDone` с `eq` выполнено, пока дочерние карточки не готовы.
 
 **Инструменты:** `whoami`, `list_boards`, `board_rules`, `find_cards`,
-`get_card`, `create_card` (предпросмотр → `confirm_code`), `move_card`,
+`get_card` (с файлами карточки — имя и размер, без содержимого), `create_card` (предпросмотр → `confirm_code`), `move_card`,
 `update_card`, `add_comment`, `checklist_item`, `link_parent`, `block_card`.
 
 ## Режим «Документы»

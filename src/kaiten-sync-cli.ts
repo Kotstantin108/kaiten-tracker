@@ -22,7 +22,10 @@
  *                          карточке перед всеми
  *   --resend               отправить описание и чек-листы заново, даже если
  *                          карточка их уже получила: привести к файлу
- *                          карточки, доставленные прежними правилами
+ *                          карточки, доставленные прежними правилами; заодно
+ *                          вложения и журнал (ЖУРНАЛ.md) — открытым задачам,
+ *                          закрытым — только через --only. После этого файлы
+ *                          задачи доставляет и фон
  *   --apply                выполнить; без него — план с подробностями по
  *                          каждой карточке (читаются только обновляемые)
  *
@@ -35,7 +38,7 @@
 import { repoWebBase } from './core/kaiten-sync-plan.js';
 import { buildIndex, resolveTask } from './core/tasks-index.js';
 import { KaitenClient } from './kaiten-client.js';
-import { peopleByEmail, SETTINGS_PATH, today } from './kaiten-cli.js';
+import { attachmentRefs, blobReader, peopleByEmail, SETTINGS_PATH, today } from './kaiten-cli.js';
 import { loadSettings } from './kaiten-context.js';
 import { formatPlan, runKaitenSync } from './kaiten-sync.js';
 import { KAITEN_LOCK, recordOp, syncStore, withLockAsync } from './store-write.js';
@@ -72,7 +75,8 @@ async function main(): Promise<void> {
   if (!mapping) fail(`У проекта ${project.title} нет доски в kaiten.json — сначала npm run setup -- --tasks <рабочая копия> --apply`);
   if (owner.source.kind !== 'store' && apply) fail('--apply пишет ключи карточек в задачи — только из хранилища задач: --tasks <адрес репозитория задач>');
   const store = owner.source.kind === 'store' ? owner.source.store : '';
-  const tree = owner.source.kind === 'dir' ? readTasksTree(owner.source.dir) : owner.source.kind === 'store' ? readStoreTree(store, listEntries(store)) : fail('--config без --tasks: укажите, откуда брать задачи');
+  const entries = owner.source.kind === 'store' ? listEntries(store) : [];
+  const tree = owner.source.kind === 'dir' ? readTasksTree(owner.source.dir) : owner.source.kind === 'store' ? readStoreTree(store, entries) : fail('--config без --tasks: укажите, откуда брать задачи');
   const index = buildIndex(tree.files, tree.logs);
   if (index.problems.length > 0) console.error(`Не читается задач: ${index.problems.length} — они не участвуют.`);
 
@@ -104,6 +108,9 @@ async function main(): Promise<void> {
     boardId: mapping.boardId,
     firstLoad,
     resend: argv.includes('--resend'),
+    // Файлы карточек — только из хранилища: в папке вложения не сверить с тем, что отправлено.
+    attachments: owner.source.kind === 'store' ? attachmentRefs(entries) : undefined,
+    readFile: owner.source.kind === 'store' ? blobReader(store) : undefined,
     only,
     onlyCards,
     people: peopleByEmail(people),
@@ -113,7 +120,7 @@ async function main(): Promise<void> {
   const run = apply ? await withLockAsync(store, KAITEN_LOCK, () => runKaitenSync(client, input, 'apply')) : await runKaitenSync(client, input, 'details');
 
   const loadNote = firstLoad ? `, первая заливка (сделанные${firstLoad.withCancelled ? ' и отменённые' : ''} с ${firstLoad.closedSince})` : '';
-  const resendNote = input.resend ? ', описание и чек-листы — заново' : '';
+  const resendNote = input.resend ? ', описание, чек-листы и файлы — заново' : '';
   console.log(`Проект ${project.title}, задач ${index.tasks.length}${loadNote}${resendNote}${onlyRef ? `, только ${onlyRef}` : ''}`);
   if (!project.tasksRepo?.url) console.log('Адреса репозитория задач нет — ссылки в описаниях будут просто текстом.');
   for (const line of formatPlan(run)) console.log(line);

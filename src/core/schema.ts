@@ -117,6 +117,9 @@ export const FIELDS = {
   updated: { owner: 'cli', required: true, schema: date },
   planning: { owner: 'kaiten', required: false, schema: PlanningSchema },
   content_hash: { owner: 'cli', required: false, schema: z.string().regex(/^sha256:[a-f0-9]{64}$/, 'sha256:<64 hex>') },
+  // Какие файлы (вложения и журнал) карточка уже получила; ставит только
+  // синхронизация. Нет поля — файлы этой задаче доставляет только `--resend`.
+  files_hash: { owner: 'cli', required: false, schema: z.string().regex(/^sha256:[a-f0-9]{64}$/, 'sha256:<64 hex>') },
 } as const satisfies Record<string, FieldSpec>;
 
 export type FieldName = keyof typeof FIELDS;

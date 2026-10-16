@@ -82,6 +82,8 @@ interface FakeCard {
   external_id?: string | null;
   children_ids?: number[];
   parents_ids?: number[];
+  files?: Array<{ id: string; name: string; size: string; type: number }>;
+  checklists?: Array<{ id: number; name: string; items: Array<{ id: number; text: string; checked: boolean; sort_order: number }> }>;
 }
 
 function fakeKaiten() {
@@ -125,7 +127,30 @@ function fakeKaiten() {
   const cards: FakeCard[] = [
     { id: 500, title: 'Globex — 2 установки', board_id: 10, column_id: 101, lane_id: 12, type_id: 100, properties: {} },
     { id: 501, title: 'Старая — закрыта', board_id: 10, column_id: 103, lane_id: 12, type_id: 100, properties: {} },
-    { id: 600, title: 'Синхронная задача', board_id: 30, column_id: 302, lane_id: 31, type_id: 300, properties: {}, external_id: 'T-1' },
+    {
+      id: 600,
+      title: 'Синхронная задача',
+      board_id: 30,
+      column_id: 302,
+      lane_id: 31,
+      type_id: 300,
+      properties: {},
+      external_id: 'T-1',
+      files: [
+        { id: '00000000-0000-4000-8000-000000000001', name: 'ЖУРНАЛ.md', size: '2048', type: 11 },
+        { id: '00000000-0000-4000-8000-000000000002', name: 'DRAFT.md', size: '300', type: 11 },
+      ],
+      checklists: [
+        {
+          id: 1,
+          name: 'Агент · Критерии',
+          items: [
+            { id: 2, text: 'Второй', checked: false, sort_order: 2 },
+            { id: 1, text: 'Первый', checked: true, sort_order: 1 },
+          ],
+        },
+      ],
+    },
   ];
   let nextId = 900;
   const routes: Array<[string, RegExp, (m: RegExpExecArray, body: Record<string, unknown>) => unknown]> = [
@@ -357,5 +382,12 @@ describe('инструменты задач', () => {
     const comment = await tool(fake, 'add_comment', { card: 600, text: 'вопрос' });
     expect(comment.isError).toBe(false);
     expect(fake.writes).toEqual([{ method: 'POST', path: '/cards/600/comments', body: { text: 'вопрос' } }]);
+  });
+
+  it('карточка — с файлами (имя и размер) и пунктами в порядке интерфейса', async () => {
+    const fake = fakeKaiten();
+    const card = await tool(fake, 'get_card', { card: 600 });
+    expect(card.text).toContain('Файлы (открыть — в карточке Kaiten): ЖУРНАЛ.md (2 КБ), DRAFT.md (300 Б)');
+    expect(card.text).toMatch(/\[x\] Первый\n {2}\[ \] Второй/);
   });
 });
