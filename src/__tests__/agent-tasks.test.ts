@@ -466,6 +466,7 @@ describe('инструменты задач', () => {
     expect(list.text).toMatch(/доска 20 «Без правил» — правила по умолчанию/);
     expect(list.text).toMatch(/доска 40 «Сломанные правила» — закрыта: в разделе «Правила» нет блока/);
     expect(list.text).toMatch(/доска 50 «Только чтение» — только чтение \(access: read\)/);
+    expect(list.text).toMatch(/доска 60 «Без типа» — закрыта: у доски нет типа карточки по умолчанию/);
   });
 
   it('правила доски — с вариантами и пояснениями полей', async () => {
@@ -684,6 +685,9 @@ describe('файл в карточку', () => {
     expect(fileProblems('журнал.MD', pdf, [], 100).join()).toMatch(/занято журналом задачи/);
     expect(fileProblems('Draft.md', new TextEncoder().encode('x'), ['DRAFT.md'], 100).join()).toMatch(/уже есть файл/);
     expect(fileProblems('big.pdf', pdf, [], 5).join()).toMatch(/больше/);
+    // CSV из Excel на русской Windows — cp1251, не UTF-8: «Пункт;Статус».
+    expect(fileProblems('замечания.csv', new Uint8Array([0xcf, 0xf3, 0xed, 0xea, 0xf2, 0x3b, 0xd1, 0xf2, 0xe0, 0xf2, 0xf3, 0xf1]), [], 100)).toEqual([]);
+    expect(fileProblems('замечания.csv', new Uint8Array([0x41, 0, 0x42]), [], 100).join()).toMatch(/не похоже на \.csv/);
   });
 
   it('содержимое от агента — в карточку по UUID, и на карточку из git тоже', async () => {
@@ -706,22 +710,23 @@ describe('файл в карточку', () => {
     const page = await (await uploadRoute(new Request(url, { headers: { Cookie: cookie } }), deps, id)).text();
     expect(page).toContain('enctype="multipart/form-data"');
     const csrf = /name="csrf" value="([^"]+)"/.exec(page)?.[1] ?? '';
-    const send = async (name: string, text: string): Promise<Response> => {
+    const send = async (name: string, text: string, withLength = true): Promise<Response> => {
       const form = new FormData();
       form.append('csrf', csrf);
       form.append('file', new File([text], name));
       const encoded = new Response(form);
       const bytes = await encoded.arrayBuffer();
-      return uploadRoute(
-        new Request(url, { method: 'POST', body: bytes, headers: { Cookie: cookie, 'Content-Type': encoded.headers.get('Content-Type') ?? '', 'Content-Length': String(bytes.byteLength) } }),
-        deps,
-        id,
-      );
+      const headers: Record<string, string> = { Cookie: cookie, 'Content-Type': encoded.headers.get('Content-Type') ?? '' };
+      if (withLength) headers['Content-Length'] = String(bytes.byteLength);
+      return uploadRoute(new Request(url, { method: 'POST', body: bytes, headers }), deps, id);
     };
     const wrong = await send('счёт.pdf', 'не pdf');
     expect(wrong.status).toBe(400);
     expect(await wrong.text()).toMatch(/не похоже на \.pdf/);
-    expect(await (await send('счёт.pdf', '%PDF-1.7 счёт')).text()).toMatch(/Файл «счёт\.pdf» приложен к карточке #600/);
+    const huge = await uploadRoute(new Request(url, { method: 'POST', body: 'x', headers: { Cookie: cookie, 'Content-Length': String(20 * 1024 * 1024) } }), deps, id);
+    expect(huge.status).toBe(413);
+    // Без Content-Length — не отказ: размер проверяется по самому файлу.
+    expect(await (await send('счёт.pdf', '%PDF-1.7 счёт', false)).text()).toMatch(/Файл «счёт\.pdf» приложен к карточке #600/);
     expect(fake.writes.map((w) => w.path)).toEqual([`/cards/${CARD_UID}/files`]);
     expect((await send('ещё.pdf', '%PDF-1.7')).status).toBe(410);
   });

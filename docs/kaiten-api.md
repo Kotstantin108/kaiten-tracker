@@ -136,6 +136,21 @@
   400 «Invalid email»). Роль в этом запросе игнорируется — выдаётся роль по
   умолчанию; сменить — `PATCH /spaces/{id}/users/{user} {role_id: <uid роли>}`
   (`role_ids` молча игнорируется). Роли — `GET /tree-entity-roles`.
+- `GET /spaces/{id}/users` — только свои участники пространства:
+  унаследованных от родительского нет, у многих вложенных пространств список
+  пуст (16.10.2026). Кто имеет доступ — свои плюс участники пространств выше.
+  У участника — `full_name`, `email`, `username`, `activated`, `virtual`.
+- Роли пространства (`GET /tree-entity-roles`): admin, writer, reader,
+  root_writer, shared_entity_user — роли «гость» нет; признака гостя у
+  пользователя (`GET /users`) тоже нет (16.10.2026, гостей в компании нет).
+- `allowed_card_type_ids` у пространства — `null` (ограничения типов нет) во
+  всех пространствах (16.10.2026).
+- `GET /users/current` отдаёт `timezone` из профиля (по умолчанию `UTC`).
+  Производственные календари — `GET /calendars`: пусто (16.10.2026).
+- У карточки есть `service_id` (обращение Service Desk) и
+  `external_user_emails`; сервисов Service Desk в компании пока нет
+  (`GET /service-desk/services` — пусто), поведение комментария к обращению
+  живьём не проверено.
 - Тариф и доступные возможности — `GET /companies/current` (`features`,
   `current_client_tariff`).
 - Доска: `PATCH /boards/{id}` отвечает 405 — правка идёт через пространство:

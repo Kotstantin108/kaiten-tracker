@@ -55,13 +55,8 @@ function looksLike(kind: Kind, bytes: Uint8Array): boolean {
     case 'ole':
       return startsWith(bytes, [0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1]);
     case 'text':
-      if (bytes.includes(0)) return false;
-      try {
-        new TextDecoder('utf-8', { fatal: true, ignoreBOM: false }).decode(bytes);
-        return true;
-      } catch {
-        return false;
-      }
+      // Не только UTF-8: CSV из Excel на русской Windows — в cp1251. Двоичный файл выдают нулевые байты.
+      return !bytes.includes(0);
   }
 }
 

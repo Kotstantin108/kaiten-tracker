@@ -262,8 +262,9 @@ export async function foreignCardFiles(ctx: Context, task: TaskRecord, attachmen
   if (cardId === null || ctx.loaded.project.ignoreCards.includes(cardId)) return null;
   const login = settings().kaiten;
   if (!login && !client) return null;
-  const timed: typeof fetch = (input, init) => fetch(input, { ...init, signal: AbortSignal.timeout(8000) });
-  const kaiten = client ?? new KaitenClient({ domain: login?.domain ?? '', token: login?.token ?? '', maxRetries: 1, fetchImpl: timed });
+  // Это самая частая команда агентов: без связи — не дольше 3 секунд и без повтора.
+  const timed: typeof fetch = (input, init) => fetch(input, { ...init, signal: AbortSignal.timeout(3000) });
+  const kaiten = client ?? new KaitenClient({ domain: login?.domain ?? '', token: login?.token ?? '', maxRetries: 0, fetchImpl: timed });
   try {
     const card = await kaiten.getCard(cardId);
     const own = new Set([...attachments, JOURNAL_FILE].map((name) => name.toLowerCase()));

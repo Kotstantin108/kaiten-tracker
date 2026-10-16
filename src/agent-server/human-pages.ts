@@ -107,8 +107,9 @@ export async function uploadRoute(request: Request, deps: HumanDeps, id: string)
   const view = { cardTitle: pending.cardTitle, cardId: pending.cardId, by: pending.by, extensions: ALLOWED_EXTENSIONS, maxMb: MAX_UPLOAD_BYTES / 1024 / 1024 };
   if (request.method === 'GET') return html(uploadPage(view, csrf));
 
+  // Заголовка может не быть — тогда размер проверит fileProblems по самому файлу.
   const length = Number(request.headers.get('Content-Length') ?? NaN);
-  if (!Number.isFinite(length) || length > MAX_UPLOAD_BYTES + FORM_OVERHEAD) return html(uploadPage(view, csrf, 'Файл больше 10 МБ — выберите поменьше.'), 413);
+  if (Number.isFinite(length) && length > MAX_UPLOAD_BYTES + FORM_OVERHEAD) return html(uploadPage(view, csrf, 'Файл больше 10 МБ — выберите поменьше.'), 413);
   let form: FormData;
   try {
     form = await request.formData();

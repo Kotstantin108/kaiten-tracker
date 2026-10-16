@@ -16,6 +16,7 @@ import {
   type AgentKaiten,
   allowedTypes,
   type BoardContext,
+  type BoardFull,
   type Catalog,
   creationColumns,
   defaultLane,
@@ -172,12 +173,17 @@ function warningLines(ctx: BoardContext): string[] {
   return ctx.warnings.length ? ['', 'Предупреждения об описании доски (запись не мешают):', ...ctx.warnings.map((w) => `- ${w}`)] : [];
 }
 
-/** Состояние доски одной строкой для list_boards — по тем же правилам разбора. */
-export function boardState(description: string | null | undefined): string {
-  const parsed = parseBoardDescription(description);
+/**
+ * Состояние доски одной строкой для list_boards — по тем же правилам разбора.
+ * Полную проверку (типы, колонки) делает board_rules; здесь — без лишних
+ * запросов, но доска на умолчаниях без типа по умолчанию — закрыта и здесь.
+ */
+export function boardState(board: Pick<BoardFull, 'description' | 'default_card_type_id'>): string {
+  const parsed = parseBoardDescription(board.description);
   if (!parsed.ok) return `закрыта: ${parsed.problems[0]}`;
   if (parsed.value.rules.access === 'read') return 'только чтение (access: read)';
-  return parsed.value.defaults ? 'правила по умолчанию' : 'есть правила для агента';
+  if (!parsed.value.defaults) return 'есть правила для агента';
+  return board.default_card_type_id ? 'правила по умолчанию' : 'закрыта: у доски нет типа карточки по умолчанию';
 }
 
 function requireNotSynced(ctx: BoardContext, card: Card): void {
@@ -325,7 +331,7 @@ export function registerTaskTools(server: McpServer, deps: TaskDeps): void {
           lines.push(path(space));
           for (const { id } of space.boards ?? []) {
             const board = await deps.kaiten.getBoard(id);
-            lines.push(`  доска ${id} «${board.title}» — ${boardState(board.description)}`);
+            lines.push(`  доска ${id} «${board.title}» — ${boardState(board)}`);
           }
         }
         return lines.join('\n') || 'Досок нет.';
