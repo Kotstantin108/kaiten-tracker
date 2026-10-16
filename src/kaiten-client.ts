@@ -68,7 +68,7 @@ export const CardSchema = z
     created: z.string().optional(),
     /** Кто завёл карточку (живьём 29.09: и в списке, и в карточке). */
     owner: z.object({ email: z.string().nullable().optional(), full_name: z.string().nullable().optional() }).passthrough().nullable().optional(),
-    /** Чек-листы приходят в карточке целиком (`GET /cards/{id}`); читаем только имена. */
+    /** Чек-листы приходят в карточке целиком (`GET /cards/{id}`): имя и пункты с порядком. */
     checklists: z
       .array(
         z
@@ -76,7 +76,11 @@ export const CardSchema = z
             id: z.number(),
             name: z.string().nullable().optional(),
             items: z
-              .array(z.object({ id: z.number().optional(), text: z.string().nullable().optional(), checked: z.boolean().optional() }).passthrough())
+              .array(
+                z
+                  .object({ id: z.number().optional(), text: z.string().nullable().optional(), checked: z.boolean().optional(), sort_order: z.number().optional() })
+                  .passthrough(),
+              )
               .nullable()
               .optional(),
           })
@@ -252,7 +256,7 @@ export class KaitenClient {
   }
 
   protected async request<T>(
-    method: 'GET' | 'POST' | 'PATCH',
+    method: 'GET' | 'POST' | 'PATCH' | 'DELETE',
     path: string,
     opts: { query?: Record<string, string | number | undefined>; body?: unknown; schema: z.ZodType<T> },
   ): Promise<T> {
@@ -395,12 +399,24 @@ export class KaitenClient {
   }
 
   /**
-   * Отметка и текст пункта чек-листа:
+   * Отметка, текст и порядок пункта чек-листа одним запросом:
    * `PATCH /cards/{card_id}/checklists/{checklist_id}/items/{id}` — проверено
-   * живьём 29.09 (перечитыванием: и `checked`, и `text`).
+   * живьём 29.09 (`checked`, `text`) и 16.10 (`sort_order`, дробный тоже).
    */
-  async updateChecklistItem(cardId: number, checklistId: number, itemId: number, patch: { checked?: boolean; text?: string }): Promise<unknown> {
-    return this.request('PATCH', `/cards/${cardId}/checklists/${checklistId}/items/${itemId}`, { body: patch, schema: z.unknown() });
+  async updateChecklistItem(cardId: number, checklistId: number, itemId: number, patch: { checked?: boolean; text?: string; sortOrder?: number }): Promise<unknown> {
+    const { sortOrder, ...rest } = patch;
+    const body = sortOrder === undefined ? rest : { ...rest, sort_order: sortOrder };
+    return this.request('PATCH', `/cards/${cardId}/checklists/${checklistId}/items/${itemId}`, { body, schema: z.unknown() });
+  }
+
+  /** Удалить пункт: `DELETE /cards/{card_id}/checklists/{checklist_id}/items/{id}` — живьём 16.10. */
+  async deleteChecklistItem(cardId: number, checklistId: number, itemId: number): Promise<unknown> {
+    return this.request('DELETE', `/cards/${cardId}/checklists/${checklistId}/items/${itemId}`, { schema: z.unknown() });
+  }
+
+  /** Удалить чек-лист с пунктами: `DELETE /cards/{card_id}/checklists/{id}` — живьём 16.10. */
+  async deleteChecklist(cardId: number, checklistId: number): Promise<unknown> {
+    return this.request('DELETE', `/cards/${cardId}/checklists/${checklistId}`, { schema: z.unknown() });
   }
 
   /**

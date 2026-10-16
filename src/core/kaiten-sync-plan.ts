@@ -20,12 +20,13 @@
  * Не совпало (или хеша нет, как у перенесённых задач) — описание и чек-листы
  * нужно отправить (Q32).
  *
- * ЧЕК-ЛИСТЫ (`diffChecklists`). Пункт карточки сопоставляется с пунктом
- * файла по тексту без ссылок и разметки — перезапись ссылок не плодит
- * дублей. Первая доставка (у пилотных карточек галочки ставили в Kaiten, по
- * старому правилу) галочки Kaiten не снимает: они в отчёте. Текст найденного
- * пункта, отличающийся от файла, заменяется текстом файла. Дальше владелец
- * пунктов «Агент · …» — файл (Q43). Заголовок, «Суть» и «Репозиторий» видны в
+ * ЧЕК-ЛИСТЫ (`diffChecklists`). Владелец чек-листов «Агент · …» — файл
+ * (Q43): одна доставка приводит их к файлу — лишние пункты и чек-листы
+ * удаляются, изменённый пункт заменяется на месте, порядок — как в файле.
+ * Пункт карточки сопоставляется с пунктом файла по тексту без ссылок и
+ * разметки — перезапись ссылок не плодит дублей. Первая доставка (у пилотных
+ * карточек галочки ставили в Kaiten, по старому правилу) ничего не удаляет и
+ * галочек Kaiten не снимает: это в отчёте. Заголовок, «Суть» и «Репозиторий» видны в
  * списке карточек и сравниваются напрямую: правка их в интерфейсе Kaiten
  * возвращается к файлу (владелец — файл).
  *
@@ -38,12 +39,12 @@
  *
  * ЧЕГО НЕ ДЕЛАЕТ НИКОГДА: не трогает карточки из `ignoreCards`; не создаёт
  * заново карточку, которой нет в списке доски (архив или удалена) — это в
- * отчёт; не удаляет пункты чек-листов, которых нет в файле.
+ * отчёт; не трогает чек-листы без префикса «Агент · » — их ведут люди.
  */
 
 import { createHash } from 'node:crypto';
 
-import { extractChecklists, type Checklist, type ChecklistItem } from '../checklists.js';
+import { AGENT_PREFIX, extractChecklists, type Checklist, type ChecklistItem } from '../checklists.js';
 import type { ConfigMapping } from '../config.js';
 import type { MirrorItem } from './task-ops.js';
 import { CLOSED_STATUSES, PRIORITIES, STATUSES, TASK_TYPES, type Priority, type TaskStatus, type TaskType } from './schema.js';
@@ -147,21 +148,33 @@ export function deliveredHash(task: TaskRecord, all: readonly TaskRecord[], base
   const payload = JSON.stringify([contentHash(task.fm, task.body), RENDER_VERSION, base, paths]);
   return `sha256:${createHash('sha256').update(payload).digest('hex')}`;
 }
-
 export interface ExistingChecklist {
   id: number;
   name: string;
-  items: Array<{ id?: number; text: string; checked: boolean }>;
+  items: Array<{ id?: number; text: string; checked: boolean; sortOrder?: number }>;
+}
+
+/** Правка пункта одним PATCH: только поля, которые расходятся с файлом. */
+export interface ItemUpdate {
+  listId: number;
+  itemId: number;
+  text?: string;
+  checked?: boolean;
+  sortOrder?: number;
 }
 
 export interface ChecklistDiff {
   createLists: Checklist[];
+  /** Чек-листы «Агент · …», раздела которых в файле нет (и дубли по имени). */
+  deleteLists: Array<{ listId: number; name: string }>;
   addItems: Array<{ listId: number; item: ChecklistItem; sortOrder: number }>;
-  setChecked: Array<{ listId: number; itemId: number; checked: boolean }>;
+  updateItems: ItemUpdate[];
+  deleteItems: Array<{ listId: number; itemId: number; text: string }>;
   /** Отмечено в Kaiten, не отмечено в файле — при первой доставке остаётся как есть. */
   keptTicks: string[];
-  /** Пункт найден, но текст другой (ссылки, разметка) — текст в карточке заменяется текстом файла. */
-  setText: Array<{ listId: number; itemId: number; text: string }>;
+  /** Пункты и чек-листы, которых нет в файле, — при первой доставке остаются как есть. */
+  keptItems: string[];
+  keptLists: string[];
 }
 
 function itemKey(text: string): string {
@@ -174,37 +187,96 @@ function itemKey(text: string): string {
     .replace(/ё/g, 'е');
 }
 
+/**
+ * Чек-листы карточки → как в файле, одним проходом. Владелец пунктов
+ * «Агент · …» — файл (Q43), поэтому всё, чего в файле нет, удаляется: пункт,
+ * чек-лист убранного или переименованного раздела, дубль чек-листа с тем же
+ * именем. Чек-листы без префикса заводят люди — их не трогаем. Первая
+ * доставка не удаляет, не снимает отметок и не переписывает непарные пункты:
+ * в карточке может быть работа людей до правила «файл владеет» — это в отчёт.
+ *
+ * Сопоставление пункта: по тексту, затем без ссылок и разметки, затем по
+ * месту — непарный пункт файла и непарный пункт карточки на одной позиции
+ * считаются правкой текста (замена на месте, id пункта сохраняется). Порядок
+ * — как в файле: `sort_order` пункта = его номер в файле.
+ */
 export function diffChecklists(wanted: readonly Checklist[], existing: readonly ExistingChecklist[], firstDelivery: boolean): ChecklistDiff {
-  const diff: ChecklistDiff = { createLists: [], addItems: [], setChecked: [], keptTicks: [], setText: [] };
+  const diff: ChecklistDiff = { createLists: [], deleteLists: [], addItems: [], updateItems: [], deleteItems: [], keptTicks: [], keptItems: [], keptLists: [] };
+  const usedLists = new Set<number>();
   for (const list of wanted) {
-    const found = existing.find((l) => l.name === list.name);
+    const found = existing.find((l) => l.name === list.name && !usedLists.has(l.id));
     if (!found) {
       diff.createLists.push(list);
       continue;
     }
+    usedLists.add(found.id);
+    // Позиция в карточке — по `sort_order`, как в интерфейсе (в ответе GET порядок другой).
+    const current = found.items
+      .map((x, i) => ({ x, i }))
+      .sort((a, b) => (a.x.sortOrder ?? a.i) - (b.x.sortOrder ?? b.i))
+      .map((e) => e.x);
+    const match: Array<number | undefined> = list.items.map(() => undefined);
     const used = new Set<number>();
-    let order = found.items.length;
-    for (const item of list.items) {
-      const byText = found.items.findIndex((x, i) => !used.has(i) && x.text.trim() === item.text.trim());
-      const index = byText !== -1 ? byText : found.items.findIndex((x, i) => !used.has(i) && itemKey(x.text) === itemKey(item.text));
-      if (index === -1) {
-        order += 1;
-        diff.addItems.push({ listId: found.id, item, sortOrder: order });
-        continue;
+    const pair = (test: (have: string, want: string) => boolean): void => {
+      list.items.forEach((item, w) => {
+        if (match[w] !== undefined) return;
+        const index = current.findIndex((x, i) => !used.has(i) && test(x.text, item.text));
+        if (index === -1) return;
+        match[w] = index;
+        used.add(index);
+      });
+    };
+    pair((have, want) => have.trim() === want.trim());
+    pair((have, want) => itemKey(have) === itemKey(want));
+    // Первая доставка по месту не сопоставляет: непарный пункт карточки мог завести человек.
+    list.items.forEach((_, w) => {
+      if (!firstDelivery && match[w] === undefined && w < current.length && !used.has(w)) {
+        match[w] = w;
+        used.add(w);
       }
-      used.add(index);
-      const current = found.items[index];
-      if (current.text.trim() !== item.text.trim() && current.id !== undefined) diff.setText.push({ listId: found.id, itemId: current.id, text: item.text });
-      if (current.checked === item.checked || current.id === undefined) continue;
-      if (!item.checked && firstDelivery) diff.keptTicks.push(current.text);
-      else diff.setChecked.push({ listId: found.id, itemId: current.id, checked: item.checked });
-    }
+    });
+
+    list.items.forEach((item, w) => {
+      const sortOrder = w + 1;
+      const index = match[w];
+      if (index === undefined) {
+        diff.addItems.push({ listId: found.id, item, sortOrder });
+        return;
+      }
+      const have = current[index];
+      if (have.id === undefined) return;
+      const update: ItemUpdate = { listId: found.id, itemId: have.id };
+      if (have.text.trim() !== item.text.trim()) update.text = item.text;
+      if (have.checked !== item.checked) {
+        if (!item.checked && firstDelivery) diff.keptTicks.push(have.text);
+        else update.checked = item.checked;
+      }
+      if (have.sortOrder !== sortOrder) update.sortOrder = sortOrder;
+      if (update.text !== undefined || update.checked !== undefined || update.sortOrder !== undefined) diff.updateItems.push(update);
+    });
+
+    current.forEach((have, i) => {
+      if (used.has(i)) return;
+      if (firstDelivery) diff.keptItems.push(have.text);
+      else if (have.id !== undefined) diff.deleteItems.push({ listId: found.id, itemId: have.id, text: have.text });
+    });
+  }
+  for (const list of existing) {
+    if (usedLists.has(list.id) || !list.name.startsWith(AGENT_PREFIX)) continue;
+    if (firstDelivery) diff.keptLists.push(list.name);
+    else diff.deleteLists.push({ listId: list.id, name: list.name });
   }
   return diff;
 }
 
 export function emptyDiff(diff: ChecklistDiff): boolean {
-  return diff.createLists.length === 0 && diff.addItems.length === 0 && diff.setChecked.length === 0 && diff.setText.length === 0;
+  return (
+    diff.createLists.length === 0 &&
+    diff.deleteLists.length === 0 &&
+    diff.addItems.length === 0 &&
+    diff.updateItems.length === 0 &&
+    diff.deleteItems.length === 0
+  );
 }
 
 // ── поля карточки ────────────────────────────────────────────────────────
@@ -359,6 +431,12 @@ export interface PlanInput {
    * месяца»); отменённым — только с `withCancelled`.
    */
   firstLoad?: { closedSince: string; withCancelled?: boolean };
+  /**
+   * Отправить описание и чек-листы заново, даже если хеш совпал: так
+   * приводятся к файлу карточки, доставленные прежними правилами. Только
+   * скрипт владельца (сухой прогон, затем `--apply`) — фон этого не делает.
+   */
+  resend?: boolean;
   /** Только эти задачи (id) — пробный прогон на одной карточке. */
   only?: ReadonlySet<string>;
   /** «Сейчас», мс — от него отсчитывается переезд в «Архив»; по умолчанию часы машины. */
@@ -518,7 +596,7 @@ export function planKaitenSync(input: PlanInput): SyncPlan {
     const repoKey = mapping.repoProperty ? key(mapping.repoProperty.id) : null;
     const lane = laneMove(task, card, mapping, repoKey !== null && repoKey in diff, input.now ?? Date.now());
     if (lane !== undefined) patch.lane_id = lane;
-    const stale = task.fm.content_hash !== hash;
+    const stale = input.resend === true || task.fm.content_hash !== hash;
     if (stale || patch.title !== undefined || patch.properties !== undefined || patch.lane_id !== undefined) {
       others.push({
         kind: 'update',

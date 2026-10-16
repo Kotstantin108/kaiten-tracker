@@ -20,6 +20,9 @@
  *   --only <задача>        только одна задача (ключ, id или slug) или карточка
  *                          без задачи (её id) — пробный прогон на безвредной
  *                          карточке перед всеми
+ *   --resend               отправить описание и чек-листы заново, даже если
+ *                          карточка их уже получила: привести к файлу
+ *                          карточки, доставленные прежними правилами
  *   --apply                выполнить; без него — план с подробностями по
  *                          каждой карточке (читаются только обновляемые)
  *
@@ -100,6 +103,7 @@ async function main(): Promise<void> {
     defaultTeam: config.defaultTeam,
     boardId: mapping.boardId,
     firstLoad,
+    resend: argv.includes('--resend'),
     only,
     onlyCards,
     people: peopleByEmail(people),
@@ -109,7 +113,8 @@ async function main(): Promise<void> {
   const run = apply ? await withLockAsync(store, KAITEN_LOCK, () => runKaitenSync(client, input, 'apply')) : await runKaitenSync(client, input, 'details');
 
   const loadNote = firstLoad ? `, первая заливка (сделанные${firstLoad.withCancelled ? ' и отменённые' : ''} с ${firstLoad.closedSince})` : '';
-  console.log(`Проект ${project.title}, задач ${index.tasks.length}${loadNote}${onlyRef ? `, только ${onlyRef}` : ''}`);
+  const resendNote = input.resend ? ', описание и чек-листы — заново' : '';
+  console.log(`Проект ${project.title}, задач ${index.tasks.length}${loadNote}${resendNote}${onlyRef ? `, только ${onlyRef}` : ''}`);
   if (!project.tasksRepo?.url) console.log('Адреса репозитория задач нет — ссылки в описаниях будут просто текстом.');
   for (const line of formatPlan(run)) console.log(line);
   if (!apply) {

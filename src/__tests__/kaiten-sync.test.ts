@@ -191,6 +191,114 @@ describe('пилот как он есть', () => {
   });
 });
 
+describe('чек-лист — как в файле', () => {
+  const ordered = (w: ReturnType<typeof world>, cardId: number, name: string) =>
+    [...(w.fake.cards.get(cardId)?.checklists.find((l) => l.name === name)?.items ?? [])].sort((a, b) => (a.sort_order ?? 0) - (b.sort_order ?? 0));
+
+  /** Карточка уже получала содержимое; дальше правится только тело задачи. */
+  async function delivered(cardId: number, body: string) {
+    const [path, text] = task('active/edit.md', { tracker: String(cardId) }, body);
+    const w = world([[path, text]]);
+    seedCard(w.fake, { id: cardId, title: 'Сделать задачу', board_id: BOARD, properties: { id_4: 'Коротко для фаундера.', id_2: [21] } });
+    await w.sync();
+    const edit = async (from: string, to: string) => {
+      w.texts.set(path, (w.texts.get(path) ?? '').replace(from, to));
+      return w.sync();
+    };
+    return { w, edit };
+  }
+
+  it('правка критериев: удалённые пункты уходят, изменённый — на месте, отметки неизменённых остаются', async () => {
+    const { w, edit } = await delivered(600, '## Критерии готовности\n\n- [x] Первый\n- [ ] Второй\n- [ ] Третий\n- [ ] Четвёртый\n');
+    const before = ordered(w, 600, 'Агент · Критерии готовности');
+    const run = await edit('- [ ] Второй\n- [ ] Третий\n- [ ] Четвёртый\n', '- [ ] Второй, уточнённый\n');
+    expect(run.errors).toEqual([]);
+    const after = ordered(w, 600, 'Агент · Критерии готовности');
+    expect(after.map((i) => [i.text, i.checked])).toEqual([
+      ['Первый', true],
+      ['Второй, уточнённый', false],
+    ]);
+    expect(after.map((i) => i.id)).toEqual([before[0].id, before[1].id]);
+
+    const writes = w.fake.writes.length;
+    await w.sync();
+    expect(w.fake.writes.length).toBe(writes);
+  });
+
+  it('сухой прогон называет, что будет удалено; запись — только с apply', async () => {
+    const { w } = await delivered(601, '## Критерии готовности\n\n- [ ] Оставить\n- [ ] Устаревший пункт\n');
+    const path = [...w.texts.keys()][0];
+    w.texts.set(path, (w.texts.get(path) ?? '').replace('- [ ] Устаревший пункт\n', ''));
+    const writes = w.fake.writes.length;
+    const dry = await runKaitenSync(w.fake.client, w.input(), 'details');
+    expect(formatPlan(dry).join('\n')).toContain('УДАЛИТЬ пунктов 1: «Устаревший пункт»');
+    expect(w.fake.writes.length).toBe(writes);
+  });
+
+  it('переименованный раздел: старый чек-лист «Агент · …» удаляется, чек-лист людей не трогаем', async () => {
+    const { w, edit } = await delivered(602, '## Критерии готовности\n\n- [x] Пункт\n');
+    w.fake.cards.get(602)?.checklists.push({ id: 77, name: 'Вопросы заказчика', items: [{ id: 78, text: 'Свой пункт', checked: false }] });
+    await edit('## Критерии готовности', '## Критерии');
+    const lists = w.fake.cards.get(602)?.checklists.map((l) => [l.name, l.items.map((i) => [i.text, i.checked])]);
+    expect(lists).toEqual([
+      ['Вопросы заказчика', [['Свой пункт', false]]],
+      ['Агент · Критерии', [['Пункт', true]]],
+    ]);
+  });
+
+  it('порядок — как в файле: вставленный в середину пункт встаёт на своё место', async () => {
+    const { w, edit } = await delivered(603, '## Шаги\n\n- [ ] Раз\n- [ ] Три\n');
+    await edit('- [ ] Раз\n', '- [ ] Раз\n- [ ] Два\n');
+    expect(ordered(w, 603, 'Агент · Шаги').map((i) => i.text)).toEqual(['Раз', 'Два', 'Три']);
+    await edit('- [ ] Раз\n- [ ] Два\n- [ ] Три\n', '- [ ] Три\n- [ ] Раз\n- [ ] Два\n');
+    expect(ordered(w, 603, 'Агент · Шаги').map((i) => i.text)).toEqual(['Три', 'Раз', 'Два']);
+    expect(w.fake.cards.get(603)?.checklists[0].items).toHaveLength(3);
+  });
+
+  it('--resend: карточка, доставленная прежними правилами, приводится к файлу; без расхождений — ни одной записи', async () => {
+    const { w } = await delivered(605, '## Критерии готовности\n\n- [ ] Нужный\n');
+    // Как у карточек до исправления: старые пункты остались рядом с новыми.
+    w.fake.cards.get(605)?.checklists[0].items.push({ id: 6051, text: 'Устаревший', checked: false, sort_order: 2 });
+    expect((await w.sync()).plan.actions).toEqual([]);
+    await w.sync({ resend: true });
+    expect(ordered(w, 605, 'Агент · Критерии готовности').map((i) => i.text)).toEqual(['Нужный']);
+
+    const writes = w.fake.writes.length;
+    const again = await w.sync({ resend: true });
+    expect(again.errors).toEqual([]);
+    expect(w.fake.writes.length).toBe(writes);
+    expect(again.ops).toEqual([]);
+  });
+
+  it('первая доставка ничего не удаляет и не переписывает: лишнее — в отчёте', async () => {
+    const [path, text] = task('active/pilot.md', { tracker: '604' }, '## Критерии готовности\n\n- [ ] Из файла\n');
+    const w = world([[path, text]]);
+    seedCard(w.fake, {
+      id: 604,
+      title: 'Сделать задачу',
+      board_id: BOARD,
+      properties: { id_4: 'Коротко для фаундера.', id_2: [21] },
+      checklists: [
+        { id: 1, name: 'Агент · Критерии готовности', items: [{ id: 11, text: 'Дописал человек', checked: false }] },
+        { id: 2, name: 'Агент · Старый раздел', items: [{ id: 21, text: 'Пункт', checked: true }] },
+      ],
+    });
+    const dry = await runKaitenSync(w.fake.client, w.input(), 'details');
+    const line = formatPlan(dry).join('\n');
+    expect(line).toContain('пунктов нет в файле — оставим 1: «Дописал человек»');
+    expect(line).toContain('чек-листов нет в файле — оставим 1: «Агент · Старый раздел»');
+    expect(line).not.toContain('УДАЛИТЬ');
+
+    await w.sync();
+    const lists = w.fake.cards.get(604)?.checklists.map((l) => [l.name, l.items.map((i) => i.text)]);
+    expect(lists).toEqual([
+      ['Агент · Критерии готовности', ['Дописал человек', 'Из файла']],
+      ['Агент · Старый раздел', ['Пункт']],
+    ]);
+    expect(w.fake.writes.some((x) => x.startsWith('DELETE'))).toBe(false);
+  });
+});
+
 describe('новые задачи', () => {
   it('задача из CLI получает карточку с «Сутью», колонкой и командой; ключ — в файл', async () => {
     const [path, text] = task('active/new.md', { status: 'inbox', created_via: 'agent' });

@@ -114,18 +114,20 @@ function existingLists(card: Card): ExistingChecklist[] {
   return (card.checklists ?? []).map((l) => ({
     id: l.id,
     name: l.name ?? '',
-    items: (l.items ?? []).map((i) => ({ id: i.id, text: i.text ?? '', checked: i.checked === true })),
+    items: (l.items ?? []).map((i) => ({ id: i.id, text: i.text ?? '', checked: i.checked === true, sortOrder: i.sort_order })),
   }));
 }
 
+/** Сначала удаления — потом новое и правки: в карточке не бывает старого и нового пункта рядом. */
 async function applyChecklists(client: KaitenClient, cardId: number, diff: ChecklistDiff): Promise<void> {
+  for (const list of diff.deleteLists) await client.deleteChecklist(cardId, list.listId);
+  for (const item of diff.deleteItems) await client.deleteChecklistItem(cardId, item.listId, item.itemId);
   for (const [index, list] of diff.createLists.entries()) {
     const created = await client.createChecklist(cardId, list.name, index + 1);
     for (const [i, item] of list.items.entries()) await client.addChecklistItem(created.id, item, i + 1);
   }
   for (const add of diff.addItems) await client.addChecklistItem(add.listId, add.item, add.sortOrder);
-  for (const set of diff.setChecked) await client.updateChecklistItem(cardId, set.listId, set.itemId, { checked: set.checked });
-  for (const set of diff.setText) await client.updateChecklistItem(cardId, set.listId, set.itemId, { text: set.text });
+  for (const { listId, itemId, ...patch } of diff.updateItems) await client.updateChecklistItem(cardId, listId, itemId, patch);
 }
 
 function describe(action: SyncAction): string {
@@ -241,13 +243,17 @@ export async function runKaitenSync(client: KaitenClient, input: RunInput, mode:
       } else if (action.kind === 'update') {
         if (action.patch.title !== undefined || action.patch.properties !== undefined || action.patch.lane_id !== undefined) await client.updateCard(action.cardId, action.patch);
         if (action.content) {
-          await client.updateCard(action.cardId, { description: action.content.description });
-          // Чек-листы — только из GET: в списке карточек их нет.
-          const diff = diffChecklists(action.content.checklists, existingLists(await client.getCard(action.cardId)), action.firstDelivery);
+          // Описание и чек-листы — только из GET: в списке карточек их нет. Совпавшее
+          // описание не переписываем: повторная доставка (`--resend`) без лишних записей.
+          const card = await client.getCard(action.cardId);
+          if (card.description !== action.content.description) await client.updateCard(action.cardId, { description: action.content.description });
+          const diff = diffChecklists(action.content.checklists, existingLists(card), action.firstDelivery);
           run.checklists.set(action.task.fm.id, diff);
           if (!emptyDiff(diff)) await applyChecklists(client, action.cardId, diff);
-          synced.push({ id: action.task.fm.id, contentHash: action.contentHash });
-          syncedNames.push(refOf(action.task));
+          if (action.task.fm.content_hash !== action.contentHash) {
+            synced.push({ id: action.task.fm.id, contentHash: action.contentHash });
+            syncedNames.push(refOf(action.task));
+          }
         }
       } else {
         await client.addChild(action.parentId, action.childId);
@@ -272,18 +278,31 @@ function parentCardId(action: Extract<SyncAction, { kind: 'create' }>, tasks: re
   return epic?.fm.tracker !== undefined && /^\d+$/.test(epic.fm.tracker) ? Number(epic.fm.tracker) : null;
 }
 
+/** Что удаляется — словами, а не числом: владелец решает по сухому прогону. */
+function quoted(texts: readonly string[]): string {
+  const shown = texts.slice(0, 5).map((t) => `«${t.length > 60 ? `${t.slice(0, 57)}…` : t}»`);
+  return texts.length > shown.length ? `${shown.join(', ')} и ещё ${texts.length - shown.length}` : shown.join(', ');
+}
+
 function checklistLine(diff: ChecklistDiff | undefined): string {
   if (!diff) return '';
   const parts: string[] = [];
   const created = diff.createLists.reduce((n, l) => n + l.items.length, 0);
   if (diff.createLists.length > 0) parts.push(`новых чек-листов ${diff.createLists.length} (пунктов ${created})`);
   if (diff.addItems.length > 0) parts.push(`добавить пунктов ${diff.addItems.length}`);
-  const ticks = diff.setChecked.filter((s) => s.checked).length;
-  const unticks = diff.setChecked.length - ticks;
+  if (diff.deleteItems.length > 0) parts.push(`УДАЛИТЬ пунктов ${diff.deleteItems.length}: ${quoted(diff.deleteItems.map((i) => i.text))}`);
+  if (diff.deleteLists.length > 0) parts.push(`УДАЛИТЬ чек-листов ${diff.deleteLists.length}: ${quoted(diff.deleteLists.map((l) => l.name))}`);
+  const ticks = diff.updateItems.filter((u) => u.checked === true).length;
+  const unticks = diff.updateItems.filter((u) => u.checked === false).length;
   if (ticks > 0) parts.push(`отметить ${ticks}`);
   if (unticks > 0) parts.push(`СНЯТЬ отметку ${unticks}`);
   if (diff.keptTicks.length > 0) parts.push(`отмечено в Kaiten, но не в файле — оставим ${diff.keptTicks.length}`);
-  if (diff.setText.length > 0) parts.push(`обновить текст пунктов ${diff.setText.length}`);
+  if (diff.keptItems.length > 0) parts.push(`пунктов нет в файле — оставим ${diff.keptItems.length}: ${quoted(diff.keptItems)}`);
+  if (diff.keptLists.length > 0) parts.push(`чек-листов нет в файле — оставим ${diff.keptLists.length}: ${quoted(diff.keptLists)}`);
+  const texts = diff.updateItems.filter((u) => u.text !== undefined).length;
+  if (texts > 0) parts.push(`обновить текст пунктов ${texts}`);
+  const moves = diff.updateItems.filter((u) => u.sortOrder !== undefined && u.text === undefined && u.checked === undefined).length;
+  if (moves > 0) parts.push(`переставить пунктов ${moves}`);
   return parts.length > 0 ? `; чек-листы: ${parts.join(', ')}` : '; чек-листы без изменений';
 }
 

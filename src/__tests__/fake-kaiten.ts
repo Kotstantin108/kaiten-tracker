@@ -13,6 +13,7 @@ export interface FakeItem {
   id: number;
   text: string;
   checked: boolean;
+  sort_order?: number;
 }
 
 export interface FakeChecklist {
@@ -132,7 +133,7 @@ export function fakeKaiten(options: { requiredSummaryKey?: string | null; firstI
       return json(200, { id: list.id, name: list.name });
     }
     if (method === 'POST' && (m = /^\/checklists\/(\d+)\/items$/.exec(path))) {
-      findChecklist(Number(m[1]))?.items.push({ id: nextId++, text: String(body.text), checked: Boolean(body.checked) });
+      findChecklist(Number(m[1]))?.items.push({ id: nextId++, text: String(body.text), checked: Boolean(body.checked), sort_order: body.sort_order as number | undefined });
       return json(200, {});
     }
     if (method === 'PATCH' && (m = /^\/cards\/\d+\/checklists\/(\d+)\/items\/(\d+)$/.exec(path))) {
@@ -141,7 +142,23 @@ export function fakeKaiten(options: { requiredSummaryKey?: string | null; firstI
       if (!item) return json(404, {});
       if (body.checked !== undefined) item.checked = Boolean(body.checked);
       if (body.text !== undefined) item.text = String(body.text);
+      if (body.sort_order !== undefined) item.sort_order = Number(body.sort_order);
       return json(200, item);
+    }
+    // Удаление пункта и чек-листа — как живьём 16.10: ответ `{id}`.
+    if (method === 'DELETE' && (m = /^\/cards\/(\d+)\/checklists\/(\d+)\/items\/(\d+)$/.exec(path))) {
+      const list = fake.cards.get(Number(m[1]))?.checklists.find((l) => l.id === Number(m?.[2]));
+      const index = list?.items.findIndex((i) => i.id === Number(m?.[3])) ?? -1;
+      if (!list || index === -1) return json(404, {});
+      list.items.splice(index, 1);
+      return json(200, { id: Number(m[3]) });
+    }
+    if (method === 'DELETE' && (m = /^\/cards\/(\d+)\/checklists\/(\d+)$/.exec(path))) {
+      const card = fake.cards.get(Number(m[1]));
+      const index = card?.checklists.findIndex((l) => l.id === Number(m?.[2])) ?? -1;
+      if (!card || index === -1) return json(404, {});
+      card.checklists.splice(index, 1);
+      return json(200, { id: Number(m[2]) });
     }
     if (method === 'POST' && (m = /^\/cards\/(\d+)\/comments$/.exec(path))) {
       fake.cards.get(Number(m[1]))?.comments.push(String(body.text));
