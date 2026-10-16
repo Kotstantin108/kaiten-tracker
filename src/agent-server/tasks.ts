@@ -51,8 +51,9 @@ export function cardIdOf(ref: number | string): number | null {
   return match ? Number(match[1]) : null;
 }
 
+/** Адрес карточки в интерфейсе Kaiten (снят из браузера 16.10.2026). */
 export function cardUrl(domain: string, spaceId: number, cardId: number): string {
-  return `https://${domain}/space/${spaceId}/card/${cardId}`;
+  return `https://${domain}/space/${spaceId}/boards/card/${cardId}`;
 }
 
 /** Строка про поле для отказа: название, тип, варианты, пояснение. */

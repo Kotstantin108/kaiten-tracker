@@ -133,7 +133,8 @@
   `GET /documents?version=2&query=`.
 - Документ, созданный в интерфейсе (новая схема, с чек-листом), `PATCH`
   целиком принимает: узлы человека возвращаются без изменений (16.10.2026).
-- Адрес документа в интерфейсе — `https://<домен>/documents/d/<uid>`.
+- Адрес документа в интерфейсе — `https://<домен>/documents/d/<uid>`,
+  карточки — `https://<домен>/space/<пространство>/boards/card/<id>`.
 - Внешняя ссылка карточки: `POST /cards/{id}/external-links {url, description}`,
   правка — `PATCH /cards/{id}/external-links/{link}`; в карточке — `external_links`.
 
