@@ -265,14 +265,24 @@ describe('инструменты документов', () => {
     expect(await applyPending({ kaiten, store: f.store, secret: SECRET, domain: DOMAIN }, pending!)).toMatch(/изменилась после того/);
   });
 
-  it('страница правил и страницы людей агенту не даются', async () => {
+  it('страница правил агенту не даётся', async () => {
     const f = fake();
     expect((await tool(f, 'read_doc', { doc: RULES })).text).toMatch(/служебная страница/);
     expect((await tool(f, 'create_doc', { folder: OPEN_FOLDER, title: 'Правила для агента', sections: { Текст: 'x' }, user_request: 'x' })).text).toMatch(/служебной страницы/);
-    const human = await tool(f, 'read_doc', { doc: HUMAN });
-    expect(human.text).toMatch(/только чтение — страницу написал человек/);
-    expect((await tool(f, 'append_to_section', { doc: HUMAN, section: 'Заметки', text: 'x', user_request: 'x' })).text).toMatch(/написал человек/);
     expect(f.writes).toEqual([]);
+  });
+
+  it('страница человека: первая правка — только с подтверждением; его текст остаётся как был', async () => {
+    const f = fake();
+    expect((await tool(f, 'read_doc', { doc: HUMAN })).text).toMatch(/первая правка агента — только с подтверждением/);
+    const reply = await tool(f, 'append_to_section', { doc: HUMAN, section: 'Итоги', text: 'дописал агент', user_request: 'допиши итоги' });
+    expect(reply.text).toMatch(/НУЖНО ПОДТВЕРЖДЕНИЕ.*впервые добавит шапку/s);
+    expect(f.writes).toEqual([]);
+    const pending = await loadPending(f.store, SECRET, /\/confirm\/([A-Za-z0-9_-]+)/.exec(reply.text)?.[1] ?? '');
+    const page = parsePage(pending?.plan.content as PMNode[]);
+    expect(page.header).toMatchObject({ owner: 'Alice', status: 'Черновик' });
+    expect(nodesToMarkdown(page.preamble).markdown).toBe('Пишут люди');
+    expect(page.sections.map((s) => s.title)).toEqual(['Итоги', HISTORY]);
   });
 
   it('версии и откат — только через подтверждение', async () => {

@@ -92,6 +92,7 @@ const DocumentSchema = z
     updated: z.string().optional(),
     data: z.unknown().optional(),
     archived: z.boolean().optional(),
+    author: z.object({ full_name: z.string().nullable().optional() }).passthrough().nullable().optional(),
   })
   .passthrough();
 export type KaitenDocument = z.infer<typeof DocumentSchema>;

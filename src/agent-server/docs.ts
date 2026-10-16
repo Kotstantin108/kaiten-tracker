@@ -54,15 +54,18 @@ export interface DocDeps {
 }
 
 /**
- * Страницы, написанные людьми в интерфейсе, агент пока только читает: не
- * проверено, примет ли API правку документа новой схемы (чек-листы, вкладки).
+ * Страницы, написанные людьми в интерфейсе, агенту доступны (живьём
+ * 16.10.2026: `PATCH` документа новой схемы с чек-листом принят, узлы
+ * человека вернулись без изменений). Первая правка такой страницы — всегда с
+ * подтверждением: сервер впервые добавляет шапку и историю.
  */
-export const HUMAN_PAGES_WRITABLE = false;
+export const HUMAN_PAGES_WRITABLE = true;
 
 const PENDING_TTL = 30 * 60;
 const SNAPSHOT_TTL = 30 * 86400;
 
-export const docUrl = (domain: string, uid: string): string => `https://${domain}/documents/${uid}`;
+/** Адрес документа в интерфейсе Kaiten (снят из браузера 16.10.2026). */
+export const docUrl = (domain: string, uid: string): string => `https://${domain}/documents/d/${uid}`;
 
 const today = (): string => new Date().toISOString().slice(0, 10);
 
@@ -271,7 +274,18 @@ export async function applyPending(deps: Pick<DocDeps, 'kaiten' | 'store' | 'sec
 }
 
 /** Записать сразу или спросить человека — по уровню. */
+/** Страница человека без шапки: при первой правке сервер её добавляет — владелец автор страницы. */
+function ensureHeader(page: Page, loaded: Loaded, user: { name: string }): void {
+  if (page.header) return;
+  const author = loaded.doc.author?.full_name?.trim();
+  page.header = { owner: author || user.name, status: 'Черновик', links: [], updated: `${today()}, ${user.name}` };
+}
+
 async function writeOrAsk(deps: DocDeps, level: Level, loaded: Loaded, plan: WritePlan, summary: string, me: { id: number; name: string }): Promise<string> {
+  if (!loaded.page.header) {
+    level = 'confirm';
+    summary += ' (страницу написал человек: сервер впервые добавит шапку и «Историю изменений», остальное не трогает)';
+  }
   if (level === 'free') {
     const failed = await commitWrite(deps, plan, me.name);
     return `Готово: ${summary} — ${docUrl(deps.domain, plan.uid)}${failed.length ? `\nНе получилось: ${failed.join(', ')}.` : ''}`;
@@ -390,7 +404,10 @@ export function registerDocTools(server: McpServer, deps: DocDeps): void {
         const lines = [`# ${loaded.doc.title}`, docUrl(deps.domain, loaded.doc.uid), ''];
         if ('problem' in loaded.rules) lines.push(`Агенту: только чтение — ${loaded.rules.problem}`);
         else if (!loaded.page.header && !HUMAN_PAGES_WRITABLE) lines.push('Агенту: только чтение — страницу написал человек в Kaiten.');
-        else lines.push(`Агенту: ${rulesSummary(loaded.rules)}.`);
+        else {
+          lines.push(`Агенту: ${rulesSummary(loaded.rules)}.`);
+          if (!loaded.page.header) lines.push('Страницу написал человек: первая правка агента — только с подтверждением (сервер добавит шапку и историю, остальное не тронет).');
+        }
         if (rendered.lossy) lines.push('На странице есть элементы, которых нет в markdown (чек-листы, картинки…): разделы с ними можно только дописывать.');
         lines.push('', rendered.markdown);
         return lines.join('\n');
@@ -508,6 +525,7 @@ export function registerDocTools(server: McpServer, deps: DocDeps): void {
             section.nodes.push(...rest);
           } else section.nodes.push(...nodes);
         } else page.sections.push({ title: args.section.trim(), nodes });
+        ensureHeader(page, loaded, user);
         if (page.header) page.header.updated = `${today()}, ${user.name}`;
         addHistory(page, `${today()} — ${user.name}: дописан раздел «${args.section.trim()}» по просьбе «${args.user_request}»`);
         const level = levelFor('append', rules, loaded.page);
@@ -535,6 +553,7 @@ export function registerDocTools(server: McpServer, deps: DocDeps): void {
         section.nodes = convertSection(section.title, args.text, problems);
         if (problems.length) throw new Refusal('Не заменить — исправьте', problems);
         const user = await me(deps);
+        ensureHeader(page, loaded, user);
         if (page.header) page.header.updated = `${today()}, ${user.name}`;
         addHistory(page, `${today()} — ${user.name}: заменён раздел «${section.title}» по просьбе «${args.user_request}»`);
         return writeOrAsk(deps, levelFor('replace', rules, loaded.page), loaded, { uid: loaded.doc.uid, baseUpdated: loaded.doc.updated, content: renderPage(page) }, `в «${loaded.doc.title}» заменён раздел «${section.title}»`, user);
@@ -553,9 +572,10 @@ export function registerDocTools(server: McpServer, deps: DocDeps): void {
         const loaded = await loadDoc(deps, args.doc);
         const { rules } = requireWritable(loaded);
         const page = parsePage(loaded.nodes);
-        if (!page.header) throw new Refusal('У страницы нет шапки', ['статус ведётся только на страницах, созданных сервером']);
-        if (page.header.status === args.status) return `Статус уже «${args.status}».`;
         const user = await me(deps);
+        ensureHeader(page, loaded, user);
+        if (!page.header) throw new Refusal('У страницы нет шапки', ['не удалось её добавить']);
+        if (page.header.status === args.status) return `Статус уже «${args.status}».`;
         const from: Status = page.header.status;
         page.header.status = args.status;
         page.header.updated = `${today()}, ${user.name}`;
@@ -583,6 +603,7 @@ export function registerDocTools(server: McpServer, deps: DocDeps): void {
         if (problems.length) throw new Refusal('Не переименовать — исправьте', problems);
         const user = await me(deps);
         const page = parsePage(loaded.nodes);
+        ensureHeader(page, loaded, user);
         if (page.header) page.header.updated = `${today()}, ${user.name}`;
         addHistory(page, `${today()} — ${user.name}: переименована из «${loaded.doc.title}» по просьбе «${args.user_request}»`);
         return writeOrAsk(deps, levelFor('rename', rules, loaded.page), loaded, { uid: loaded.doc.uid, baseUpdated: loaded.doc.updated, content: renderPage(page), title }, `«${loaded.doc.title}» → «${title}»`, user);
@@ -601,12 +622,13 @@ export function registerDocTools(server: McpServer, deps: DocDeps): void {
         const loaded = await loadDoc(deps, args.doc);
         const { rules } = requireWritable(loaded);
         const page = parsePage(loaded.nodes);
-        if (!page.header) throw new Refusal('У страницы нет шапки', ['связи ведутся только на страницах, созданных сервером']);
         const problems: string[] = [];
         const [link] = await cardLinksFor(deps, [args.card], { ...rules, link: 'none' }, problems);
         if (!link || problems.length) throw new Refusal('Не связать', problems);
-        if (page.header.links.some((l) => l.url === link.link.url)) return 'Уже связано.';
         const user = await me(deps);
+        ensureHeader(page, loaded, user);
+        if (!page.header) throw new Refusal('У страницы нет шапки', ['не удалось её добавить']);
+        if (page.header.links.some((l) => l.url === link.link.url)) return 'Уже связано.';
         page.header.links.push(link.link);
         page.header.updated = `${today()}, ${user.name}`;
         addHistory(page, `${today()} — ${user.name}: связана с ${link.link.title} по просьбе «${args.user_request}»`);
@@ -653,6 +675,7 @@ export function registerDocTools(server: McpServer, deps: DocDeps): void {
         if (!snap) throw new Refusal('Нет такой версии', ['список — doc_versions']);
         const user = await me(deps);
         const page = parsePage(parseDocData(snap.data));
+        ensureHeader(page, loaded, user);
         if (page.header) page.header.updated = `${today()}, ${user.name}`;
         addHistory(page, `${today()} — ${user.name}: откат к версии от ${snap.savedAt.slice(0, 16).replace('T', ' ')} по просьбе «${args.user_request}»`);
         return writeOrAsk(
