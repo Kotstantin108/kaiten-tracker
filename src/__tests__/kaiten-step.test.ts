@@ -152,6 +152,58 @@ describe('одновременные шаги', { timeout: 60_000 }, () => {
   });
 });
 
+describe('файлы карточки из хранилища', { timeout: 60_000 }, () => {
+  it('вложения (и во вложенной папке) и журнал — в новую карточку; запись в журнал — заменяет ЖУРНАЛ.md', async () => {
+    writeFileSync(settingsPath, JSON.stringify({ sync: { kaiten: true } }));
+    const seed = join(tmp, 'seed');
+    git(seed, 'pull', '-q');
+    const fm = FrontmatterSchema.parse({
+      id: '01K5ZQ3R8F2K9M4N7P0T5V8W3C',
+      title: 'Проверить файлы',
+      summary: 'Вложения видны в карточке.',
+      type: 'tech',
+      status: 'inbox',
+      repo: 'acme-app',
+      created: '2026-09-28',
+      created_by: 'alice',
+      created_via: 'agent',
+      updated: '2026-09-28',
+    });
+    writeFileSync(join(seed, 'active', 'files.md'), serializeTaskDocument(fm, '\nТекст.\n'));
+    writeFileSync(join(seed, 'active', 'files.log.md'), '## [2026-09-28] Начал\n\nЧерновик приложен.\n');
+    mkdirSync(join(seed, 'attachments', 'files', 'img'), { recursive: true });
+    writeFileSync(join(seed, 'attachments', 'files', 'DRAFT.md'), '# Черновик\n');
+    writeFileSync(join(seed, 'attachments', 'files', 'img', 'scheme.png'), Buffer.from([0x89, 0x50, 0x4e, 0x47, 0, 1, 2]));
+    git(seed, 'add', '-A');
+    git(seed, 'commit', '-q', '-m', 'files');
+    git(seed, 'push', '-q', 'origin', 'main');
+    const { recordOp, syncStore } = await import('../store-write.js');
+    syncStore(ctx.store);
+
+    const { syncWithKaiten } = await import('../kaiten-cli.js');
+    const fake = fakeKaiten({ firstId: 960_000 });
+    const run = await syncWithKaiten(ctx, fake.client);
+    expect(run?.errors).toEqual([]);
+    const card = [...fake.cards.values()].find((c) => c.title === 'Проверить файлы');
+    const files = () => (card?.files ?? []).map((f) => [f.name, f.content.length]).sort();
+    expect(files()).toEqual([
+      ['DRAFT.md', Buffer.byteLength('# Черновик\n')],
+      ['img/scheme.png', 7],
+      ['ЖУРНАЛ.md', Buffer.byteLength('## [2026-09-28] Начал\n\nЧерновик приложен.\n')],
+    ]);
+    expect(git(remote, 'show', 'main:active/files.md')).toMatch(/files_hash: sha256:/);
+
+    const recorded = recordOp(ctx.store, { kind: 'log', id: fm.id, text: 'Продолжил.' }, 'запись в журнал', '2026-09-29');
+    if ('error' in recorded) throw new Error(recorded.error);
+    fake.writes.length = 0;
+    expect((await syncWithKaiten(ctx, fake.client))?.errors).toEqual([]);
+    expect(new TextDecoder().decode(card?.files?.find((f) => f.name === 'ЖУРНАЛ.md')?.content)).toContain('Продолжил.');
+    expect(card?.files?.filter((f) => f.name === 'ЖУРНАЛ.md')).toHaveLength(1);
+    expect(fake.writes.every((w) => w.includes('/files'))).toBe(true);
+    expect(fake.writes.length).toBeGreaterThan(0);
+  });
+});
+
 describe('статус — сначала карточка', { timeout: 30_000 }, () => {
   async function setup(sync: boolean) {
     writeFileSync(settingsPath, JSON.stringify({ sync: { kaiten: sync } }));
