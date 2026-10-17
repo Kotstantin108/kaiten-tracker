@@ -481,10 +481,14 @@ export class KaitenClient {
   // Только по UUID карточки: с числовым id Kaiten молча кладёт файл с
   // постоянной публичной ссылкой — поэтому число здесь — отказ до сети.
 
-  /** Загрузить файл: `POST /cards/{uid}/files`, поле `file`. Путь в имени Kaiten отрезает — см. `renameCardFile`. */
+  /**
+   * Загрузить файл: `POST /cards/{uid}/files`, поле `file`. Путь в имени Kaiten отрезает — см. `renameCardFile`.
+   * Тип файла Kaiten берёт из формы (живьём 17.10): без него — `application/octet-stream`.
+   */
   async uploadCardFile(cardUid: string, name: string, content: Uint8Array): Promise<CardFile> {
     const form = new FormData();
-    form.append('file', new Blob([new Uint8Array(content)]), name);
+    const type = mimeOf(name);
+    form.append('file', new Blob([new Uint8Array(content)], type ? { type } : {}), name);
     return this.request('POST', `/cards/${uuid(cardUid)}/files`, { form, schema: CardFileSchema });
   }
 
@@ -695,6 +699,32 @@ const UUID_RE =/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 function uuid(value: string): string {
   if (!UUID_RE.test(value)) throw new KaitenApiError(`файлы карточки — только по UUID, а не «${value}»`, 0, '');
   return value;
+}
+
+const MIME: Record<string, string> = {
+  pdf: 'application/pdf',
+  png: 'image/png',
+  jpg: 'image/jpeg',
+  jpeg: 'image/jpeg',
+  webp: 'image/webp',
+  gif: 'image/gif',
+  svg: 'image/svg+xml',
+  docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  pptx: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+  doc: 'application/msword',
+  xls: 'application/vnd.ms-excel',
+  csv: 'text/csv',
+  txt: 'text/plain',
+  md: 'text/markdown',
+  json: 'application/json',
+  zip: 'application/zip',
+};
+
+/** Тип файла по расширению; незнакомое — без типа (Kaiten запишет `application/octet-stream`). */
+export function mimeOf(name: string): string | undefined {
+  const dot = name.lastIndexOf('.');
+  return dot < 0 ? undefined : MIME[name.slice(dot + 1).toLowerCase()];
 }
 
 function retryDelayMs(response: Response, attempt: number): number {

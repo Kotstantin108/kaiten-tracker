@@ -180,3 +180,23 @@ describe('KaitenClient: сетевой обрыв', () => {
     expect(impl).toHaveBeenCalledTimes(1);
   });
 });
+
+describe('KaitenClient.uploadCardFile', () => {
+  const UID = '0a000000-0000-4000-8000-000000000001';
+  const sent = async (name: string): Promise<string> => {
+    let type = '';
+    const fetchImpl = (async (_input: Parameters<typeof fetch>[0], init?: RequestInit) => {
+      type = ((init?.body as FormData).get('file') as Blob).type;
+      return new Response(JSON.stringify({ id: UID, name, size: '1', mime_type: type, type: 11 }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    }) as typeof fetch;
+    await new KaitenClient({ domain: 'acme.kaiten.ru', token: 't', fetchImpl, minIntervalMs: 0 }).uploadCardFile(UID, name, new Uint8Array([1]));
+    return type;
+  };
+
+  it('передаёт тип файла по расширению: без него Kaiten пишет octet-stream', async () => {
+    expect(await sent('Счёт.PDF')).toBe('application/pdf');
+    expect(await sent('схема.png')).toBe('image/png');
+    expect(await sent('замечания.csv')).toBe('text/csv');
+    expect(await sent('архив.bin')).toBe('');
+  });
+});
