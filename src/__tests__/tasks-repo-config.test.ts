@@ -9,7 +9,7 @@ import { join } from 'node:path';
 
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
-import { projectFromTasksRepo, storeNameOf } from '../config.js';
+import { juniorSetting, projectFromTasksRepo, storeNameOf } from '../config.js';
 
 const CONFIG = {
   project: 'acme',
@@ -45,6 +45,23 @@ describe('kaiten.json', () => {
     expect(projectFromTasksRepo(JSON.stringify(CONFIG)).project.kaiten.archiveInKaiten).toBe(false);
     expect(() => projectFromTasksRepo(archive({ archiveLane: 'Архив' }))).toThrow(/kaiten\.archiveLane: вместе с archiveInKaiten/);
     expect(() => projectFromTasksRepo(archive({}, { boardId: 1, columns: {}, archiveLaneId: 9 }))).toThrow(/mapping\.archiveLaneId/);
+  });
+
+  it('«Можно младшему»: нет блока — выключен; блок без полей — ждёт setup; поля в маппинге — включён', () => {
+    const load = (kaiten: Record<string, unknown>, mapping?: Record<string, unknown>) =>
+      projectFromTasksRepo(JSON.stringify({ ...CONFIG, kaiten: { ...CONFIG.kaiten, ...kaiten }, ...(mapping ? { mapping } : {}) })).project;
+    expect(juniorSetting(load({}))).toEqual({ state: 'off' });
+    expect(juniorSetting(load({ junior: {} }))).toEqual({ state: 'needs-setup', maxAgeDays: 90 });
+    const fields = { juniorProperty: { id: 7, values: { yes: 71, no: 72 } }, juniorMissingProperty: { id: 8 } };
+    expect(juniorSetting(load({ junior: { maxAgeDays: 60 } }, { boardId: 1, columns: {}, ...fields }))).toEqual({
+      state: 'on',
+      maxAgeDays: 60,
+      property: { id: 7, yes: 71, no: 72 },
+      missingPropertyId: 8,
+    });
+    expect(juniorSetting(load({ junior: {} }, { boardId: 1, columns: {}, juniorProperty: { id: 7, values: { yes: 71 } }, juniorMissingProperty: { id: 8 } })).state).toBe('needs-setup');
+    expect(juniorSetting(load({}, { boardId: 1, columns: {}, ...fields }))).toEqual({ state: 'off' });
+    expect(() => load({ junior: { maxAgeDays: 0 } })).toThrow(/kaiten\.junior\.maxAgeDays/);
   });
 
   it('незнакомый ключ в kaiten — не ошибка: так новый ключ не ломает прежние версии', () => {
@@ -99,6 +116,30 @@ describe('команда kaiten берёт проект из хранилища'
     expect(ctx.title).toBe('Acme');
     expect(ctx.loaded.project.repos.map((r) => r.name)).toEqual(['acme-app']);
     expect(peopleKey(currentPerson, ctx.loaded.people)).toBe('alice');
+  });
+
+  it('шаблон в отказе kaiten new: разделы продукта, БД и n8n — только в проекте с признаком «Можно младшему»', async () => {
+    const { WRITE_COMMANDS } = await import('../kaiten-write.js');
+    const refusal = async (type: string): Promise<string> => {
+      try {
+        await WRITE_COMMANDS.new(['Починить таймаут', '--type', type, '--slug', 'fix-timeout', '--summary', 'Оплата не подтверждается.']);
+      } catch (error) {
+        return (error as Error).message;
+      }
+      return '';
+    };
+    expect(await refusal('story')).toContain('--stdin: задача заводится с постановкой');
+    expect(await refusal('story')).not.toContain('## Изменения в БД');
+
+    const seed = join(tmp, 'seed');
+    writeFileSync(join(seed, 'kaiten.json'), JSON.stringify({ ...CONFIG, kaiten: { ...CONFIG.kaiten, junior: {} } }));
+    git(seed, 'commit', '-qam', 'признак «Можно младшему»');
+    git(seed, 'push', '-q', join(tmp, 'store.git'), 'main');
+    const story = await refusal('story');
+    expect(story).toContain('## Изменения в БД');
+    expect(story).toContain('«Нет» — только проверив по коду');
+    expect(story.indexOf('## Сценарии n8n')).toBeLessThan(story.indexOf('## Критерии готовности'));
+    expect(await refusal('spike')).not.toContain('## Изменения в БД');
   });
 
   it('продукта нет в проекте — отказ с подсказкой', async () => {

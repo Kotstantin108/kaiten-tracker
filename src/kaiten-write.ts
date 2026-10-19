@@ -15,8 +15,10 @@ import { existsSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { basename, join, resolve } from 'node:path';
 
+import { juniorSetting } from './config.js';
 import { contentHash, serializeTaskDocument } from './core/document.js';
 import { SLUG_RE } from './core/lint.js';
+import { JUNIOR_TYPES, withJuniorTemplate } from './core/junior.js';
 import { criteriaText, newBodyProblems, newBodyTemplate, SKELETONS, withCriteriaWaiver } from './core/skeleton.js';
 import { TASK_TYPES, type TaskType } from './core/schema.js';
 import { ATTACHMENT_MAX_BYTES, attachmentNameProblem, BLOCKABLE, CANCELLABLE, hasWorkNote, matchItem, moveProblem, newTaskText, slugify, uniqueSlug, type Op } from './core/task-ops.js';
@@ -58,6 +60,10 @@ export const WRITE_HELP: Record<string, string> = {
   spike        Вопрос · Как ищем ответ («Ответ» — при закрытии)
 Критерии — пункты «- [ ] …», по которым проверят, что задача сделана. Нельзя
 их назвать — --no-criteria с причиной; работа «разобраться» — это spike.
+Если проект отмечает задачи для младших разработчиков, у story, tech, bug
+перед критериями ещё «Продуктовые решения», «Изменения в БД», «Сценарии n8n»
+(шаблон — в отказе команды без --stdin). Они необязательны: «Нет» — только
+проверив по коду; иначе — все пункты; не знаете — оставьте раздел пустым.
 
 Флаги:
   --type <тип>        обязательно: ${TASK_TYPES.join(', ')}
@@ -254,6 +260,10 @@ async function newTask(args: string[]): Promise<void> {
   if (waiver !== undefined && !waiver) throw new UsageError('--no-criteria: напишите, почему у задачи нет критериев.');
   if (waiver && !SKELETONS[taskType].criteria) throw new UsageError(`--no-criteria: у задачи типа ${type} нет раздела критериев.`);
 
+  const ctx = begin();
+  // Разделы продукта, БД и n8n — в шаблоне, только если проект ведёт признак «Можно младшему».
+  const junior = juniorSetting(ctx.loaded.project).state !== 'off' && JUNIOR_TYPES.includes(taskType);
+
   // Всё, чего не хватает, — одним отказом и готовой командой с флагами самого вызова: агент исполняет отказы, а не подсказки.
   const problems: string[] = [];
   // Имя задачи из кириллического заголовка вышло бы транслитом (pochinit-format-daty…) — его просим придумать.
@@ -276,16 +286,18 @@ async function newTask(args: string[]): Promise<void> {
       ...(['epic', 'from', 'no-criteria'] as const).map((f) => (stringFlag(values, f) ? `--${f} ${quote(stringFlag(values, f) ?? '')}` : '')),
       `--summary ${quote(summary)}`,
     ].filter(Boolean);
-    const filled = newBodyTemplate(taskType);
+    const filled = junior ? withJuniorTemplate(taskType, newBodyTemplate(taskType)) : newBodyTemplate(taskType);
+    const juniorNote = junior
+      ? '\nПродукт, БД, n8n — для младших разработчиков: «Нет» — только проверив по коду; иначе все пункты; не знаете — оставьте раздел пустым.'
+      : '';
     throw new UsageError(
       `Не записано:${problems.map((p) => `\n  - ${p}`).join('')}\n\n` +
-        `Так задача заводится (разделы — для типа ${type}; «Шаги» и свои разделы можно добавить):\n\n` +
+        `Так задача заводится (разделы — для типа ${type}; «Шаги» и свои разделы можно добавить):${juniorNote}\n\n` +
         `kaiten new ${quote(title)} ${flags.join(' ')} --stdin <<'EOF'\n${filled}\nEOF`,
       1,
     );
   }
 
-  const ctx = begin();
   const { index } = loadTasks(ctx);
   const fromRef = stringFlag(values, 'from');
   const related = fromRef ? [findTask(index, fromRef).slug] : undefined;

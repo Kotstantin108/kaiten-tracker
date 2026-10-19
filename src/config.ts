@@ -34,6 +34,10 @@ export const MappingSchema = z.object({
   teamProperty: SelectMappingSchema.optional(),
   /** Текстовое поле «Суть» (решение 28.09.2026: поле вместо блока в описании). */
   summaryProperty: z.object({ id: z.number() }).optional(),
+  /** Выбор «Можно младшему»: варианты `yes`/`no` (`kaiten.junior`). */
+  juniorProperty: SelectMappingSchema.optional(),
+  /** Строка «Младшему не хватает». */
+  juniorMissingProperty: z.object({ id: z.number() }).optional(),
 });
 export type ConfigMapping = z.infer<typeof MappingSchema>;
 
@@ -73,6 +77,11 @@ const ProjectObject = z.object({
     archiveLane: z.string().min(1).optional(),
     /** Закрытые больше месяца назад карточки — в штатный архив Kaiten, а не на дорожку. */
     archiveInKaiten: z.boolean().default(false),
+    /**
+     * Признак «Можно младшему» (docs/junior-readiness.md): разделы продукта, БД
+     * и n8n в каркасе задачи и два поля карточки. Нет блока — нет ничего.
+     */
+    junior: z.object({ maxAgeDays: z.number().int().positive().default(90) }).optional(),
   }),
   repos: z.array(RepoSchema).min(1),
   /**
@@ -105,6 +114,26 @@ function archiveConflict(project: { kaiten: { archiveInKaiten: boolean; archiveL
 
 export const ProjectSchema = ProjectObject.superRefine(archiveConflict);
 export type ProjectConfig = z.infer<typeof ProjectSchema>;
+
+/**
+ * Признак «Можно младшему» в проекте. Включён, а id полей в маппинге нет —
+ * задачи ведутся и разделы в каркасе есть, поля не пишутся до `setup`.
+ */
+export type JuniorSetting =
+  | { state: 'off' }
+  | { state: 'needs-setup'; maxAgeDays: number }
+  | { state: 'on'; maxAgeDays: number; property: { id: number; yes: number; no: number }; missingPropertyId: number };
+
+export function juniorSetting(project: Pick<ProjectConfig, 'kaiten' | 'mapping'>): JuniorSetting {
+  const junior = project.kaiten.junior;
+  if (!junior) return { state: 'off' };
+  const select = project.mapping?.juniorProperty;
+  const missing = project.mapping?.juniorMissingProperty;
+  const yes = select?.values.yes;
+  const no = select?.values.no;
+  if (!select || !missing || yes === undefined || no === undefined) return { state: 'needs-setup', maxAgeDays: junior.maxAgeDays };
+  return { state: 'on', maxAgeDays: junior.maxAgeDays, property: { id: select.id, yes, no }, missingPropertyId: missing.id };
+}
 
 export const ConfigSchema = z
   .object({
