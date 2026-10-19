@@ -24,7 +24,7 @@ const MAPPING: ConfigMapping = {
   summaryProperty: { id: 4 },
 };
 const ID = '01K5ZQ3R8F2K9M4N7P0T5V8W3A';
-const CTX = { date: '2026-09-29', stamp: '2026-09-29 10:15:00 +04:00' };
+const CTX = { date: '2026-09-29', stamp: '2026-09-29 10:15:00 +03:00' };
 
 function file(fm: Partial<Frontmatter> = {}): string {
   return serializeTaskDocument(

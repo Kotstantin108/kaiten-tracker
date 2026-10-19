@@ -216,7 +216,7 @@ export function hasWorkNote(log: string | null): boolean {
 }
 
 /**
- * Запись журнала `## [YYYY-MM-DD HH:MM:SS +04:00] заголовок` + текст. Первая
+ * Запись журнала `## [YYYY-MM-DD HH:MM:SS +03:00] заголовок` + текст. Первая
  * строка текста — заголовок, остальное — тело.
  */
 export function appendLog(log: string | null, stamp: string, text: string): string {
@@ -226,12 +226,27 @@ export function appendLog(log: string | null, stamp: string, text: string): stri
   return `${before ? `${before}\n\n` : ''}${entry}\n`;
 }
 
-/** Время для журнала задачи: местное, с поясом — `2026-10-19 16:53:13 +04:00`. */
-export function logStamp(at: Date, offsetMinutes = -at.getTimezoneOffset()): string {
-  const local = new Date(at.getTime() + offsetMinutes * 60_000).toISOString();
-  const abs = Math.abs(offsetMinutes);
+/** Журнал у всей команды — в одном поясе, где бы ни стояла машина (владелец 19.10.2026). */
+export const LOG_TIME_ZONE = 'Europe/Moscow';
+
+/** Время для журнала задачи — `2026-10-19 15:53:13 +03:00`. */
+export function logStamp(at: Date, timeZone = LOG_TIME_ZONE): string {
+  const fmt = new Intl.DateTimeFormat('en-CA', {
+    timeZone,
+    hourCycle: 'h23',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+  });
+  const p = Object.fromEntries(fmt.formatToParts(at).map((part) => [part.type, part.value]));
+  const wall = Date.UTC(Number(p.year), Number(p.month) - 1, Number(p.day), Number(p.hour), Number(p.minute), Number(p.second));
+  const offset = Math.round((wall - Math.floor(at.getTime() / 1000) * 1000) / 60_000);
+  const abs = Math.abs(offset);
   const pad = (n: number): string => String(n).padStart(2, '0');
-  return `${local.slice(0, 10)} ${local.slice(11, 19)} ${offsetMinutes < 0 ? '-' : '+'}${pad(Math.floor(abs / 60))}:${pad(abs % 60)}`;
+  return `${p.year}-${p.month}-${p.day} ${p.hour}:${p.minute}:${p.second} ${offset < 0 ? '-' : '+'}${pad(Math.floor(abs / 60))}:${pad(abs % 60)}`;
 }
 
 // ── пункты ───────────────────────────────────────────────────────────────

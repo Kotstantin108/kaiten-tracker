@@ -64,7 +64,7 @@ function world(entries: Array<[string, string]> = []) {
   async function sync(extra: Partial<RunInput> = {}) {
     const run = await runKaitenSync(fake.client, { ...input(), ...extra }, 'apply');
     for (const { op } of run.ops) {
-      const r = applyOp(op, texts, { date: '2026-09-29', stamp: '2026-09-29 10:15:00 +04:00' });
+      const r = applyOp(op, texts, { date: '2026-09-29', stamp: '2026-09-29 10:15:00 +03:00' });
       if ('error' in r) throw new Error(r.error);
       for (const c of r.changes) if (c.text === null) texts.delete(c.path);
       else texts.set(c.path, c.text);
@@ -267,7 +267,7 @@ describe('чего перенос не делает', () => {
     });
     const item = { slug: 'pochinit-vkhod', text: serializeTaskDocument(fm, '\nТекст.\n') };
     for (let i = 0; i < 2; i += 1) {
-      const r = applyOp({ kind: 'adopt', items: [item] }, texts, { date: '2026-09-29', stamp: '2026-09-29 10:15:00 +04:00' });
+      const r = applyOp({ kind: 'adopt', items: [item] }, texts, { date: '2026-09-29', stamp: '2026-09-29 10:15:00 +03:00' });
       if ('error' in r) throw new Error(r.error);
       for (const c of r.changes) if (c.text !== null) texts.set(c.path, c.text);
     }

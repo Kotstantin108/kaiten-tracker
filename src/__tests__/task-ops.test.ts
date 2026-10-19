@@ -8,7 +8,7 @@ import { FrontmatterSchema, type Frontmatter } from '../core/schema.js';
 import { appendLog, applyOp, attachmentNameProblem, hasWorkNote, logStamp, matchItem, newTaskText, slugify, uniqueSlug, type FileChange, type Op, type TaskTexts } from '../core/task-ops.js';
 
 const ID = '01K5ZQ3R8F2K9M4N7P0T5V8W3A';
-const CTX = { date: '2026-09-28', stamp: '2026-09-28 10:15:00 +04:00' };
+const CTX = { date: '2026-09-28', stamp: '2026-09-28 10:15:00 +03:00' };
 
 function task(overrides: Partial<Frontmatter> = {}, body = '## Критерии\n\n- [ ] Тест на таймаут\n- [ ] Ретраи с паузой\n  и джиттером\n- [x] Воспроизвести\n'): string {
   const fm = FrontmatterSchema.parse({
@@ -77,17 +77,17 @@ describe('пункты', () => {
 
 describe('журнал', () => {
   it('запись со временем, первая строка — заголовок; старые записи с одной датой остаются', () => {
-    expect(appendLog(null, CTX.stamp, 'Воспроизвёл на staging\nпричина в ретраях')).toBe('## [2026-09-28 10:15:00 +04:00] Воспроизвёл на staging\nпричина в ретраях\n');
-    expect(appendLog('## [2026-09-01] создана\n', CTX.stamp, 'ещё')).toBe('## [2026-09-01] создана\n\n## [2026-09-28 10:15:00 +04:00] ещё\n');
+    expect(appendLog(null, CTX.stamp, 'Воспроизвёл на staging\nпричина в ретраях')).toBe('## [2026-09-28 10:15:00 +03:00] Воспроизвёл на staging\nпричина в ретраях\n');
+    expect(appendLog('## [2026-09-01] создана\n', CTX.stamp, 'ещё')).toBe('## [2026-09-01] создана\n\n## [2026-09-28 10:15:00 +03:00] ещё\n');
     const [change] = ok(applyOp({ kind: 'log', id: ID, text: 'заметка' }, texts(), CTX));
     expect(change.path).toBe('active/webhook-timeout.log.md');
   });
 
-  it('время — местное, с поясом; дата — местная, а не UTC', () => {
+  it('время — московское на любой машине, с поясом; дата — по Москве, а не UTC', () => {
     const at = new Date('2026-10-19T21:53:13.456Z');
-    expect(logStamp(at, 240)).toBe('2026-10-20 01:53:13 +04:00');
-    expect(logStamp(at, -330)).toBe('2026-10-19 16:23:13 -05:30');
-    expect(logStamp(at, 0)).toBe('2026-10-19 21:53:13 +00:00');
+    expect(logStamp(at)).toBe('2026-10-20 00:53:13 +03:00');
+    expect(logStamp(at, 'America/St_Johns')).toBe('2026-10-19 19:23:13 -02:30');
+    expect(logStamp(at, 'UTC')).toBe('2026-10-19 21:53:13 +00:00');
   });
 });
 
@@ -101,7 +101,7 @@ describe('отмена и блокировка', () => {
       ['archive/2026-09/webhook-timeout.log.md', false],
     ]);
     expect(fmOf(changes[2].text).status).toBe('cancelled');
-    expect(changes[3].text).toContain('## [2026-09-28 10:15:00 +04:00] отменена: дубль PRJ-1');
+    expect(changes[3].text).toContain('## [2026-09-28 10:15:00 +03:00] отменена: дубль PRJ-1');
   });
 
   it('отменить задачу в работе нельзя — как на доске', () => {
@@ -132,8 +132,8 @@ describe('запись о работе в журнале (для review)', () =>
   it('запись до повторного взятия в работу — про прошлый заход; у перенесённой задачи — любая', () => {
     expect(hasWorkNote(log('в работе', 'Разобрал причину', 'на ревью: PR #1', 'в работе'))).toBe(false);
     expect(hasWorkNote(log('Сделали прототип'))).toBe(true);
-    expect(hasWorkNote('## [2026-10-19 16:53:13 +04:00] в работе\n\n## [2026-10-19 17:40:02 +04:00] Разобрал причину\n')).toBe(true);
-    expect(hasWorkNote('## [2026-09-28] Разобрал причину\n\n## [2026-10-19 16:53:13 +04:00] в работе\n')).toBe(false);
+    expect(hasWorkNote('## [2026-10-19 16:53:13 +03:00] в работе\n\n## [2026-10-19 17:40:02 +03:00] Разобрал причину\n')).toBe(true);
+    expect(hasWorkNote('## [2026-09-28] Разобрал причину\n\n## [2026-10-19 16:53:13 +03:00] в работе\n')).toBe(false);
   });
 });
 
@@ -158,7 +158,7 @@ describe('статусы работы', () => {
     ]);
     expect(fmOf(state.get('archive/2026-09/webhook-timeout.md') ?? null).status).toBe('done');
     expect(state.get('archive/2026-09/webhook-timeout.log.md')).toBe(
-      '## [2026-09-28 10:15:00 +04:00] в работе\n\n## [2026-09-28 10:15:00 +04:00] на ревью: PR #45\n\n## [2026-09-28 10:15:00 +04:00] сделана: влито в main\n',
+      '## [2026-09-28 10:15:00 +03:00] в работе\n\n## [2026-09-28 10:15:00 +03:00] на ревью: PR #45\n\n## [2026-09-28 10:15:00 +03:00] сделана: влито в main\n',
     );
   });
 
