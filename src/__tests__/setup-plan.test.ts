@@ -6,7 +6,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { kaitenTemplate } from '../core/skeleton.js';
-import { buildMapping, DEPARTMENTS, DESIRED, desiredForProject, planSetup, withSelectValues, type CurrentStructure, type DesiredStructure } from '../setup-plan.js';
+import { buildMapping, DEPARTMENTS, DESIRED, desiredForProject, findSpace, planSetup, withSelectValues, type CurrentStructure, type DesiredStructure } from '../setup-plan.js';
 
 /** Схема без «Сути» и шаблонов — для тестов полей-выборов; «Суть» проверяется отдельно. */
 const selectsOnly = (d: DesiredStructure): DesiredStructure => ({ ...d, summary: null, templates: false, suggested: [] });
@@ -220,6 +220,44 @@ describe('папка, дорожки и отделы', () => {
 
   it('после --apply — пустой план', () => {
     expect(planSetup(after(), nested).actions).toEqual([]);
+  });
+
+  describe('одно имя пространства в двух проектах', () => {
+    /** Acme и Globex: «Разработка» в каждой папке; Acme ещё не переименован. */
+    function twoProjects(): CurrentStructure {
+      const current = after();
+      current.spaces = [
+        ...empty.spaces,
+        { id: 9, uid: 'uid-folder', title: 'Acme', parent_entity_uid: null },
+        { id: 10, uid: 'uid-dev', title: 'Acme (разработка)', parent_entity_uid: 'uid-folder', boards: [{ id: 20 }] },
+        { id: 11, uid: 'uid-m', title: 'Маркетинг', parent_entity_uid: 'uid-folder' },
+        { id: 12, uid: 'uid-h', title: 'HR', parent_entity_uid: 'uid-folder' },
+        { id: 40, uid: 'uid-globex', title: 'Globex', parent_entity_uid: null },
+        { id: 41, uid: 'uid-globex-dev', title: 'Разработка', parent_entity_uid: 'uid-globex', boards: [{ id: 50 }] },
+      ];
+      return current;
+    }
+    const renamed: DesiredStructure = { ...nested, space: 'Разработка' };
+
+    it('по доске проекта: переименовать своё, чужое не трогать', () => {
+      expect(findSpace(twoProjects(), renamed)?.id).toBe(10);
+      expect(planSetup(twoProjects(), renamed).actions).toEqual([{ kind: 'move-space', id: 10, from: 'Acme (разработка)', title: 'Разработка', folder: 'Acme' }]);
+    });
+
+    it('без доски — по имени только в своей папке', () => {
+      const { knownBoardId: _known, ...fresh } = renamed;
+      expect(findSpace(twoProjects(), fresh)).toBeUndefined();
+      expect(planSetup(twoProjects(), fresh).actions).toContainEqual({ kind: 'create-space', title: 'Разработка' });
+      expect(planSetup(twoProjects(), fresh).actions.some((a) => a.kind === 'move-space')).toBe(false);
+    });
+
+    it('без папки — вложенное с таким именем, только если оно одно', () => {
+      const { folder: _folder, departments: _d, knownBoardId: _k, ...flat } = renamed;
+      const current = twoProjects();
+      expect(findSpace(current, { ...flat, departments: [] })?.id).toBe(41);
+      current.spaces.push({ id: 42, uid: 'uid-dev-2', title: 'Разработка', parent_entity_uid: 'uid-folder' });
+      expect(findSpace(current, { ...flat, departments: [] })).toBeUndefined();
+    });
   });
 
   it('маппинг: дорожки продуктов, «Архив» и дорожка по умолчанию', () => {

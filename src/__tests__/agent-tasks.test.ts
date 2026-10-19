@@ -117,7 +117,8 @@ interface FakeCard {
   checklists?: Array<{ id: number; name: string; items: Array<{ id: number; text: string; checked: boolean; sort_order: number }> }>;
 }
 
-function fakeKaiten() {
+/** `groups: false` — группы токену не видны (403), как, возможно, у не-администратора. */
+function fakeKaiten(opts: { groups?: boolean } = {}) {
   const writes: Array<{ method: string; path: string; body: unknown }> = [];
   const boards: Record<number, Record<string, unknown>> = {
     10: {
@@ -227,7 +228,8 @@ function fakeKaiten() {
   const routes: Array<[string, RegExp, (m: RegExpExecArray, body: Record<string, unknown>) => unknown]> = [
     ['GET', /^\/users\/current$/, () => ({ id: 7, full_name: 'Alice', email: 'alice@example.com' })],
     ['GET', /^\/spaces$/, () => [
-      { id: 1, uid: 'u1', title: 'Acme', boards: [10, 20, 30, 40, 50, 60].map((id) => ({ id })) },
+      // Родитель «u0» токену не виден — как «Компания» живьём.
+      { id: 1, uid: 'u1', title: 'Acme', parent_entity_uid: 'u0', boards: [10, 20, 30, 40, 50, 60].map((id) => ({ id })) },
       { id: 2, uid: 'u2', title: 'Поручения', parent_entity_uid: 'u1', boards: [{ id: 70 }] },
     ]],
     // Унаследованных от родителя в списке дочернего пространства нет — как живьём.
@@ -238,6 +240,12 @@ function fakeKaiten() {
       { id: 10, full_name: 'Carol Off', email: 'carol@example.com', activated: false },
     ]],
     ['GET', /^\/spaces\/2\/users$/, () => []],
+    // Доступ только группой: в списках пространств этих людей нет (живьём 19.10).
+    ['GET', /^\/company\/groups$/, () => (opts.groups === false ? undefined : [{ id: 1, uid: 'g-duty', name: 'Дежурные' }, { id: 2, uid: 'g-other', name: 'Чужие' }])],
+    ['GET', /^\/company\/groups\/g-duty\/entities$/, () => [{ uid: 'u0', entity_type: 'space' }]],
+    ['GET', /^\/company\/groups\/g-other\/entities$/, () => [{ uid: 'u-elsewhere', entity_type: 'space' }]],
+    ['GET', /^\/company\/groups\/g-duty\/users$/, () => [{ id: 11, full_name: 'Dave Duty', email: 'dave@example.com' }, { id: 12, full_name: 'Robot', virtual: true }]],
+    ['GET', /^\/company\/groups\/g-other\/users$/, () => [{ id: 13, full_name: 'Frank Far', email: 'frank@example.com' }]],
     ['GET', /^\/spaces\/2\/restrictions$/, () => []],
     ['POST', /^\/cards\/([0-9a-f-]{36})\/files$/, (_, body) => ({ id: '0b000000-0000-4000-8000-000000000001', name: body.name, size: String(body.size), type: 11 })],
     ['GET', /^\/boards\/(\d+)$/, (m) => boards[Number(m[1])]],
@@ -589,6 +597,19 @@ describe('поручение на другого человека', () => {
     const off = await tool(fake, 'create_card', { ...ORDER, responsible: 'Carol' }, { now: FRIDAY });
     expect(off.text).toMatch(/«Carol» нет среди тех, у кого есть доступ/);
     expect(fake.writes).toEqual([]);
+  });
+
+  it('человек с доступом через группу — адресат; чужая группа и виртуальный — нет', async () => {
+    const fake = fakeKaiten();
+    expect((await tool(fake, 'create_card', { ...ORDER, responsible: 'Dave' }, { now: FRIDAY })).text).toMatch(/Ответственный: Dave Duty/);
+    expect((await tool(fake, 'create_card', { ...ORDER, responsible: 'Frank' }, { now: FRIDAY })).text).toMatch(/«Frank» нет среди тех, у кого есть доступ/);
+    expect((await tool(fake, 'create_card', { ...ORDER, responsible: 'Robot' }, { now: FRIDAY })).text).toMatch(/«Robot» нет среди/);
+  });
+
+  it('группы не читаются — остаются личные доступы, без падения', async () => {
+    const fake = fakeKaiten({ groups: false });
+    expect((await tool(fake, 'create_card', { ...ORDER, responsible: 'bob stone' }, { now: FRIDAY })).text).toMatch(/Ответственный: Bob Stone/);
+    expect((await tool(fake, 'create_card', { ...ORDER, responsible: 'Dave' }, { now: FRIDAY })).text).toMatch(/«Dave» нет среди/);
   });
 
   it('срок по умолчанию +3 рабочих дня, автор — участник, без комментария; код привязан к адресату', async () => {

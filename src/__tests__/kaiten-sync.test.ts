@@ -189,6 +189,15 @@ describe('пилот как он есть', () => {
     expect(w.fake.writes).toEqual([]);
     expect(run.plan.report.archivedCards).toEqual(['pilot (540)']);
   });
+
+  it('закрытая задача с карточкой в архиве — порядок: не трогаем и не докладываем', async () => {
+    const [path, text] = task('archive/2026-09/shipped.md', { tracker: '541', status: 'done' });
+    const w = world([[path, text]]);
+    seedCard(w.fake, { id: 541, title: 'старое', board_id: BOARD, archived: true });
+    const run = await w.sync();
+    expect(w.fake.writes).toEqual([]);
+    expect(run.plan.report.archivedCards).toEqual([]);
+  });
 });
 
 describe('чек-лист — как в файле', () => {

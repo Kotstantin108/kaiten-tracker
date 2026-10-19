@@ -7,7 +7,7 @@
 
 import { z } from 'zod';
 
-import { type Card, type CardType, CardTypeSchema, type CustomProperty, KaitenClient, type SelectValue, type Space, type SpaceUser } from '../kaiten-client.js';
+import { type Card, type CardType, CardTypeSchema, type CustomProperty, KaitenApiError, KaitenClient, type SelectValue, type Space, type SpaceUser } from '../kaiten-client.js';
 import { type BoardRules, coverageProblems, normalizeTitle, type ParsedDescription, parseBoardDescription, typeRule } from './board-rules.js';
 import { applicable, demandedProperties, parseRestrictions, type Restriction } from './restrictions.js';
 
@@ -184,6 +184,8 @@ export class Catalog {
   private spaceList?: Promise<Space[]>;
   private spaces?: Promise<Map<number, Space>>;
   private peopleBySpace = new Map<number, Promise<SpaceUser[]>>();
+  private groupAccess?: Promise<Array<{ uid: string; entities: Set<string> }>>;
+  private groupUsers = new Map<string, Promise<SpaceUser[]>>();
   private values = new Map<number, Promise<SelectValue[]>>();
   private restrictionsBySpace = new Map<number, Promise<Restriction[]>>();
 
@@ -215,10 +217,12 @@ export class Catalog {
   }
 
   /**
-   * Люди с доступом к пространству: его участники и участники пространств
-   * выше. Kaiten наследует доступ от родителя, а в списке дочернего
-   * пространства унаследованных нет (живьём 16.10: у многих — пусто).
-   * Отключённые и виртуальные — не адресаты.
+   * Люди с доступом к пространству: его участники, участники пространств выше
+   * и участники групп с доступом к любому из них. Kaiten наследует доступ от
+   * родителя, а в списке дочернего пространства унаследованных нет (живьём
+   * 16.10: у многих — пусто); доступ через группу в этом списке тоже не виден
+   * (живьём 19.10). Родитель может быть токену не виден — его `uid` всё равно
+   * сверяется с доступами групп. Отключённые и виртуальные — не адресаты.
    */
   people(spaceId: number): Promise<SpaceUser[]> {
     if (!this.peopleBySpace.has(spaceId)) {
@@ -228,16 +232,42 @@ export class Catalog {
           const spaces = await this.allSpaces();
           const byUid = new Map(spaces.map((s) => [s.uid, s]));
           const out = new Map<number, SpaceUser>();
+          const add = (users: SpaceUser[]): void => {
+            for (const user of users) if (user.activated !== false && !user.virtual && !out.has(user.id)) out.set(user.id, user);
+          };
+          const chain = new Set<string>();
           const seen = new Set<number>();
           for (let cur = spaces.find((s) => s.id === spaceId); cur && !seen.has(cur.id); cur = cur.parent_entity_uid ? byUid.get(cur.parent_entity_uid) : undefined) {
             seen.add(cur.id);
-            for (const user of await this.kaiten.listSpaceUsers(cur.id)) if (user.activated !== false && !user.virtual && !out.has(user.id)) out.set(user.id, user);
+            if (cur.uid) chain.add(cur.uid);
+            if (cur.parent_entity_uid) chain.add(cur.parent_entity_uid);
+            add(await this.kaiten.listSpaceUsers(cur.id));
           }
+          for (const group of await this.groups()) if ([...chain].some((uid) => group.entities.has(uid))) add(await this.usersOfGroup(group.uid));
           return [...out.values()];
         })(),
       );
     }
     return this.peopleBySpace.get(spaceId) as Promise<SpaceUser[]>;
+  }
+
+  /** Группы и их доступы; группы не читаются (нет прав) — только личные доступы. */
+  private groups(): Promise<Array<{ uid: string; entities: Set<string> }>> {
+    this.groupAccess ??= (async () => {
+      try {
+        const groups = await this.kaiten.listGroups();
+        return await Promise.all(groups.map(async (g) => ({ uid: g.uid, entities: new Set((await this.kaiten.listGroupEntities(g.uid)).map((e) => e.uid)) })));
+      } catch (error) {
+        if (error instanceof KaitenApiError && (error.status === 403 || error.status === 404)) return [];
+        throw error;
+      }
+    })();
+    return this.groupAccess;
+  }
+
+  private usersOfGroup(uid: string): Promise<SpaceUser[]> {
+    if (!this.groupUsers.has(uid)) this.groupUsers.set(uid, this.kaiten.listGroupUsers(uid));
+    return this.groupUsers.get(uid) as Promise<SpaceUser[]>;
   }
 
   async field(propertyId: number): Promise<FieldInfo | null> {

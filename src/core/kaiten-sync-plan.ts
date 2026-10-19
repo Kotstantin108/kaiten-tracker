@@ -645,7 +645,9 @@ export function planKaitenSync(input: PlanInput): SyncPlan {
       continue;
     }
     if (card.archived) {
-      report.archivedCards.push(`${task.slug} (${cardId})`);
+      // Закрытое уходит в штатный архив Kaiten — это порядок, а не находка;
+      // в отчёт — только открытая задача с карточкой в архиве.
+      if (!CLOSED_STATUSES.includes(task.fm.status)) report.archivedCards.push(`${task.slug} (${cardId})`);
       continue;
     }
 

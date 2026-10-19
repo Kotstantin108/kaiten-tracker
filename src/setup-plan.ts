@@ -283,14 +283,24 @@ const same = (a: string, b: string) => a.trim().toLowerCase() === b.trim().toLow
 const alive = <T extends { archived?: boolean; condition?: string }>(x: T) => x.archived !== true && (x.condition ?? 'active') === 'active';
 
 /**
- * Пространство разработки: по имени, а если его ещё не переименовали — по
- * доске проекта из прошлого `setup`.
+ * Пространство разработки: сначала по доске проекта из прошлого `setup`, потом
+ * по имени — только в своей папке или на верхнем уровне. Имя одно на разные
+ * проекты («Разработка» в каждой папке): по имени во всём аккаунте `setup`
+ * нашёл бы пространство чужого проекта и перенёс бы его к себе.
  */
 export function findSpace(current: CurrentStructure, desired: DesiredStructure): Space | undefined {
   const spaces = current.spaces.filter(alive);
+  const byBoard = desired.knownBoardId === undefined ? undefined : spaces.find((s) => (s.boards ?? []).some((b) => b.id === desired.knownBoardId));
+  if (byBoard) return byBoard;
+  const named = spaces.filter((s) => same(s.title, desired.space));
+  // Без папки — верхний уровень; вложенное — только если оно с таким именем одно
+  // (родитель может быть токену не виден).
+  if (!desired.folder) return named.find((s) => !s.parent_entity_uid) ?? (named.length === 1 ? named[0] : undefined);
+  const folders = new Set(spaces.filter((s) => !s.parent_entity_uid && same(s.title, desired.folder ?? '')).map((s) => s.uid));
   return (
-    spaces.find((s) => same(s.title, desired.space)) ??
-    (desired.knownBoardId === undefined ? undefined : spaces.find((s) => (s.boards ?? []).some((b) => b.id === desired.knownBoardId)))
+    named.find((s) => s.parent_entity_uid && folders.has(s.parent_entity_uid)) ??
+    // Ещё не перенесено в папку: наверху, и это не сама папка.
+    named.find((s) => !s.parent_entity_uid && !same(s.title, desired.folder ?? ''))
   );
 }
 

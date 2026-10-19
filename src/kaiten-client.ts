@@ -164,6 +164,13 @@ export const SpaceUserSchema = z
   .passthrough();
 export type SpaceUser = z.infer<typeof SpaceUserSchema>;
 
+/** Группа компании (`GET /company/groups`): участники и доступы — отдельными запросами по `uid`. */
+export const GroupSchema = z.object({ id: z.number(), uid: z.string(), name: z.string().nullable().optional() }).passthrough();
+export type Group = z.infer<typeof GroupSchema>;
+
+export const GroupEntitySchema = z.object({ uid: z.string(), entity_type: z.string().optional() }).passthrough();
+export type GroupEntity = z.infer<typeof GroupEntitySchema>;
+
 export const BoardSchema = z
   .object({
     id: z.number(),
@@ -548,6 +555,23 @@ export class KaitenClient {
 
   async listSpaceUsers(spaceId: number): Promise<SpaceUser[]> {
     return this.listAll(`/spaces/${spaceId}/users`, SpaceUserSchema);
+  }
+
+  /**
+   * Группы компании (живьём 19.10: `GET /company/groups`). Доступ к пространству
+   * может быть только через группу — тогда в `/spaces/{id}/users` человека нет.
+   */
+  async listGroups(): Promise<Group[]> {
+    return this.listAll('/company/groups', GroupSchema);
+  }
+
+  /** Узлы дерева, к которым у группы есть доступ: `uid`, `entity_type` (space…). */
+  async listGroupEntities(groupUid: string): Promise<GroupEntity[]> {
+    return this.request('GET', `/company/groups/${encodeURIComponent(groupUid)}/entities`, { schema: z.array(GroupEntitySchema) });
+  }
+
+  async listGroupUsers(groupUid: string): Promise<SpaceUser[]> {
+    return this.request('GET', `/company/groups/${encodeURIComponent(groupUid)}/users`, { schema: z.array(SpaceUserSchema) });
   }
 
   /** Владелец токена (живьём: `GET /users/current` отдаёт id, имя, почту). */
