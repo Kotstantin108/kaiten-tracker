@@ -5,7 +5,8 @@ import { describe, expect, it } from 'vitest';
 
 import { contentHash, parseTaskDocument, serializeTaskDocument } from '../core/document.js';
 import { FrontmatterSchema, type Frontmatter } from '../core/schema.js';
-import { appendLog, applyOp, attachmentNameProblem, hasWorkNote, logStamp, matchItem, newTaskText, slugify, uniqueSlug, type FileChange, type Op, type TaskTexts } from '../core/task-ops.js';
+import { localDate } from '../core/kaiten-sync-plan.js';
+import { appendLog, applyOp, attachmentNameProblem, hasWorkNote, logStamp, matchItem, newTaskText, slugify, taskDate, uniqueSlug, type FileChange, type Op, type TaskTexts } from '../core/task-ops.js';
 
 const ID = '01K5ZQ3R8F2K9M4N7P0T5V8W3A';
 const CTX = { date: '2026-09-28', stamp: '2026-09-28 10:15:00 +03:00' };
@@ -98,6 +99,12 @@ describe('журнал', () => {
     expect(logStamp(at)).toBe('2026-10-20 00:53:13 +03:00');
     expect(logStamp(at, 'America/St_Johns')).toBe('2026-10-19 19:23:13 -02:30');
     expect(logStamp(at, 'UTC')).toBe('2026-10-19 21:53:13 +00:00');
+  });
+
+  it('даты задачи — по Москве: закрытие в 00:30 по Москве 1-го — уже новый месяц; срок без времени — как есть', () => {
+    expect(taskDate(new Date('2026-09-30T21:30:00Z'))).toBe('2026-10-01');
+    expect(localDate('2026-09-30T21:30:00Z').slice(0, 7)).toBe('2026-10');
+    expect(localDate('2026-10-15')).toBe('2026-10-15');
   });
 });
 

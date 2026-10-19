@@ -238,6 +238,14 @@ export function writesLog(op: Op): boolean {
 /** Журнал у всей команды — в одном поясе, где бы ни стояла машина (владелец 19.10.2026). */
 export const LOG_TIME_ZONE = 'Europe/Moscow';
 
+/**
+ * Дата задачи по Москве — `created`, `updated`, `revised`, месяц архива: у
+ * всей команды один день, как и в журнале (владелец 19.10.2026).
+ */
+export function taskDate(at: Date, timeZone = LOG_TIME_ZONE): string {
+  return logStamp(at, timeZone).slice(0, 10);
+}
+
 /** Время для журнала задачи — `2026-10-19 15:53:13 +03:00`. */
 export function logStamp(at: Date, timeZone = LOG_TIME_ZONE): string {
   const fmt = new Intl.DateTimeFormat('en-CA', {

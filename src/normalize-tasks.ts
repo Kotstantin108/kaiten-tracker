@@ -35,6 +35,7 @@ import { parseTaskDocument, serializeTaskDocument } from './core/document.js';
 import { lintTask } from './core/lint.js';
 import { FrontmatterSchema, type Frontmatter, type TaskType } from './core/schema.js';
 import { newBodyProblems, newBodyTemplate, NO_CRITERIA_PREFIX, SKELETONS } from './core/skeleton.js';
+import { taskDate } from './core/task-ops.js';
 
 interface Args {
   tasks: string;
@@ -299,7 +300,7 @@ async function main(): Promise<void> {
   });
   writeFileSync(join(args.out, 'REPORT.md'), report(outcomes, args, total), 'utf8');
   if (args.write) {
-    const today = new Date().toISOString().slice(0, 10);
+    const today = taskDate(new Date());
     for (const o of outcomes.filter((x) => x.ok)) {
       const c = list.find((x) => x.slug === o.slug);
       if (!c) continue;

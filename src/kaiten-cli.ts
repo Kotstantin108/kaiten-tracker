@@ -14,7 +14,7 @@ import { z } from 'zod';
 
 import { juniorFields, loadTasksRepoConfig, projectFromTasksRepo, storeNameOf, TASKS_REPO_CONFIG, type LoadedProject, type People } from './config.js';
 import { CLOSED_STATUSES, type Priority, type TaskStatus } from './core/schema.js';
-import { JOURNAL_FILE } from './core/task-ops.js';
+import { JOURNAL_FILE, taskDate } from './core/task-ops.js';
 import { buildIndex, belongsToProject, resolveTask, type TaskIndex, type TaskRecord } from './core/tasks-index.js';
 import { localCopyDir, loadSettings, PROJECT_FILE, readProjectFile, type KaitenSettings } from './kaiten-context.js';
 import { formatProblems } from './kaiten-format.js';
@@ -230,10 +230,9 @@ export function currentPerson(people: People): string {
   throw new UsageError('Не знаю, кто вы: укажите себя (person) в настройках kaiten.');
 }
 
-/** Сегодня по местному времени, `YYYY-MM-DD`. */
+/** Сегодня по Москве, `YYYY-MM-DD`, — на любой машине. */
 export function today(now = new Date()): string {
-  const pad = (n: number): string => String(n).padStart(2, '0');
-  return `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
+  return taskDate(now);
 }
 
 // ── отправка и сообщения о ней ───────────────────────────────────────────

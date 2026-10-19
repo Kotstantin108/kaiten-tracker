@@ -56,7 +56,7 @@ import { createHash } from 'node:crypto';
 import { AGENT_PREFIX, extractChecklists, type Checklist, type ChecklistItem } from '../checklists.js';
 import type { ConfigMapping, JuniorFields } from '../config.js';
 import { juniorMissingText, juniorReadiness } from './junior.js';
-import { JOURNAL_FILE, type MirrorItem } from './task-ops.js';
+import { JOURNAL_FILE, taskDate, type MirrorItem } from './task-ops.js';
 import { CLOSED_STATUSES, PRIORITIES, STATUSES, TASK_TYPES, type Priority, type TaskStatus, type TaskType } from './schema.js';
 import { contentHash } from './document.js';
 import { epicOf, type TaskRecord } from './tasks-index.js';
@@ -549,8 +549,9 @@ function reverse<T extends string>(values: Partial<Record<T, number>> | Record<s
 }
 
 /**
- * Дата Kaiten в местном времени: `column_changed_at` приходит в UTC (живьём
- * 29.09), и закрытие в ночь на 1-е иначе ушло бы в прошлый месяц. Строка
+ * Дата Kaiten по Москве (`taskDate`), а не по UTC и не по часам машины:
+ * `column_changed_at` приходит в UTC (живьём 29.09), и закрытие в ночь на 1-е
+ * иначе ушло бы в прошлый месяц, а у машин в разных поясах — в разные. Строка
  * без времени (`YYYY-MM-DD`) — как есть: так приходит срок без времени
  * (`toCardView` отрезает полночь UTC, живьём 29.09).
  */
@@ -558,8 +559,7 @@ export function localDate(value: string): string {
   if (/^\d{4}-\d{2}-\d{2}$/.test(value)) return value;
   const d = new Date(value);
   if (Number.isNaN(d.getTime())) return value.slice(0, 10);
-  const pad = (n: number): string => String(n).padStart(2, '0');
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+  return taskDate(d);
 }
 
 function firstId(value: unknown): number | null {

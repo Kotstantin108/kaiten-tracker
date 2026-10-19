@@ -57,9 +57,11 @@ function fail(message: string, code = 2): never {
   process.exit(code);
 }
 
+/** Месяц `n` месяцев назад — как месяц архива, по Москве. */
 function monthsAgo(n: number, now = new Date()): string {
-  const d = new Date(now.getFullYear(), now.getMonth() - n, 1);
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+  const [year, month] = today(now).split('-').map(Number);
+  const d = new Date(Date.UTC(year, month - 1 - n, 1));
+  return d.toISOString().slice(0, 7);
 }
 
 async function main(): Promise<void> {
