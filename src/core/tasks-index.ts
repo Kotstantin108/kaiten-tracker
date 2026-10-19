@@ -282,7 +282,8 @@ function sourceLines(task: TaskRecord, attachments: ReadonlyArray<{ name: string
   const log: SourceLine[] = [];
   let entry = 'журнал';
   for (const line of (task.log ?? '').split('\n')) {
-    const date = /^## \[(\d{4}-\d{2}-\d{2})\]/.exec(line);
+    // `## [2026-09-28]` и `## [2026-10-19 21:43:26 +03:00 · alice]` — подпись по дате.
+    const date = /^## \[(\d{4}-\d{2}-\d{2})[ \]]/.exec(line);
     if (date) entry = `журнал ${date[1]}`;
     log.push({ where: entry, text: line });
   }

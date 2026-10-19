@@ -96,6 +96,8 @@ export interface OpContext {
   date: string;
   /** Время операции для журнала задачи — `logStamp` от момента записи, не «сейчас». */
   stamp: string;
+  /** Кто записал — человек из реестра проекта; у операций до 19.10.2026 его нет. */
+  by?: string;
 }
 
 /** Файлы задач в памяти: путь → текст (задачи и журналы под active/ и archive/). */
@@ -216,14 +218,21 @@ export function hasWorkNote(log: string | null): boolean {
 }
 
 /**
- * Запись журнала `## [YYYY-MM-DD HH:MM:SS +03:00] заголовок` + текст. Первая
- * строка текста — заголовок, остальное — тело.
+ * Запись журнала `## [YYYY-MM-DD HH:MM:SS +03:00 · alice] заголовок` + текст.
+ * Первая строка текста — заголовок, остальное — тело. Автор — в скобках со
+ * временем: заголовок разбирается как раньше.
  */
-export function appendLog(log: string | null, stamp: string, text: string): string {
+export function appendLog(log: string | null, ctx: Pick<OpContext, 'stamp' | 'by'>, text: string): string {
   const [head, ...rest] = text.trim().split('\n');
-  const entry = [`## [${stamp}] ${head.trim()}`, ...rest].join('\n').trimEnd();
+  const when = ctx.by ? `${ctx.stamp} · ${ctx.by}` : ctx.stamp;
+  const entry = [`## [${when}] ${head.trim()}`, ...rest].join('\n').trimEnd();
   const before = (log ?? '').trimEnd();
   return `${before ? `${before}\n\n` : ''}${entry}\n`;
+}
+
+/** Операции, которые пишут в журнал задачи, — им нужен автор. */
+export function writesLog(op: Op): boolean {
+  return op.kind === 'log' || op.kind === 'cancel' || op.kind === 'move' || op.kind === 'block';
 }
 
 /** Журнал у всей команды — в одном поясе, где бы ни стояла машина (владелец 19.10.2026). */
@@ -467,7 +476,7 @@ export function applyOp(op: Op, texts: TaskTexts, ctx: OpContext): OpResult {
     }
     case 'log': {
       if (!op.text.trim()) return { error: 'пустая запись журнала' };
-      return { changes: [{ path: logPath(task.path), text: appendLog(task.log, ctx.stamp, op.text) }], summary: `запись в журнал ${ref}`, warnings: [] };
+      return { changes: [{ path: logPath(task.path), text: appendLog(task.log, ctx, op.text) }], summary: `запись в журнал ${ref}`, warnings: [] };
     }
     case 'cancel': {
       if (!CANCELLABLE.includes(task.fm.status)) {
@@ -480,7 +489,7 @@ export function applyOp(op: Op, texts: TaskTexts, ctx: OpContext): OpResult {
       // Файл переезжает один раз за жизнь задачи (Q42) — вместе с журналом.
       const changes: FileChange[] = [{ path: task.path, text: null }];
       if (task.log !== null) changes.push({ path: logPath(task.path), text: null });
-      changes.push({ path: archived, text: out.text }, { path: logPath(archived), text: appendLog(task.log, ctx.stamp, `отменена: ${op.reason.trim()}`) });
+      changes.push({ path: archived, text: out.text }, { path: logPath(archived), text: appendLog(task.log, ctx, `отменена: ${op.reason.trim()}`) });
       return { changes, summary: `задача ${ref} отменена`, warnings: [] };
     }
     case 'move': {
@@ -501,7 +510,7 @@ export function applyOp(op: Op, texts: TaskTexts, ctx: OpContext): OpResult {
         changes.push({ path: task.path, text: null });
         if (task.log !== null) changes.push({ path: logPath(task.path), text: null });
       }
-      changes.push({ path: target, text: out.text }, { path: logPath(target), text: appendLog(task.log, ctx.stamp, entry) });
+      changes.push({ path: target, text: out.text }, { path: logPath(target), text: appendLog(task.log, ctx, entry) });
       return { changes, summary: `задача ${ref} ${MOVE_WORDS[op.status]}`, warnings: [] };
     }
     case 'block': {
@@ -512,7 +521,7 @@ export function applyOp(op: Op, texts: TaskTexts, ctx: OpContext): OpResult {
       return {
         changes: [
           { path: task.path, text: out.text },
-          { path: logPath(task.path), text: appendLog(task.log, ctx.stamp, `заблокирована: ${op.reason.trim()}`) },
+          { path: logPath(task.path), text: appendLog(task.log, ctx, `заблокирована: ${op.reason.trim()}`) },
         ],
         summary: `задача ${ref} заблокирована`,
         warnings: [],

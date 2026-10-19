@@ -142,6 +142,20 @@ describe('команда kaiten берёт проект из хранилища'
     expect(await refusal('spike')).not.toContain('## Изменения в БД');
   });
 
+  it('запись журнала без автора — отказ до задачи и карточки', async () => {
+    const { WRITE_COMMANDS } = await import('../kaiten-write.js');
+    const { START_COMMANDS } = await import('../kaiten-start.js');
+    const runs: Array<() => Promise<void>> = [
+      () => WRITE_COMMANDS.log(['PRJ-999', 'сделал']),
+      () => WRITE_COMMANDS.block(['PRJ-999', '--reason', 'ждём доступ']),
+      () => WRITE_COMMANDS.cancel(['PRJ-999', '--reason', 'дубль']),
+      () => WRITE_COMMANDS.review(['PRJ-999']),
+      () => WRITE_COMMANDS.done(['PRJ-999']),
+      () => START_COMMANDS.start(['PRJ-999']),
+    ];
+    for (const run of runs) await expect(withEmail('nobody@example.com', run)).rejects.toThrow(/Не знаю, кто вы/);
+  });
+
   it('продукта нет в проекте — отказ с подсказкой', async () => {
     writeFileSync(join(tmp, 'app', '.kaiten'), 'tasks: https://example.com/acme/acme-tasks.git\nrepo: other\n');
     const { resolveContext } = await import('../kaiten-cli.js');
@@ -151,16 +165,28 @@ describe('команда kaiten берёт проект из хранилища'
 
 /** Автор по почте git: подменяем почту окружением git. */
 function peopleKey(currentPerson: (p: never) => string, people: unknown): string {
+  return withEmail('alice@example.com', () => currentPerson(people as never));
+}
+
+function withEmail<T>(email: string, fn: () => T): T {
   const env = { ...process.env };
   process.env.GIT_CONFIG_COUNT = '1';
   process.env.GIT_CONFIG_KEY_0 = 'user.email';
-  process.env.GIT_CONFIG_VALUE_0 = 'alice@example.com';
-  try {
-    return currentPerson(people as never);
-  } finally {
+  process.env.GIT_CONFIG_VALUE_0 = email;
+  const restore = (): void => {
     for (const k of ['GIT_CONFIG_COUNT', 'GIT_CONFIG_KEY_0', 'GIT_CONFIG_VALUE_0']) {
       if (env[k] === undefined) delete process.env[k];
       else process.env[k] = env[k];
     }
+  };
+  try {
+    const out = fn();
+    // Промис — вернуть почту, когда он завершится: проверка «кто вы» идёт внутри.
+    if (out instanceof Promise) return out.finally(restore) as T;
+    restore();
+    return out;
+  } catch (error) {
+    restore();
+    throw error;
   }
 }

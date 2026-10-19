@@ -101,11 +101,12 @@ describe('запись и отправка', { timeout: GIT_TIMEOUT }, () => {
 
   it('чужое изменение не теряется: своё применяется поверх свежего', () => {
     // B записал, ещё не зная об отметке A.
-    recordOp(b, { kind: 'log', id: ID, text: 'воспроизвёл' }, 'журнал', DATE);
+    recordOp(b, { kind: 'log', id: ID, text: 'воспроизвёл' }, 'журнал', DATE, { by: 'bob' });
     expect(taskText(b)).toContain('- [ ] Тест на таймаут');
     expect(syncStore(b)).toMatchObject({ sent: 1, changed: true });
     expect(remoteText()).toContain('- [x] Тест на таймаут');
-    expect(remoteText('active/webhook.log.md')).toContain('воспроизвёл');
+    // Пересборка поверх чужого не теряет автора записи.
+    expect(remoteText('active/webhook.log.md')).toMatch(/^## \[[^\]]* · bob\] воспроизвёл$/m);
     expect(taskText(b)).toContain('- [x] Тест на таймаут');
   });
 

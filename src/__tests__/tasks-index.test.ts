@@ -244,6 +244,10 @@ describe('поиск: словоформы, варианты, выражения
       ['Шаги', '- [ ] Воспроизвести'],
       ['журнал 2026-09-20', '## [2026-09-20] воспроизвёл на staging, причина в ретраях'],
     ]);
+    // Запись со временем и автором подписана той же датой.
+    const timed = buildIndex(FILES, new Map([['active/webhook-timeout.md', '## [2026-10-19 21:43:26 +03:00 · alice] ретраи с паузой\nпроверил тестом\n']]));
+    const [later] = searchTasks(timed.tasks, 'проверил', { lines: true });
+    expect(later.lines?.filter((l) => l.hit).map((l) => l.where)).toEqual(['журнал 2026-10-19']);
     const [wide] = searchTasks(index.tasks, 'ретраи', { lines: true, context: 1, exact: true });
     expect(wide.lines?.map((l) => (l.hit ? '+' : ' ') + l.text)).toEqual([' - [x] Тест', '+- [ ] Ретраи']);
     const text = formatSearch(index.tasks, [hit], false).join('\n');

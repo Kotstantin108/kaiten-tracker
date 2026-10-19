@@ -94,7 +94,7 @@ function personCheck(settings: KaitenSettings | null, email: string, people: Peo
   const person = settings?.person;
   if (person) return known.has(person) ? { level: 'ok', what: `вы в задачах — ${person}` } : { level: 'warn', what: `вы в задачах — ${person}, такого человека нет в реестре проекта`, fix: 'Сверьте person в настройках с реестром людей у владельца проекта.' };
   if (byEmail[email.toLowerCase()]) return { level: 'ok', what: `вы в задачах — ${byEmail[email.toLowerCase()]} (по почте git)` };
-  return { level: 'fail', what: 'не понять, кто вы: новую задачу не завести', fix: `Укажите person в ${SETTINGS_PATH} или попросите владельца проекта добавить вашу почту в реестр людей.` };
+  return { level: 'fail', what: 'не понять, кто вы: новую задачу не завести и в журнал задачи не записать', fix: `Укажите person в ${SETTINGS_PATH} или попросите владельца проекта добавить вашу почту в реестр людей.` };
 }
 
 function settingsChecks(email: string): { checks: Check[]; settings: KaitenSettings | null } {

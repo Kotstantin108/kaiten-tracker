@@ -77,10 +77,20 @@ describe('пункты', () => {
 
 describe('журнал', () => {
   it('запись со временем, первая строка — заголовок; старые записи с одной датой остаются', () => {
-    expect(appendLog(null, CTX.stamp, 'Воспроизвёл на staging\nпричина в ретраях')).toBe('## [2026-09-28 10:15:00 +03:00] Воспроизвёл на staging\nпричина в ретраях\n');
-    expect(appendLog('## [2026-09-01] создана\n', CTX.stamp, 'ещё')).toBe('## [2026-09-01] создана\n\n## [2026-09-28 10:15:00 +03:00] ещё\n');
+    expect(appendLog(null, CTX, 'Воспроизвёл на staging\nпричина в ретраях')).toBe('## [2026-09-28 10:15:00 +03:00] Воспроизвёл на staging\nпричина в ретраях\n');
+    expect(appendLog('## [2026-09-01] создана\n', CTX, 'ещё')).toBe('## [2026-09-01] создана\n\n## [2026-09-28 10:15:00 +03:00] ещё\n');
     const [change] = ok(applyOp({ kind: 'log', id: ID, text: 'заметка' }, texts(), CTX));
     expect(change.path).toBe('active/webhook-timeout.log.md');
+  });
+
+  it('автор — в скобках со временем; запись о работе узнаётся, как и без автора', () => {
+    const by = { ...CTX, by: 'alice' };
+    const [log] = ok(applyOp({ kind: 'log', id: ID, text: 'Ретраи с паузой, проверил тестом' }, texts(), by));
+    expect(log.text).toBe('## [2026-09-28 10:15:00 +03:00 · alice] Ретраи с паузой, проверил тестом\n');
+    const moved = ok(applyOp({ kind: 'move', id: ID, status: 'in-progress' }, texts(), by)).find((c) => c.path.endsWith('.log.md'));
+    expect(moved?.text).toBe('## [2026-09-28 10:15:00 +03:00 · alice] в работе\n');
+    expect(hasWorkNote(moved?.text ?? null)).toBe(false);
+    expect(hasWorkNote(appendLog(moved?.text ?? null, by, 'сделал ретраи'))).toBe(true);
   });
 
   it('время — московское на любой машине, с поясом; дата — по Москве, а не UTC', () => {

@@ -41,6 +41,8 @@ export interface JournalEntry {
   /** Дата операции `YYYY-MM-DD` — её получают `updated` и журнал задачи при любом пересчёте. */
   date: string;
   op: Op;
+  /** Кто записал — для журнала задачи; у записей до 19.10.2026 нет. */
+  by?: string;
   /** Что это было — словами задачи, для сообщений: «отметка пунктов в PRJ-123». */
   what: string;
 }
@@ -252,7 +254,7 @@ export function rebuild(store: string, base: string | null, entries: readonly Jo
   try {
     git(store, base ? ['read-tree', base] : ['read-tree', '--empty'], undefined, env);
     for (const entry of entries) {
-      const result = applyOp(entry.op, texts as TaskTexts, { date: entry.date, stamp: logStamp(new Date(entry.at)) });
+      const result = applyOp(entry.op, texts as TaskTexts, { date: entry.date, stamp: logStamp(new Date(entry.at)), by: entry.by });
       if ('error' in result) {
         out.failed.push({ entry, reason: result.error });
         continue;
@@ -320,13 +322,14 @@ function setRef(store: string, ref: string, sha: string | null, expected: string
 
 export type Recorded = { summary: string; warnings: string[]; changed: boolean } | { error: string };
 
-/** Применить операцию к локальному состоянию и записать в журнал. Без сети. */
-export function recordOp(store: string, op: Op, what: string, date: string, now = new Date()): Recorded {
+/** Применить операцию к локальному состоянию и записать в журнал. Без сети. `by` — автор записи журнала задачи. */
+export function recordOp(store: string, op: Op, what: string, date: string, options: { by?: string; now?: Date } = {}): Recorded {
+  const now = options.now ?? new Date();
   return withLock(store, JOURNAL_LOCK, () => {
     const ref = `refs/heads/${storeBranch(store)}`;
     const head = revOrNull(store, ref);
     const journal = readJournal(store);
-    const entry: JournalEntry = { seq: journal.next, at: now.toISOString(), date, op, what };
+    const entry: JournalEntry = { seq: journal.next, at: now.toISOString(), date, op, what, ...(options.by ? { by: options.by } : {}) };
     const result = rebuild(store, head, [entry]);
     if (result.failed.length > 0) return { error: result.failed[0].reason };
     const applied = result.applied[0].result;

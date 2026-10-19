@@ -21,7 +21,7 @@ import { SLUG_RE } from './core/lint.js';
 import { JUNIOR_TYPES, juniorMissingText, juniorReadiness, withJuniorTemplate } from './core/junior.js';
 import { criteriaText, newBodyProblems, newBodyTemplate, SKELETONS, withCriteriaWaiver } from './core/skeleton.js';
 import { TASK_TYPES, type TaskType } from './core/schema.js';
-import { ATTACHMENT_MAX_BYTES, attachmentNameProblem, BLOCKABLE, CANCELLABLE, hasWorkNote, matchItem, moveProblem, newTaskText, slugify, uniqueSlug, type Op } from './core/task-ops.js';
+import { ATTACHMENT_MAX_BYTES, attachmentNameProblem, BLOCKABLE, CANCELLABLE, hasWorkNote, matchItem, moveProblem, newTaskText, slugify, uniqueSlug, writesLog, type Op } from './core/task-ops.js';
 import { refOf, type TaskRecord } from './core/tasks-index.js';
 import { ulid } from './core/ulid.js';
 import {
@@ -210,9 +210,10 @@ function readStdin(): string {
   return readFileSync(0, 'utf8');
 }
 
-/** Записать операцию и сказать, что получилось. */
+/** Записать операцию и сказать, что получилось. Запись журнала без автора — отказ до записи. */
 export async function commit(ctx: Context, op: Op, what: string): Promise<void> {
-  const result = recordOp(ctx.store, op, what, today());
+  const by = writesLog(op) ? currentPerson(ctx.loaded.people) : undefined;
+  const result = recordOp(ctx.store, op, what, today(), { by });
   if ('error' in result) throw new UsageError(`Не записано: ${result.error}`, 1);
   const first = result.summary.charAt(0).toUpperCase() + result.summary.slice(1);
   console.log(result.changed ? `${first}.` : `${first} — менять нечего.`);
@@ -415,6 +416,7 @@ async function log(args: string[]): Promise<void> {
   const text = values.stdin ? readStdin() : positionals[1];
   if (!text?.trim()) throw new UsageError('Укажите текст: kaiten log PRJ-123 "что сделано"');
   const ctx = begin();
+  currentPerson(ctx.loaded.people);
   const task = findTask(loadTasks(ctx).index, ref);
   await commit(ctx, { kind: 'log', id: task.fm.id, text }, `запись в журнал ${refOf(task)}`);
 }
@@ -425,6 +427,8 @@ async function withReason(command: 'block' | 'cancel', args: string[]): Promise<
   const reason = stringFlag(values, 'reason')?.trim();
   if (!reason) throw new UsageError(`--reason: ${command === 'block' ? 'что блокирует задачу' : 'почему задача не нужна'}.`);
   const ctx = begin();
+  // Кто вы — до карточки: запись журнала без автора не делается.
+  currentPerson(ctx.loaded.people);
   const task = findTask(loadTasks(ctx).index, ref);
   const what = command === 'block' ? `блокировка ${refOf(task)}` : `отмена ${refOf(task)}`;
   // Проверить у себя до карточки: карточку не двигаем, если задачу всё равно не записать.
@@ -442,6 +446,7 @@ async function move(command: 'review' | 'done', args: string[]): Promise<void> {
   const { values, positionals } = parse(command, args, { note: { type: 'string' }, ...(command === 'review' ? { unchecked: { type: 'string' as const } } : {}) }, 1);
   const ref = taskArg(positionals, command);
   const ctx = begin();
+  currentPerson(ctx.loaded.people);
   const task = findTask(loadTasks(ctx).index, ref);
   const status = command === 'review' ? 'review' : 'done';
   const problem = moveProblem(task, status);

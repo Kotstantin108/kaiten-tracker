@@ -18,7 +18,7 @@ import { spawnSync } from 'node:child_process';
 import { branchName, startProblem } from './core/start.js';
 import { ASSIGNABLE, assignedPriority } from './core/task-ops.js';
 import { refOf, type TaskRecord } from './core/tasks-index.js';
-import { cardNotMovedNote, findTask, loadTasks, moveCardFirst, parse, printNotices, resolveContext, TASK_REF_HELP, UsageError } from './kaiten-cli.js';
+import { cardNotMovedNote, currentPerson, findTask, loadTasks, moveCardFirst, parse, printNotices, resolveContext, TASK_REF_HELP, UsageError } from './kaiten-cli.js';
 import { commit } from './kaiten-write.js';
 
 export const START_HELP = `kaiten start <задача> — взять задачу в работу.
@@ -86,6 +86,8 @@ async function start(args: string[]): Promise<void> {
   if (positionals.length === 0) throw new UsageError('Укажите задачу: kaiten start PRJ-123');
   const ctx = resolveContext();
   printNotices(ctx);
+  // Кто вы — до ветки и карточки: запись журнала без автора не делается.
+  currentPerson(ctx.loaded.people);
   const task = findTask(loadTasks(ctx).index, positionals[0]);
   const problem = startProblem(task, ctx.currentRepo, assigned);
   if (problem) throw new UsageError(`Задачу ${refOf(task)} не взять в работу: ${problem}.`, 1);
