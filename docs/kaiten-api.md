@@ -36,6 +36,11 @@
 - Удаление: пункт — `DELETE /cards/{id}/checklists/{cl}/items/{item}`,
   чек-лист с пунктами — `DELETE /cards/{id}/checklists/{cl}`; оба отвечают
   `{id}` (16.10.2026).
+- Архив: `PATCH /cards/{id} {condition: 2}` → `archived: true`, `condition: 2`;
+  назад — `{condition: 1}`. Колонка и дорожка не меняются, архивировать можно и
+  из открытой колонки (19.10.2026). Архивная карточка остаётся в
+  `GET /cards?board_id=` (с `archived: true`); `archived=true` отдаёт только
+  архивные. `PATCH` архивной карточки отвечает 200.
 - Комментарий: `POST /cards/{id}/comments {text}` — `type` 1, текст как
   отправлен.
 - Всплеск записей обрывается сетевой ошибкой ниже заявленных лимитов —
