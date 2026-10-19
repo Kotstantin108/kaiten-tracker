@@ -720,3 +720,67 @@ describe('дорожки: продукт и «Архив»', () => {
     });
   });
 });
+
+describe('поля «Можно младшему»', () => {
+  const JUNIOR = { state: 'on' as const, maxAgeDays: 90, property: { id: 7, yes: 71, no: 72 }, missingPropertyId: 8 };
+  const NOW = Date.parse('2026-10-01T12:00:00Z');
+  const READY = '## Продуктовые решения\n\nНет.\n\n## Изменения в БД\n\nНет — только чтение.\n\n## Сценарии n8n\n\nНет.\n\n## Критерии готовности\n\n- [ ] Ещё\n';
+  const seeded = { board_id: BOARD, title: 'Сделать задачу', properties: { id_4: 'Коротко для фаундера.', id_2: [21] } };
+
+  it('готовая задача — «Да» без причин; второй прогон — ни одной записи', async () => {
+    const [path, text] = task('active/ready.md', { tracker: '800', updated: '2026-09-20' }, READY);
+    const w = world([[path, text]]);
+    seedCard(w.fake, { id: 800, ...seeded });
+    expect((await w.sync({ junior: JUNIOR, now: NOW })).errors).toEqual([]);
+    const card = w.fake.cards.get(800);
+    expect(card?.properties.id_7).toEqual([71]);
+    expect(card?.properties.id_8 ?? null).toBeNull();
+    const writes = w.fake.writes.length;
+    expect((await w.sync({ junior: JUNIOR, now: NOW })).plan.actions).toEqual([]);
+    expect(w.fake.writes.length).toBe(writes);
+  });
+
+  it('неготовая — «Нет» с причинами; задачу освежили — «Да», причины стираются', async () => {
+    const [path, text] = task('active/old.md', { tracker: '801', updated: '2026-06-01' }, READY);
+    const w = world([[path, text]]);
+    seedCard(w.fake, { id: 801, ...seeded });
+    await w.sync({ junior: JUNIOR, now: NOW });
+    const card = w.fake.cards.get(801);
+    expect(card?.properties).toMatchObject({ id_7: [72], id_8: 'задача старше 90 дней' });
+
+    w.texts.set(path, (w.texts.get(path) ?? '').replace('updated: 2026-06-01', 'updated: 2026-09-30'));
+    await w.sync({ junior: JUNIOR, now: NOW });
+    expect(card?.properties).toMatchObject({ id_7: [71], id_8: null });
+  });
+
+  it('без разделов — причины по каждому; взяли в работу — оба поля пустые', async () => {
+    const [path, text] = task('active/bare.md', { tracker: '802', updated: '2026-09-20' });
+    const w = world([[path, text]]);
+    seedCard(w.fake, { id: 802, ...seeded });
+    await w.sync({ junior: JUNIOR, now: NOW });
+    const card = w.fake.cards.get(802);
+    expect(card?.properties).toMatchObject({ id_7: [72], id_8: 'продукт: нет раздела; БД: нет раздела; n8n: нет раздела' });
+
+    w.texts.set(path, (w.texts.get(path) ?? '').replace('status: backlog', 'status: in-progress'));
+    await w.sync({ junior: JUNIOR, now: NOW });
+    expect(card?.properties).toMatchObject({ id_7: null, id_8: null });
+  });
+
+  it('новая карточка получает признак; пустое поле не передаётся', async () => {
+    const [path, text] = task('active/new.md', { created_via: 'agent', updated: '2026-09-20' }, READY);
+    const w = world([[path, text]]);
+    const run = await w.sync({ junior: JUNIOR, now: NOW });
+    expect(run.errors).toEqual([]);
+    const card = [...w.fake.cards.values()].find((c) => c.title === 'Сделать задачу');
+    expect(card?.properties.id_7).toEqual([71]);
+    expect(card?.properties).not.toHaveProperty('id_8');
+  });
+
+  it('проект без полей признака — ничего не пишем', async () => {
+    const [path, text] = task('active/off.md', { tracker: '803', updated: '2026-09-20' }, READY);
+    const w = world([[path, text]]);
+    seedCard(w.fake, { id: 803, ...seeded });
+    await w.sync({ now: NOW });
+    expect(w.fake.cards.get(803)?.properties).not.toHaveProperty('id_7');
+  });
+});

@@ -54,7 +54,8 @@
 import { createHash } from 'node:crypto';
 
 import { AGENT_PREFIX, extractChecklists, type Checklist, type ChecklistItem } from '../checklists.js';
-import type { ConfigMapping } from '../config.js';
+import type { ConfigMapping, JuniorFields } from '../config.js';
+import { juniorMissingText, juniorReadiness } from './junior.js';
 import { JOURNAL_FILE, type MirrorItem } from './task-ops.js';
 import { CLOSED_STATUSES, PRIORITIES, STATUSES, TASK_TYPES, type Priority, type TaskStatus, type TaskType } from './schema.js';
 import { contentHash } from './document.js';
@@ -298,12 +299,24 @@ function selectValue(values: Record<string, number> | undefined, value: string |
   return id === undefined ? undefined : [id];
 }
 
-/** Поля, которыми владеет файл: «Суть» и «Репозиторий». */
-export function fileProperties(task: TaskRecord, mapping: ConfigMapping): Record<string, unknown> {
+/** Поля признака и сегодняшняя дата, от которой считается возраст задачи. */
+export type JuniorSync = JuniorFields & { today: string };
+
+/**
+ * Поля, которыми владеет файл: «Суть», «Репозиторий» и, если проект ведёт
+ * признак, «Можно младшему» и «Младшему не хватает». Признак не применим
+ * (эпик, задача взята или закрыта) — оба поля пустые: `null`.
+ */
+export function fileProperties(task: TaskRecord, mapping: ConfigMapping, junior?: JuniorSync): Record<string, unknown> {
   const props: Record<string, unknown> = {};
   if (mapping.summaryProperty) props[key(mapping.summaryProperty.id)] = task.fm.summary;
   const repo = selectValue(mapping.repoProperty?.values, task.fm.repo);
   if (mapping.repoProperty && repo) props[key(mapping.repoProperty.id)] = repo;
+  if (junior) {
+    const readiness = juniorReadiness(task.fm, task.body, junior);
+    props[key(junior.property.id)] = readiness === null ? null : [readiness.ok ? junior.property.yes : junior.property.no];
+    props[key(junior.missingPropertyId)] = readiness === null || readiness.ok ? null : juniorMissingText(readiness.missing);
+  }
   return props;
 }
 
@@ -319,8 +332,9 @@ export interface CreateFields {
 }
 
 /** Поля новой карточки: колонка, тип, приоритет и команда — только сейчас (решение 9). */
-export function createFields(task: TaskRecord, mapping: ConfigMapping, defaultTeam: string | undefined): CreateFields {
-  const props = fileProperties(task, mapping);
+export function createFields(task: TaskRecord, mapping: ConfigMapping, defaultTeam: string | undefined, junior?: JuniorSync): CreateFields {
+  // Пустое новой карточке не передаём: у неё и так ничего нет.
+  const props = Object.fromEntries(Object.entries(fileProperties(task, mapping, junior)).filter(([, v]) => v !== null));
   const priority = selectValue(mapping.priorityProperty?.values, task.fm.priority);
   if (mapping.priorityProperty && priority) props[key(mapping.priorityProperty.id)] = priority;
   const team = selectValue(mapping.teamProperty?.values, task.fm.team ?? defaultTeam);
@@ -522,6 +536,8 @@ export interface PlanInput {
   now?: number;
   /** Закрытые больше `ARCHIVE_AFTER_DAYS` дней — в архив Kaiten (`kaiten.archiveInKaiten`), дорожка «Архив» не используется. */
   archiveInKaiten?: boolean;
+  /** Поля «Можно младшему» (`kaiten.junior` и id из `setup`); нет — не пишем. */
+  junior?: JuniorFields;
 }
 
 function reverse<T extends string>(values: Partial<Record<T, number>> | Record<string, number> | undefined, allowed: readonly T[]): Map<number, T> {
@@ -613,6 +629,8 @@ export function planKaitenSync(input: PlanInput): SyncPlan {
   const names: Record<string, string> = {};
   const creates: SyncAction[] = [];
   const others: SyncAction[] = [];
+  // Возраст задачи — от сегодняшнего дня того же «сейчас», что и переезд в архив.
+  const junior: JuniorSync | undefined = input.junior ? { ...input.junior, today: localDate(new Date(input.now ?? Date.now()).toISOString()) } : undefined;
   const delivery = (task: TaskRecord): FilesDelivery | null => {
     if (!input.attachments) return null;
     const wanted = taskFiles(task, input.attachments.get(task.slug) ?? []);
@@ -640,7 +658,7 @@ export function planKaitenSync(input: PlanInput): SyncPlan {
       creates.push({
         kind: 'create',
         task,
-        fields: createFields(task, mapping, input.defaultTeam),
+        fields: createFields(task, mapping, input.defaultTeam, junior),
         content: renderContent(task, tasks, input.repoWebBase),
         contentHash: hash,
         parentRef: epic ? epic.fm.id : null,
@@ -679,7 +697,7 @@ export function planKaitenSync(input: PlanInput): SyncPlan {
 
     const patch: { title?: string; properties?: Record<string, unknown>; lane_id?: number } = {};
     if (!sameValue(card.title, task.fm.title)) patch.title = task.fm.title;
-    const wanted = fileProperties(task, mapping);
+    const wanted = fileProperties(task, mapping, junior);
     const diff = Object.fromEntries(Object.entries(wanted).filter(([k, v]) => !sameValue(card.properties[k], v)));
     if (Object.keys(diff).length > 0) patch.properties = diff;
     const repoKey = mapping.repoProperty ? key(mapping.repoProperty.id) : null;

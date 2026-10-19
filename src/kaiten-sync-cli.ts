@@ -35,6 +35,7 @@
  * Коды выхода: 0 — ок; 1 — были ошибки Kaiten; 2 — ошибка аргументов.
  */
 
+import { juniorFields } from './config.js';
 import { repoWebBase } from './core/kaiten-sync-plan.js';
 import { buildIndex, resolveTask } from './core/tasks-index.js';
 import { KaitenClient } from './kaiten-client.js';
@@ -103,6 +104,7 @@ async function main(): Promise<void> {
     tasks: index.tasks,
     mapping,
     archiveInKaiten: project.kaiten.archiveInKaiten,
+    junior: juniorFields(project),
     ignore: project.ignoreCards,
     repoWebBase: repoWebBase(project.tasksRepo?.url),
     defaultTeam: config.defaultTeam,

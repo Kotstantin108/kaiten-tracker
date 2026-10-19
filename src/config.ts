@@ -124,6 +124,15 @@ export type JuniorSetting =
   | { state: 'needs-setup'; maxAgeDays: number }
   | { state: 'on'; maxAgeDays: number; property: { id: number; yes: number; no: number }; missingPropertyId: number };
 
+/** Признак, который можно писать в карточки: поля заведены. */
+export type JuniorFields = Extract<JuniorSetting, { state: 'on' }>;
+
+/** Поля признака для синхронизации; `undefined` — не пишем (выключен или ждёт setup). */
+export function juniorFields(project: Pick<ProjectConfig, 'kaiten' | 'mapping'>): JuniorFields | undefined {
+  const setting = juniorSetting(project);
+  return setting.state === 'on' ? setting : undefined;
+}
+
 export function juniorSetting(project: Pick<ProjectConfig, 'kaiten' | 'mapping'>): JuniorSetting {
   const junior = project.kaiten.junior;
   if (!junior) return { state: 'off' };
