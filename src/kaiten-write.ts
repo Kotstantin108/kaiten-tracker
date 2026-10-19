@@ -18,7 +18,7 @@ import { basename, join, resolve } from 'node:path';
 import { juniorSetting } from './config.js';
 import { contentHash, serializeTaskDocument } from './core/document.js';
 import { SLUG_RE } from './core/lint.js';
-import { JUNIOR_TYPES, withJuniorTemplate } from './core/junior.js';
+import { JUNIOR_TYPES, juniorMissingText, juniorReadiness, withJuniorTemplate } from './core/junior.js';
 import { criteriaText, newBodyProblems, newBodyTemplate, SKELETONS, withCriteriaWaiver } from './core/skeleton.js';
 import { TASK_TYPES, type TaskType } from './core/schema.js';
 import { ATTACHMENT_MAX_BYTES, attachmentNameProblem, BLOCKABLE, CANCELLABLE, hasWorkNote, matchItem, moveProblem, newTaskText, slugify, uniqueSlug, type Op } from './core/task-ops.js';
@@ -262,7 +262,8 @@ async function newTask(args: string[]): Promise<void> {
 
   const ctx = begin();
   // Разделы продукта, БД и n8n — в шаблоне, только если проект ведёт признак «Можно младшему».
-  const junior = juniorSetting(ctx.loaded.project).state !== 'off' && JUNIOR_TYPES.includes(taskType);
+  const juniorState = juniorSetting(ctx.loaded.project);
+  const junior = juniorState.state !== 'off' && JUNIOR_TYPES.includes(taskType);
 
   // Всё, чего не хватает, — одним отказом и готовой командой с флагами самого вызова: агент исполняет отказы, а не подсказки.
   const problems: string[] = [];
@@ -336,6 +337,10 @@ async function newTask(args: string[]): Promise<void> {
   if (typeof text !== 'string') throw new UsageError(`Не записано: ${text.error}`, 1);
   await commit(ctx, { kind: 'new', path: `active/${slug}.md`, text }, `новая задача ${slug}`);
   console.log(`Открыть: kaiten show ${slug}`);
+  if (junior) {
+    const readiness = juniorReadiness({ type: taskType, status: 'inbox', updated: today() }, body, { today: today(), maxAgeDays: juniorState.maxAgeDays });
+    if (readiness) console.log(readiness.ok ? 'Младшему: да.' : `Младшему: нет — не хватает: ${juniorMissingText(readiness.missing)}.`);
+  }
 }
 
 async function check(args: string[]): Promise<void> {

@@ -23,7 +23,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { projectFromTasksRepo, storeNameOf, TASKS_REPO_CONFIG, type LoadedProject, type People } from './config.js';
+import { juniorSetting, projectFromTasksRepo, storeNameOf, TASKS_REPO_CONFIG, type LoadedProject, type People } from './config.js';
 import { rulesState, SKILL_PATH, skillState } from './core/repo-connect.js';
 import { belongsToProject, buildIndex } from './core/tasks-index.js';
 import { invocationDir, parse, peopleByEmail, SETTINGS_PATH, storeMessage } from './kaiten-cli.js';
@@ -178,6 +178,9 @@ function storeChecks(facts: NonNullable<RepoFacts['project']>, settings: KaitenS
   else checks.push({ level: 'fail', what: `в .kaiten продукт «${facts.repo}», в проекте ${project.title} такого нет (есть: ${repos.join(', ')})`, fix: OWNER });
   checks.push(personCheck(settings, email, loaded.people));
   if (settings?.sync.kaiten && !loaded.project.mapping) checks.push({ level: 'fail', what: `у проекта ${project.title} не настроена доска Kaiten`, fix: 'Вопрос к владельцу проекта.' });
+  if (juniorSetting(loaded.project).state === 'needs-setup') {
+    checks.push({ level: 'warn', what: `проект ${project.title} отмечает задачи для младших, а полей «Можно младшему» в Kaiten нет — карточки их не получают`, fix: 'Вопрос к владельцу проекта: поля заводит setup.' });
+  }
 
   const tree = readStoreTree(project.store, listEntries(project.store));
   const index = buildIndex(tree.files, tree.logs);

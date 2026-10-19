@@ -35,7 +35,7 @@
  * Коды выхода: 0 — ок; 1 — были ошибки Kaiten; 2 — ошибка аргументов.
  */
 
-import { juniorFields } from './config.js';
+import { juniorFields, juniorSetting } from './config.js';
 import { repoWebBase } from './core/kaiten-sync-plan.js';
 import { buildIndex, resolveTask } from './core/tasks-index.js';
 import { KaitenClient } from './kaiten-client.js';
@@ -126,6 +126,7 @@ async function main(): Promise<void> {
   const resendNote = input.resend ? ', описание, чек-листы и файлы — заново' : '';
   console.log(`Проект ${project.title}, задач ${index.tasks.length}${loadNote}${resendNote}${onlyRef ? `, только ${onlyRef}` : ''}`);
   if (!project.tasksRepo?.url) console.log('Адреса репозитория задач нет — ссылки в описаниях будут просто текстом.');
+  if (juniorSetting(project).state === 'needs-setup') console.log('Признак «Можно младшему» включён, а полей в Kaiten нет — они не пишутся: npm run setup.');
   for (const line of formatPlan(run)) console.log(line);
   if (!apply) {
     console.log('\nСухой прогон: в Kaiten ничего не записано (--apply — выполнить).');
