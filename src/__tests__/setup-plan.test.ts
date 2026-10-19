@@ -6,7 +6,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { kaitenTemplate } from '../core/skeleton.js';
-import { buildMapping, DEPARTMENTS, DESIRED, desiredForProject, findSpace, planSetup, withSelectValues, type CurrentStructure, type DesiredStructure } from '../setup-plan.js';
+import { buildMapping, DEPARTMENTS, DESIRED, desiredForProject, findSpace, JUNIOR_FIELDS, planSetup, withSelectValues, type CurrentStructure, type DesiredStructure } from '../setup-plan.js';
 
 /** Схема без «Сути» и шаблонов — для тестов полей-выборов; «Суть» проверяется отдельно. */
 const selectsOnly = (d: DesiredStructure): DesiredStructure => ({ ...d, summary: null, templates: false, suggested: [] });
@@ -273,5 +273,83 @@ describe('папка, дорожки и отделы', () => {
     const base = { space: 'Acme', board: 'Задачи', repoField: 'Репозиторий', repoLabels: [], teams: [] };
     expect(() => desiredForProject({ ...base, folder: 'Acme', departments: ['legal'] })).toThrow(/Нет шаблона отдела: legal/);
     expect(() => desiredForProject({ ...base, departments: ['hr'] })).toThrow(/kaiten.folder/);
+  });
+});
+
+describe('поля «Можно младшему»', () => {
+  const withJunior: DesiredStructure = { ...desired, junior: JUNIOR_FIELDS };
+
+  /** Всё заведено: оба поля с вариантами и в типах Story, Tech, Bug. */
+  function ready(): CurrentStructure {
+    const current = complete();
+    current.properties.push({ id: 500, uid: 'uid-junior', name: 'Можно младшему', type: 'select' }, { id: 501, uid: 'uid-missing', name: 'Младшему не хватает', type: 'string' });
+    current.selectValues[500] = [
+      { id: 5000, value: 'Да' },
+      { id: 5001, value: 'Нет' },
+    ];
+    current.cardTypes = current.cardTypes.map((t) =>
+      ['Story', 'Tech', 'Bug'].includes(t.name)
+        ? {
+            ...t,
+            card_properties: [
+              { regular_property: null, property_uid: 'uid-junior', sort_order: 5, required: false },
+              { regular_property: null, property_uid: 'uid-missing', sort_order: 6, required: false },
+            ],
+          }
+        : t,
+    );
+    return current;
+  }
+
+  it('без блока junior в конфиге — полей нет ни в плане, ни в маппинге', () => {
+    expect(planSetup(complete(), desired).actions).toEqual([]);
+    expect(buildMapping(ready(), desired)).not.toHaveProperty('juniorProperty');
+  });
+
+  it('с блоком: два поля, варианты Да/Нет, необязательно в Story, Tech, Bug — не в Epic и Spike', () => {
+    const plan = planSetup(complete(), withJunior);
+    expect(plan.actions).toEqual([
+      { kind: 'create-property', name: 'Можно младшему', type: 'select' },
+      { kind: 'create-property', name: 'Младшему не хватает', type: 'string' },
+      { kind: 'create-select-value', property: 'Можно младшему', value: 'Да' },
+      { kind: 'create-select-value', property: 'Можно младшему', value: 'Нет' },
+      ...['Story', 'Tech', 'Bug'].flatMap((typeName) => [
+        { kind: 'add-type-property', typeName, property: 'Можно младшему', propertyType: 'select' },
+        { kind: 'add-type-property', typeName, property: 'Младшему не хватает', propertyType: 'string' },
+      ]),
+    ]);
+  });
+
+  it('всё заведено — пустой план; поле пропало из типа — возвращается только оно', () => {
+    expect(planSetup(ready(), withJunior).actions).toEqual([]);
+    const current = ready();
+    current.cardTypes = current.cardTypes.map((t) => (t.name === 'Tech' ? { ...t, card_properties: [] } : t));
+    expect(planSetup(current, withJunior).actions).toEqual([
+      { kind: 'add-type-property', typeName: 'Tech', property: 'Можно младшему', propertyType: 'select' },
+      { kind: 'add-type-property', typeName: 'Tech', property: 'Младшему не хватает', propertyType: 'string' },
+    ]);
+  });
+
+  it('одноимённое поле другого типа отключается, рядом заводится нужное', () => {
+    const current = ready();
+    current.properties = current.properties.map((p) => (p.id === 501 ? { ...p, type: 'select' } : p));
+    expect(planSetup(current, withJunior).actions.slice(0, 2)).toEqual([
+      { kind: 'retire-property', id: 501, name: 'Младшему не хватает', newName: 'Младшему не хватает (select, отключено)' },
+      { kind: 'create-property', name: 'Младшему не хватает', type: 'string' },
+    ]);
+  });
+
+  it('маппинг: id выбора с вариантами yes/no и id строки; чего-то нет — ошибка', () => {
+    expect(buildMapping(ready(), withJunior)).toMatchObject({ juniorProperty: { id: 500, values: { yes: 5000, no: 5001 } }, juniorMissingProperty: { id: 501 } });
+    const current = ready();
+    current.selectValues[500] = [{ id: 5000, value: 'Да' }];
+    expect(() => buildMapping(current, withJunior)).toThrow(/вариант «Нет» поля «Можно младшему»/);
+    expect(() => buildMapping(complete(), withJunior)).toThrow(/поле-выбор «Можно младшему».*поле «Младшему не хватает»/);
+  });
+
+  it('конфиг: junior — поля в схеме проекта', () => {
+    const base = { space: 'Acme', board: 'Задачи', repoField: 'Репозиторий', repoLabels: [], teams: [] };
+    expect(desiredForProject(base).junior).toBeNull();
+    expect(desiredForProject({ ...base, junior: true }).junior).toEqual(JUNIOR_FIELDS);
   });
 });

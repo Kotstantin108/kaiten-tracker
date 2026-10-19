@@ -72,7 +72,22 @@ export interface DesiredStructure {
   lanes: { repos: Record<string, string>; archive?: string };
   /** Пространства отделов в папке. */
   departments: readonly Department[];
+  /** Поля признака «Можно младшему» (`kaiten.junior`); `null` — не заводим. */
+  junior: JuniorFields | null;
 }
+
+/** Выбор «Можно младшему» и строка «Младшему не хватает» — в типах story, tech, bug, необязательные. */
+export interface JuniorFields {
+  select: { name: string; yes: string; no: string };
+  missing: { name: string };
+  types: readonly TaskType[];
+}
+
+export const JUNIOR_FIELDS: JuniorFields = {
+  select: { name: 'Можно младшему', yes: 'Да', no: 'Нет' },
+  missing: { name: 'Младшему не хватает' },
+  types: ['story', 'tech', 'bug'],
+};
 
 /** Пространство отдела: доска со своими колонками. type: 1 очередь, 2 в работе, 3 готово. */
 export interface Department {
@@ -193,6 +208,7 @@ export const DESIRED: DesiredStructure = {
   retire: [],
   lanes: { repos: {} },
   departments: [],
+  junior: null,
 };
 
 /**
@@ -212,6 +228,7 @@ export function desiredForProject(input: {
   repoLanes?: Record<string, string>;
   archiveLane?: string;
   departments?: readonly string[];
+  junior?: boolean;
 }): DesiredStructure {
   const unknown = (input.departments ?? []).filter((key) => !DEPARTMENTS.some((d) => d.key === key));
   if (unknown.length > 0) throw new Error(`Нет шаблона отдела: ${unknown.join(', ')} (есть: ${DEPARTMENTS.map((d) => d.key).join(', ')})`);
@@ -230,6 +247,7 @@ export function desiredForProject(input: {
     ...(input.knownBoardId !== undefined ? { knownBoardId: input.knownBoardId } : {}),
     lanes: { repos: input.repoLanes ?? {}, ...(input.archiveLane ? { archive: input.archiveLane } : {}) },
     departments: DEPARTMENTS.filter((d) => (input.departments ?? []).includes(d.key)),
+    junior: input.junior ? JUNIOR_FIELDS : null,
   };
 }
 
@@ -269,6 +287,8 @@ export type SetupAction =
   | { kind: 'set-type-template'; typeName: string; template: string }
   | { kind: 'require-type-property'; typeName: string; property: string }
   | { kind: 'suggest-type-field'; typeName: string; field: string }
+  /** Поле в типе, необязательное, — в конец списка полей типа. */
+  | { kind: 'add-type-property'; typeName: string; property: string; propertyType: 'select' | 'string' }
   | { kind: 'create-select-value'; property: string; value: string };
 
 export interface SetupPlan {
@@ -347,6 +367,12 @@ export function typeSuggests(type: CardType, field: string): boolean {
   return (type.card_properties ?? []).some((p) => p.regular_property === field);
 }
 
+/** Поле есть в типе (обязательное или нет). */
+export function typeHas(type: CardType, property: CustomProperty | undefined): boolean {
+  if (!property?.uid) return false;
+  return (type.card_properties ?? []).some((p) => p.property_uid === property.uid);
+}
+
 /** Поле обязательно в типе: есть в `card_properties` с `required: true`. */
 export function typeRequires(type: CardType, property: CustomProperty | undefined): boolean {
   if (!property?.uid) return false;
@@ -412,7 +438,10 @@ export function planSetup(current: CurrentStructure, desired: DesiredStructure =
   }
 
   // Отключаем устаревшие поля по явному списку — но не те, что нужны схеме.
-  const wantedNames = SELECT_ROLES.map((r) => desired.selects[r].name);
+  const wantedNames = [
+    ...SELECT_ROLES.map((r) => desired.selects[r].name),
+    ...(desired.junior ? [desired.junior.select.name, desired.junior.missing.name] : []),
+  ];
   for (const name of desired.retire) {
     const old = current.properties.filter(alive).find((p) => same(p.name, name) && !wantedNames.some((w) => same(w, name)));
     if (old) actions.push({ kind: 'retire-property', id: old.id, name: old.name, newName: `${old.name} (${old.type ?? 'поле'}, отключено)` });
@@ -456,6 +485,8 @@ export function planSetup(current: CurrentStructure, desired: DesiredStructure =
     }
   }
 
+  if (desired.junior) planJunior(current, desired.junior, desired.types, actions, reused);
+
   for (const department of desired.departments) {
     const found = findDepartment(current, folder, department);
     if (found) reused.push(`пространство отдела «${found.title}» (${found.id})`);
@@ -463,6 +494,30 @@ export function planSetup(current: CurrentStructure, desired: DesiredStructure =
   }
 
   return { actions, reused, extra };
+}
+
+/** Поля «Можно младшему» и «Младшему не хватает»: завести, варианты, добавить в типы. */
+function planJunior(current: CurrentStructure, junior: JuniorFields, types: DesiredStructure['types'], actions: SetupAction[], reused: string[]): void {
+  const fields = [
+    { name: junior.select.name, type: 'select' as const, found: findSelect(current, junior.select.name) },
+    { name: junior.missing.name, type: 'string' as const, found: findText(current, junior.missing.name) },
+  ];
+  for (const field of fields) {
+    const clash = findClash(current, field.name, field.type);
+    if (clash) actions.push({ kind: 'retire-property', id: clash.id, name: clash.name, newName: `${clash.name} (${clash.type ?? 'другой тип'}, отключено)` });
+    if (!field.found) actions.push({ kind: 'create-property', name: field.name, type: field.type });
+    else reused.push(`поле «${field.found.name}» (${field.found.id})`);
+  }
+  const have = fields[0].found ? aliveValues(current, fields[0].found.id) : [];
+  for (const value of [junior.select.yes, junior.select.no]) {
+    if (!have.some((v) => same(v.value, value))) actions.push({ kind: 'create-select-value', property: junior.select.name, value });
+  }
+  for (const type of types.filter((t) => junior.types.includes(t.key))) {
+    const found = findCardType(current, type.name);
+    for (const field of fields) {
+      if (!(found && typeHas(found, field.found))) actions.push({ kind: 'add-type-property', typeName: type.name, property: field.name, propertyType: field.type });
+    }
+  }
 }
 
 /** Дорожки доски по схеме: продуктов (без повторов) и «Архив». */
@@ -490,6 +545,9 @@ export interface KaitenMapping {
   teamProperty?: SelectMapping;
   /** Текстовое поле «Суть». */
   summaryProperty?: { id: number };
+  /** «Можно младшему»: варианты `yes`/`no`. */
+  juniorProperty?: SelectMapping;
+  juniorMissingProperty?: { id: number };
 }
 
 /**
@@ -536,6 +594,25 @@ export function buildMapping(current: CurrentStructure, desired: DesiredStructur
   const summaryProperty = desired.summary ? findText(current, desired.summary.name) : undefined;
   if (desired.summary && !summaryProperty) missing.push(`поле «${desired.summary.name}»`);
 
+  let junior: Pick<KaitenMapping, 'juniorProperty' | 'juniorMissingProperty'> = {};
+  if (desired.junior) {
+    const spec = desired.junior;
+    const select = findSelect(current, spec.select.name);
+    const missingField = findText(current, spec.missing.name);
+    const valueId = (value: string): number | undefined => {
+      const found = select ? aliveValues(current, select.id).find((v) => same(v.value, value)) : undefined;
+      if (select && !found) missing.push(`вариант «${value}» поля «${spec.select.name}»`);
+      return found?.id;
+    };
+    if (!select) missing.push(`поле-выбор «${spec.select.name}»`);
+    if (!missingField) missing.push(`поле «${spec.missing.name}»`);
+    const yes = valueId(spec.select.yes);
+    const no = valueId(spec.select.no);
+    if (select && missingField && yes !== undefined && no !== undefined) {
+      junior = { juniorProperty: { id: select.id, values: { yes, no } }, juniorMissingProperty: { id: missingField.id } };
+    }
+  }
+
   const laneOf = (title: string): number | undefined => {
     const found = board?.lanes.find((l) => same(laneTitle(l), title));
     if (!found) missing.push(`дорожка «${title}»`);
@@ -571,5 +648,6 @@ export function buildMapping(current: CurrentStructure, desired: DesiredStructur
     ...(selects.repo ? { repoProperty: selects.repo } : {}),
     ...(selects.team ? { teamProperty: selects.team } : {}),
     ...(summaryProperty ? { summaryProperty: { id: summaryProperty.id } } : {}),
+    ...junior,
   };
 }

@@ -38,6 +38,7 @@ import {
   findText,
   typeRequires,
   typeSuggests,
+  typeHas,
   planSetup,
   SELECT_ROLES,
   desiredForProject,
@@ -62,6 +63,7 @@ function desiredFor(loaded: LoadedProject): DesiredStructure {
     repoLanes: Object.fromEntries(project.repos.flatMap((r) => (r.lane ? [[r.name, r.lane]] : []))),
     archiveLane: project.kaiten.archiveLane,
     departments: project.kaiten.departments,
+    junior: project.kaiten.junior !== undefined,
   });
 }
 
@@ -91,8 +93,9 @@ async function readCurrent(client: KaitenClient, desired: DesiredStructure): Pro
   };
   const space = findSpace(current, desired);
   if (space) current.boards = await client.listBoards(space.id);
-  for (const role of SELECT_ROLES) {
-    const property = findSelect(current, desired.selects[role].name);
+  const selects = [...SELECT_ROLES.map((role) => desired.selects[role].name), ...(desired.junior ? [desired.junior.select.name] : [])];
+  for (const name of selects) {
+    const property = findSelect(current, name);
     if (property) current.selectValues[property.id] = await client.listSelectValues(property.id);
   }
   return current;
@@ -130,6 +133,8 @@ function describe(action: SetupAction): string {
       return `поле «${action.property}» обязательно в типе «${action.typeName}»`;
     case 'suggest-type-field':
       return `стандартное поле «${action.field}» предлагается (не обязательно) в типе «${action.typeName}»`;
+    case 'add-type-property':
+      return `поле «${action.property}» в типе «${action.typeName}» (не обязательно)`;
   }
 }
 
@@ -238,6 +243,19 @@ async function apply(client: KaitenClient, actions: SetupAction[], desired: Desi
         await client.updateCardType(type.id, { name: type.name, card_properties: request });
         const saved = await client.getCardType(type.id);
         if (!typeRequires(saved, property)) throw new Error(`Поле «${property.name}» не стало обязательным в типе «${type.name}»`);
+        break;
+      }
+      case 'add-type-property': {
+        current = await readCurrent(client, desired);
+        const type = findCardType(current, action.typeName);
+        const property = action.propertyType === 'select' ? findSelect(current, action.property) : findText(current, action.property);
+        if (!type || !property?.uid) throw new Error(`Нет типа «${action.typeName}» или поля «${action.property}» с uid`);
+        const request = typePropertiesRequest(type);
+        const last = Math.max(0, ...request.map((p) => p.sort_order ?? 0)) + 1;
+        request.push({ regular_property: null, property_uid: property.uid, sort_order: last, required: false });
+        await client.updateCardType(type.id, { name: type.name, card_properties: request });
+        const saved = await client.getCardType(type.id);
+        if (!typeHas(saved, property)) throw new Error(`Поле «${property.name}» не добавилось в тип «${type.name}»`);
         break;
       }
       case 'suggest-type-field': {
