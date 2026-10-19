@@ -149,7 +149,8 @@ export function hasCriteriaWaiver(text: string): boolean {
 /** Строка-заглушка шаблона `<…>`: её не заполнили. */
 const PLACEHOLDER_RE = /^\s*(?:[-*+]\s+(?:\[[ xX]\]\s+)?|\d+[.)]\s+)?<[^>]*>\s*$/;
 
-function filledText(text: string | null): boolean {
+/** В тексте есть строка кроме заголовков и заготовок `<…>`. */
+export function filledText(text: string | null): boolean {
   if (text === null) return false;
   return text.split('\n').some((line) => line.trim() !== '' && !HEADING_RE.test(line) && !PLACEHOLDER_RE.test(line));
 }

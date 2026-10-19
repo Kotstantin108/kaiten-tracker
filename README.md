@@ -216,6 +216,7 @@ kaiten done PRJ-123 [--note "…"]         # влито — «Сделано», 
 |---|---|
 | `src/core/schema.ts`, `src/core/document.ts` | Формат задачи: поля, владельцы полей, разбор и запись, `content_hash` |
 | `src/core/skeleton.ts`, `src/core/lint.ts` | Разделы по типу, проверка постановки новой задачи, линтер |
+| `src/core/junior.ts` | Признак «Можно младшему»: возраст и разделы продукта, БД, n8n (план — `docs/junior-readiness.md`) |
 | `src/core/tasks-index.ts` | Задачи в памяти: поиск по ключу, эпики, фильтры, поиск по словам |
 | `src/core/task-ops.ts` | Операции записи (чистая часть): new, check, log, block, cancel, edit, move |
 | `src/core/kaiten-sync-plan.ts`, `src/core/kaiten-adopt.ts` | План синхронизации с Kaiten; карточки из интерфейса → задачи |
