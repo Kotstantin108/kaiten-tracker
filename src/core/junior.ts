@@ -9,7 +9,7 @@
  */
 
 import type { Frontmatter, TaskStatus, TaskType } from './schema.js';
-import { filledText, sectionText } from './skeleton.js';
+import { filledText, sectionText, SKELETONS } from './skeleton.js';
 
 interface JuniorSection {
   /** Заголовок `## …` в теле задачи. */
@@ -18,12 +18,33 @@ interface JuniorSection {
   short: string;
   /** Пункты `**Метка:** текст`, обязательные, когда раздел не «Нет». */
   labels: readonly string[];
+  /** Заготовки каркаса: первая строка — когда писать «Нет», дальше — по пункту. */
+  intro: string;
+  hints: readonly string[];
 }
 
 export const JUNIOR_SECTIONS: readonly JuniorSection[] = [
-  { name: 'Продуктовые решения', short: 'продукт', labels: ['Что решено', 'Где зафиксировано', 'Открытые вопросы'] },
-  { name: 'Изменения в БД', short: 'БД', labels: ['Что меняется', 'Миграция', 'Откат', 'Как проверить'] },
-  { name: 'Сценарии n8n', short: 'n8n', labels: ['Сценарий', 'Что меняется', 'Входы и выходы', 'Как проверить'] },
+  {
+    name: 'Продуктовые решения',
+    short: 'продукт',
+    labels: ['Что решено', 'Где зафиксировано', 'Открытые вопросы'],
+    intro: '«Нет», если задача не требует продуктовых решений',
+    hints: ['поведение для пользователя: тексты, правила, граничные случаи', 'ссылка на обсуждение, документ, макет или кто решил', 'нет — иначе задача не для младшего'],
+  },
+  {
+    name: 'Изменения в БД',
+    short: 'БД',
+    labels: ['Что меняется', 'Миграция', 'Откат', 'Как проверить'],
+    intro: '«Нет», если проверили по коду, что БД не меняется',
+    hints: ['таблицы и поля: создать, изменить, удалить', 'как переносятся существующие данные', 'как вернуть назад', 'запрос или сценарий, по которому видно, что всё верно'],
+  },
+  {
+    name: 'Сценарии n8n',
+    short: 'n8n',
+    labels: ['Сценарий', 'Что меняется', 'Входы и выходы', 'Как проверить'],
+    intro: '«Нет», если проверили, что сценарии n8n не затрагиваются',
+    hints: ['название или ссылка на workflow; новый — «новый: …»', 'узлы и логика', 'что приходит, что отдаётся, кто от этого зависит', 'тестовый запуск: входные данные и ожидаемый результат'],
+  },
 ];
 
 /** Пункт, где годится только «нет»: открытый продуктовый вопрос — задача не для младшего. */
@@ -53,6 +74,26 @@ export function juniorReadiness(fm: Pick<Frontmatter, 'type' | 'status' | 'updat
 /** Причины одной строкой — для поля «Младшему не хватает». */
 export function juniorMissingText(missing: readonly string[]): string {
   return missing.join('; ');
+}
+
+/**
+ * Три раздела с заготовками `<…>` — для тела `kaiten new`. Заготовку, которую
+ * не заменили и не удалили, команда не пропустит; пустой раздел — можно.
+ * Пункты — списком: строки подряд описание Kaiten склеило бы в абзац.
+ */
+export function juniorTemplate(): string {
+  return JUNIOR_SECTIONS.map((s) =>
+    [`## ${s.name}`, '', `<${s.intro}; иначе — пункты ниже; не знаете — удалите всё под заголовком>`, ...s.labels.map((label, i) => `- **${label}:** <${s.hints[i]}>`)].join('\n'),
+  ).join('\n\n');
+}
+
+/** Тело с разделами перед критериями (story, tech, bug); у других типов — как есть. */
+export function withJuniorTemplate(type: TaskType, body: string): string {
+  if (!JUNIOR_TYPES.includes(type)) return body;
+  const { criteria } = SKELETONS[type];
+  const at = criteria ? body.search(new RegExp(`^## ${criteria}[ \\t]*$`, 'm')) : -1;
+  if (at === -1) return `${body.trimEnd()}\n\n${juniorTemplate()}`;
+  return `${body.slice(0, at)}${juniorTemplate()}\n\n${body.slice(at)}`;
 }
 
 // «Нет», «нет.», «**Нет** — только чтение», «- нет»; не «Нетривиально».

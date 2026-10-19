@@ -146,8 +146,8 @@ export function hasCriteriaWaiver(text: string): boolean {
   return text.split('\n').some((line) => line.trim().startsWith(NO_CRITERIA_PREFIX) && line.trim().length > NO_CRITERIA_PREFIX.length);
 }
 
-/** Строка-заглушка шаблона `<…>`: её не заполнили. */
-const PLACEHOLDER_RE = /^\s*(?:[-*+]\s+(?:\[[ xX]\]\s+)?|\d+[.)]\s+)?<[^>]*>\s*$/;
+/** Строка-заглушка шаблона `<…>`, в том числе после метки `**Откат:**`: её не заполнили. */
+const PLACEHOLDER_RE = /^\s*(?:[-*+]\s+(?:\[[ xX]\]\s+)?|\d+[.)]\s+)?(?:\*\*[^*]+\*\*\s*:?\s*)?<[^>]*>\s*$/;
 
 /** В тексте есть строка кроме заголовков и заготовок `<…>`. */
 export function filledText(text: string | null): boolean {
