@@ -55,7 +55,7 @@ function world(entries: Array<[string, string]>) {
   async function sync(extra: Partial<RunInput> = {}) {
     const run = await runKaitenSync(fake.client, { ...input(), ...extra }, 'apply');
     for (const { op } of run.ops) {
-      const r = applyOp(op, texts, { date: '2026-09-28' });
+      const r = applyOp(op, texts, { date: '2026-09-28', stamp: '2026-09-28 10:15:00 +04:00' });
       if ('error' in r) throw new Error(r.error);
       for (const c of r.changes) if (c.text === null) texts.delete(c.path);
       else texts.set(c.path, c.text);
@@ -429,7 +429,7 @@ describe('файлы карточки: вложения и журнал', () => 
     const texts = new Map([[path, text]]);
     const [current] = tasksOf(texts);
     const edited = text.replace(`files_hash: sha256:${'a'.repeat(64)}\n`, '').replace('- [ ] Ещё', '- [ ] Ещё один');
-    const r = applyOp({ kind: 'edit', id: current.fm.id, text: edited, baseHash: contentHash(current.fm, current.body) }, texts, { date: '2026-09-28' });
+    const r = applyOp({ kind: 'edit', id: current.fm.id, text: edited, baseHash: contentHash(current.fm, current.body) }, texts, { date: '2026-09-28', stamp: '2026-09-28 10:15:00 +04:00' });
     if ('error' in r) throw new Error(r.error);
     expect(r.changes[0].text).toContain(`files_hash: sha256:${'a'.repeat(64)}`);
   });

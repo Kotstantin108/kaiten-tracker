@@ -29,7 +29,7 @@ import { closeSync, existsSync, mkdtempSync, openSync, readFileSync, renameSync,
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { applyOp, type Op, type OpResult, type TaskTexts } from './core/task-ops.js';
+import { applyOp, logStamp, type Op, type OpResult, type TaskTexts } from './core/task-ops.js';
 import { git, gitNetwork, gitText, isStore, listEntries, readBlobs, revOrNull, storeBranch, StoreError, type StoreErrorKind } from './task-store.js';
 
 // ── журнал ───────────────────────────────────────────────────────────────
@@ -252,7 +252,7 @@ export function rebuild(store: string, base: string | null, entries: readonly Jo
   try {
     git(store, base ? ['read-tree', base] : ['read-tree', '--empty'], undefined, env);
     for (const entry of entries) {
-      const result = applyOp(entry.op, texts as TaskTexts, { date: entry.date });
+      const result = applyOp(entry.op, texts as TaskTexts, { date: entry.date, stamp: logStamp(new Date(entry.at)) });
       if ('error' in result) {
         out.failed.push({ entry, reason: result.error });
         continue;

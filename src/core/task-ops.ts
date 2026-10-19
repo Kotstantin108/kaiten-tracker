@@ -94,6 +94,8 @@ export interface SyncedItem {
 export interface OpContext {
   /** Дата операции `YYYY-MM-DD` — из журнала, не «сегодня». */
   date: string;
+  /** Время операции для журнала задачи — `logStamp` от момента записи, не «сейчас». */
+  stamp: string;
 }
 
 /** Файлы задач в памяти: путь → текст (задачи и журналы под active/ и archive/). */
@@ -195,7 +197,8 @@ function write(task: TaskRecord, fm: Frontmatter, body: string, ctx: OpContext, 
 /** Записи, которые пишут сами команды при смене статуса, — не записи о работе. */
 const ASSIGNED_NOTE = String.raw`(?: \(из «[^»]+», по прямому поручению[^)]*\))?`;
 const AUTO_ENTRY_RE = new RegExp(String.raw`^(?:(?:в работе|на ревью|сделана)${ASSIGNED_NOTE}(?::|$)|(?:заблокирована|отменена):)`);
-const ENTRY_RE = /^## \[\d{4}-\d{2}-\d{2}\][ \t]*(.*)$/;
+// Записи до 19.10.2026 — с одной датой: `## [2026-09-28]`.
+const ENTRY_RE = /^## \[\d{4}-\d{2}-\d{2}(?: [^\]]*)?\][ \t]*(.*)$/;
 
 /**
  * Есть ли в журнале запись о работе после последнего взятия в работу: что
@@ -213,14 +216,22 @@ export function hasWorkNote(log: string | null): boolean {
 }
 
 /**
- * Запись журнала `## [YYYY-MM-DD] заголовок` + текст, как у перенесённых
- * задач. Первая строка текста — заголовок, остальное — тело.
+ * Запись журнала `## [YYYY-MM-DD HH:MM:SS +04:00] заголовок` + текст. Первая
+ * строка текста — заголовок, остальное — тело.
  */
-export function appendLog(log: string | null, date: string, text: string): string {
+export function appendLog(log: string | null, stamp: string, text: string): string {
   const [head, ...rest] = text.trim().split('\n');
-  const entry = [`## [${date}] ${head.trim()}`, ...rest].join('\n').trimEnd();
+  const entry = [`## [${stamp}] ${head.trim()}`, ...rest].join('\n').trimEnd();
   const before = (log ?? '').trimEnd();
   return `${before ? `${before}\n\n` : ''}${entry}\n`;
+}
+
+/** Время для журнала задачи: местное, с поясом — `2026-10-19 16:53:13 +04:00`. */
+export function logStamp(at: Date, offsetMinutes = -at.getTimezoneOffset()): string {
+  const local = new Date(at.getTime() + offsetMinutes * 60_000).toISOString();
+  const abs = Math.abs(offsetMinutes);
+  const pad = (n: number): string => String(n).padStart(2, '0');
+  return `${local.slice(0, 10)} ${local.slice(11, 19)} ${offsetMinutes < 0 ? '-' : '+'}${pad(Math.floor(abs / 60))}:${pad(abs % 60)}`;
 }
 
 // ── пункты ───────────────────────────────────────────────────────────────
@@ -440,7 +451,7 @@ export function applyOp(op: Op, texts: TaskTexts, ctx: OpContext): OpResult {
     }
     case 'log': {
       if (!op.text.trim()) return { error: 'пустая запись журнала' };
-      return { changes: [{ path: logPath(task.path), text: appendLog(task.log, ctx.date, op.text) }], summary: `запись в журнал ${ref}`, warnings: [] };
+      return { changes: [{ path: logPath(task.path), text: appendLog(task.log, ctx.stamp, op.text) }], summary: `запись в журнал ${ref}`, warnings: [] };
     }
     case 'cancel': {
       if (!CANCELLABLE.includes(task.fm.status)) {
@@ -453,7 +464,7 @@ export function applyOp(op: Op, texts: TaskTexts, ctx: OpContext): OpResult {
       // Файл переезжает один раз за жизнь задачи (Q42) — вместе с журналом.
       const changes: FileChange[] = [{ path: task.path, text: null }];
       if (task.log !== null) changes.push({ path: logPath(task.path), text: null });
-      changes.push({ path: archived, text: out.text }, { path: logPath(archived), text: appendLog(task.log, ctx.date, `отменена: ${op.reason.trim()}`) });
+      changes.push({ path: archived, text: out.text }, { path: logPath(archived), text: appendLog(task.log, ctx.stamp, `отменена: ${op.reason.trim()}`) });
       return { changes, summary: `задача ${ref} отменена`, warnings: [] };
     }
     case 'move': {
@@ -474,7 +485,7 @@ export function applyOp(op: Op, texts: TaskTexts, ctx: OpContext): OpResult {
         changes.push({ path: task.path, text: null });
         if (task.log !== null) changes.push({ path: logPath(task.path), text: null });
       }
-      changes.push({ path: target, text: out.text }, { path: logPath(target), text: appendLog(task.log, ctx.date, entry) });
+      changes.push({ path: target, text: out.text }, { path: logPath(target), text: appendLog(task.log, ctx.stamp, entry) });
       return { changes, summary: `задача ${ref} ${MOVE_WORDS[op.status]}`, warnings: [] };
     }
     case 'block': {
@@ -485,7 +496,7 @@ export function applyOp(op: Op, texts: TaskTexts, ctx: OpContext): OpResult {
       return {
         changes: [
           { path: task.path, text: out.text },
-          { path: logPath(task.path), text: appendLog(task.log, ctx.date, `заблокирована: ${op.reason.trim()}`) },
+          { path: logPath(task.path), text: appendLog(task.log, ctx.stamp, `заблокирована: ${op.reason.trim()}`) },
         ],
         summary: `задача ${ref} заблокирована`,
         warnings: [],
