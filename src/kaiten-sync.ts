@@ -355,6 +355,8 @@ export async function runKaitenSync(client: KaitenClient, input: RunInput, mode:
           synced.push({ id: action.task.fm.id, contentHash, filesHash });
           syncedNames.push(refOf(action.task));
         }
+        // Архив — последним: описание и файлы уже доставлены, отметка о доставке записана.
+        if (action.archive) await client.updateCard(action.cardId, { condition: 2 });
       } else {
         await client.addChild(action.parentId, action.childId);
       }
@@ -441,6 +443,7 @@ export function formatPlan(run: Pick<SyncRun, 'plan' | 'checklists'> & Partial<P
         lane,
         a.content ? 'описание' : '',
         a.files ? 'файлы' : '',
+        a.archive ? 'в архив Kaiten' : '',
       ]
         .filter(Boolean)
         .join(', ');

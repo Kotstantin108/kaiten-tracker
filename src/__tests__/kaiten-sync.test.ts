@@ -654,4 +654,69 @@ describe('дорожки: продукт и «Архив»', () => {
     await w.sync({ now: NOW });
     expect(lane()).toBe(20);
   });
+
+  describe('архив Kaiten вместо дорожки (archiveInKaiten)', () => {
+    const ARCHIVE = { mapping: LANES, now: NOW, archiveInKaiten: true };
+
+    it('закрыта больше месяца назад — в архив последней записью, на дорожку «Архив» не переносим', async () => {
+      const { w, lane } = laneWorld({ status: 'done' }, { lane_id: 41, column_id: 107, column_changed_at: DAYS_AGO(31) });
+      const plan = await runKaitenSync(w.fake.client, { ...w.input(), ...ARCHIVE }, 'plan');
+      expect(formatPlan(plan).join('\n')).toMatch(/в архив Kaiten/);
+      await w.sync(ARCHIVE);
+      const card = w.fake.cards.get(600);
+      expect(card?.archived).toBe(true);
+      expect(lane()).toBe(41);
+      // Описание ещё не доставлялось — доставлено до архива.
+      expect(card?.description).toContain(Q41_NOTICE);
+      expect(w.fake.writes.at(-1)).toBe('PATCH /cards/600');
+      w.fake.writes.length = 0;
+      await w.sync(ARCHIVE);
+      expect(w.fake.writes).toEqual([]);
+    });
+
+    it('закрыта недавно или открыта — не архивируем', async () => {
+      const recent = laneWorld({ status: 'cancelled' }, { lane_id: 41, column_id: 108, column_changed_at: DAYS_AGO(5) });
+      await recent.w.sync(ARCHIVE);
+      expect(recent.w.fake.cards.get(600)?.archived).toBe(false);
+      const open = laneWorld({ status: 'in-progress' }, { lane_id: 41, column_id: 104, column_changed_at: DAYS_AGO(90) });
+      await open.w.sync(ARCHIVE);
+      expect(open.w.fake.cards.get(600)?.archived).toBe(false);
+    });
+
+    it('лежит на дорожке «Архив», а id дорожки ещё в маппинге, — не двигаем: дорожка не используется', async () => {
+      const { w, lane } = laneWorld({ status: 'in-progress' }, { lane_id: 49, column_id: 104, column_changed_at: DAYS_AGO(1) });
+      await w.sync(ARCHIVE);
+      expect(lane()).toBe(49);
+    });
+
+    function epicWorld(childArchived: boolean) {
+      const epicId = id();
+      const [epicPath, epicText] = task('active/epic.md', { id: epicId, type: 'epic', status: 'done', tracker: '700', repo: undefined });
+      const [childPath, childText] = task('active/child.md', { status: 'in-progress', tracker: '701', epic: epicId });
+      const w = world([[epicPath, epicText], [childPath, childText]]);
+      seedCard(w.fake, { id: 700, title: 'Сделать задачу', board_id: BOARD, type_id: 1, lane_id: 20, column_id: 107, column_changed_at: DAYS_AGO(40), properties: { id_4: 'Коротко для фаундера.' } });
+      seedCard(w.fake, { id: 701, title: 'Сделать задачу', board_id: BOARD, lane_id: 41, column_id: childArchived ? 107 : 104, parents_ids: [700], archived: childArchived, properties: { id_4: 'Коротко для фаундера.', id_2: [21] } });
+      return w;
+    }
+
+    it('эпик — в архив, только когда у него нет живых дочерних карточек', async () => {
+      const live = epicWorld(false);
+      await live.sync(ARCHIVE);
+      expect(live.fake.cards.get(700)?.archived).toBe(false);
+      const gone = epicWorld(true);
+      await gone.sync(ARCHIVE);
+      expect(gone.fake.cards.get(700)?.archived).toBe(true);
+    });
+
+    it('к архивному эпику задачу не привязываем', async () => {
+      const w = epicWorld(false);
+      const epic = w.fake.cards.get(700);
+      const child = w.fake.cards.get(701);
+      if (!epic || !child) throw new Error('нет карточек');
+      epic.archived = true;
+      child.parents_ids = [];
+      await w.sync(ARCHIVE);
+      expect(w.fake.writes).not.toContain('POST /cards/700/children');
+    });
+  });
 });

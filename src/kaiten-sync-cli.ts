@@ -102,6 +102,7 @@ async function main(): Promise<void> {
   const input = {
     tasks: index.tasks,
     mapping,
+    archiveInKaiten: project.kaiten.archiveInKaiten,
     ignore: project.ignoreCards,
     repoWebBase: repoWebBase(project.tasksRepo?.url),
     defaultTeam: config.defaultTeam,

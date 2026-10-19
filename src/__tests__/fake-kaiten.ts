@@ -156,9 +156,11 @@ export function fakeKaiten(options: { requiredSummaryKey?: string | null; firstI
       if (!card) return json(404, { message: 'not found' });
       if (method === 'GET') return json(200, cardView(card));
       if (method === 'PATCH') {
-        const { properties, ...rest } = body;
+        const { properties, condition, ...rest } = body;
         Object.assign(card, rest);
         if (properties) card.properties = { ...card.properties, ...(properties as Record<string, unknown>) };
+        // Как живьём (19.10): condition 2 — архив, 1 — на доске; колонка и дорожка не меняются.
+        if (condition !== undefined) card.archived = condition === 2;
         return json(200, cardView(card));
       }
     }

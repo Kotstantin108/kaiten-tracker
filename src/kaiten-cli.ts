@@ -13,7 +13,7 @@ import { parseArgs, type ParseArgsConfig } from 'node:util';
 import { z } from 'zod';
 
 import { loadTasksRepoConfig, projectFromTasksRepo, storeNameOf, TASKS_REPO_CONFIG, type LoadedProject, type People } from './config.js';
-import type { Priority, TaskStatus } from './core/schema.js';
+import { CLOSED_STATUSES, type Priority, type TaskStatus } from './core/schema.js';
 import { JOURNAL_FILE } from './core/task-ops.js';
 import { buildIndex, belongsToProject, resolveTask, type TaskIndex, type TaskRecord } from './core/tasks-index.js';
 import { localCopyDir, loadSettings, PROJECT_FILE, readProjectFile, type KaitenSettings } from './kaiten-context.js';
@@ -315,6 +315,7 @@ export async function syncWithKaiten(ctx: Context, client?: KaitenClient, onLock
           attachments: attachmentRefs(loaded.entries),
           readFile: blobReader(ctx.store),
           mapping,
+          archiveInKaiten: ctx.loaded.project.kaiten.archiveInKaiten,
           ignore: ctx.loaded.project.ignoreCards,
           repoWebBase: repoWebBase(ctx.loaded.project.tasksRepo?.url),
           defaultTeam: ctx.loaded.config.defaultTeam,
@@ -383,7 +384,10 @@ export async function moveCardFirst(
     const priorityProperty = ctx.loaded.project.mapping?.priorityProperty;
     const value = priority !== undefined ? priorityProperty?.values[priority] : undefined;
     const properties = priorityProperty && value !== undefined ? { [`id_${priorityProperty.id}`]: [value] } : undefined;
-    await kaiten.updateCard(cardId, { column_id: column, ...(properties ? { properties } : {}) });
+    // Задачу открыли снова, а карточка в архиве Kaiten: колонка у архивной меняется, но
+    // карточка остаётся в архиве (живьём 19.10) — достаём тем же запросом.
+    const reopen = !CLOSED_STATUSES.includes(status) ? { condition: 1 as const } : {};
+    await kaiten.updateCard(cardId, { column_id: column, ...reopen, ...(properties ? { properties } : {}) });
   } catch (error) {
     throw new UsageError(`Не записано: Kaiten не разрешил — ${apiErrorText(error)}`, 1);
   }

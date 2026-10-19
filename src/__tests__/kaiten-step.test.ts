@@ -246,6 +246,16 @@ describe('статус — сначала карточка', { timeout: 30_000 }
     expect(s.fake.cards.get(s.cardId)).toMatchObject({ column_id: 103, properties: { id_2: [21], id_7: [70] } });
   });
 
+  it('карточка в архиве Kaiten: открытый статус достаёт её тем же запросом, закрытый — оставляет в архиве', async () => {
+    const s = await setup(true);
+    s.fake.cards.set(s.cardId, { ...s.fake.cards.get(s.cardId)!, archived: true });
+    expect(await s.moveCardFirst(s.ctx, s.task, 'cancelled', s.fake.client)).toBe('moved');
+    expect(s.fake.cards.get(s.cardId)).toMatchObject({ column_id: 108, archived: true });
+    expect(await s.moveCardFirst(s.ctx, s.task, 'ready', s.fake.client)).toBe('moved');
+    expect(s.fake.cards.get(s.cardId)).toMatchObject({ column_id: 103, archived: false });
+    expect(s.fake.writes).toEqual([`PATCH /cards/${s.cardId}`, `PATCH /cards/${s.cardId}`]);
+  });
+
   it('ограничение доски — команда останавливается словами владельца', async () => {
     const s = await setup(true);
     s.fake.failOn = () => ({ status: 400, body: { error_text: 'Из «В работе» — не в «Отменено»' } });

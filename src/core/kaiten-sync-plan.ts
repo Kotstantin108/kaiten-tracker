@@ -379,6 +379,21 @@ export function laneMove(task: TaskRecord, card: CardView, mapping: ConfigMappin
   return target !== undefined && target !== card.laneId ? target : undefined;
 }
 
+/**
+ * Пора ли карточке в архив Kaiten (`kaiten.archiveInKaiten`): стоит в
+ * закрытой колонке больше `ARCHIVE_AFTER_DAYS` дней. Эпик — только когда у
+ * него не осталось живых дочерних карточек: после архива эпика Kaiten может
+ * потерять связь с задачей (docs/kaiten-api.md), а синхронизация пыталась бы
+ * связать её с архивным эпиком снова.
+ */
+export function archiveDue(card: CardView, mapping: ConfigMapping, cards: readonly CardView[], now: number): boolean {
+  if (card.archived || card.columnChangedAt === undefined) return false;
+  const status = reverse<TaskStatus>(mapping.columns, STATUSES).get(card.columnId ?? -1);
+  if (status === undefined || !CLOSED_STATUSES.includes(status)) return false;
+  if (now - Date.parse(card.columnChangedAt) <= ARCHIVE_AFTER_DAYS * 86_400_000) return false;
+  return !cards.some((c) => !c.archived && c.parents.includes(card.id));
+}
+
 function sameValue(a: unknown, b: unknown): boolean {
   if (typeof a === 'string' && typeof b === 'string') return a.trim() === b.trim();
   return JSON.stringify(a ?? null) === JSON.stringify(b ?? null);
@@ -447,6 +462,8 @@ export type SyncAction =
       firstDelivery: boolean;
       /** Файлы — если изменились с последней доставки (или `--resend`). */
       files: FilesDelivery | null;
+      /** В архив Kaiten — последней записью, после описания и файлов (`archiveDue`). */
+      archive: boolean;
     }
   | { kind: 'link'; task: TaskRecord; parentId: number; childId: number };
 
@@ -503,6 +520,8 @@ export interface PlanInput {
   only?: ReadonlySet<string>;
   /** «Сейчас», мс — от него отсчитывается переезд в «Архив»; по умолчанию часы машины. */
   now?: number;
+  /** Закрытые больше `ARCHIVE_AFTER_DAYS` дней — в архив Kaiten (`kaiten.archiveInKaiten`), дорожка «Архив» не используется. */
+  archiveInKaiten?: boolean;
 }
 
 function reverse<T extends string>(values: Partial<Record<T, number>> | Record<string, number> | undefined, allowed: readonly T[]): Map<number, T> {
@@ -664,8 +683,12 @@ export function planKaitenSync(input: PlanInput): SyncPlan {
     const diff = Object.fromEntries(Object.entries(wanted).filter(([k, v]) => !sameValue(card.properties[k], v)));
     if (Object.keys(diff).length > 0) patch.properties = diff;
     const repoKey = mapping.repoProperty ? key(mapping.repoProperty.id) : null;
-    const lane = laneMove(task, card, mapping, repoKey !== null && repoKey in diff, input.now ?? Date.now());
+    const now = input.now ?? Date.now();
+    // Архив Kaiten вместо дорожки: id дорожки «Архив» из маппинга не используется.
+    const laneMapping = input.archiveInKaiten ? { ...mapping, archiveLaneId: undefined } : mapping;
+    const lane = laneMove(task, card, laneMapping, repoKey !== null && repoKey in diff, now);
     if (lane !== undefined) patch.lane_id = lane;
+    const archive = input.archiveInKaiten === true && archiveDue(card, mapping, input.cards, now);
     const stale = input.resend === true || task.fm.content_hash !== hash;
     // Файлы: сами — только задачам, у которых `files_hash` уже есть (Q10); остальным —
     // `--resend`, открытым или названным через `--only` (Q11).
@@ -673,7 +696,7 @@ export function planKaitenSync(input: PlanInput): SyncPlan {
     const filesStale =
       files !== null &&
       ((task.fm.files_hash !== undefined && task.fm.files_hash !== files.hash) || (input.resend === true && (!task.closed || input.only !== undefined)));
-    if (stale || filesStale || patch.title !== undefined || patch.properties !== undefined || patch.lane_id !== undefined) {
+    if (stale || filesStale || archive || patch.title !== undefined || patch.properties !== undefined || patch.lane_id !== undefined) {
       others.push({
         kind: 'update',
         task,
@@ -683,12 +706,14 @@ export function planKaitenSync(input: PlanInput): SyncPlan {
         contentHash: hash,
         firstDelivery: task.fm.content_hash === undefined,
         files: filesStale ? files : null,
+        archive,
       });
     }
 
     const epic = epicOf(tasks, task);
     const parentId = cardIdOf(epic?.fm.tracker);
-    if (parentId !== null && !ignore.has(parentId) && !card.parents.includes(parentId)) {
+    // К архивному эпику не привязываем: Kaiten может потерять связь, и попытка повторялась бы каждый раз.
+    if (parentId !== null && !ignore.has(parentId) && !card.parents.includes(parentId) && cards.get(parentId)?.archived !== true) {
       others.push({ kind: 'link', task, parentId, childId: cardId });
     }
   }

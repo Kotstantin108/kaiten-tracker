@@ -38,6 +38,19 @@ describe('kaiten.json', () => {
     expect(() => projectFromTasksRepo(JSON.stringify({ ...CONFIG, project: 'Acme Inc' }))).toThrow(/ключ проекта/);
   });
 
+  it('архив Kaiten — без дорожки «Архив»: ни имени, ни id в маппинге', () => {
+    const archive = (kaiten: Record<string, unknown>, mapping?: Record<string, unknown>) =>
+      JSON.stringify({ ...CONFIG, kaiten: { ...CONFIG.kaiten, archiveInKaiten: true, ...kaiten }, ...(mapping ? { mapping } : {}) });
+    expect(projectFromTasksRepo(archive({})).project.kaiten.archiveInKaiten).toBe(true);
+    expect(projectFromTasksRepo(JSON.stringify(CONFIG)).project.kaiten.archiveInKaiten).toBe(false);
+    expect(() => projectFromTasksRepo(archive({ archiveLane: 'Архив' }))).toThrow(/kaiten\.archiveLane: вместе с archiveInKaiten/);
+    expect(() => projectFromTasksRepo(archive({}, { boardId: 1, columns: {}, archiveLaneId: 9 }))).toThrow(/mapping\.archiveLaneId/);
+  });
+
+  it('незнакомый ключ в kaiten — не ошибка: так новый ключ не ломает прежние версии', () => {
+    expect(() => projectFromTasksRepo(JSON.stringify({ ...CONFIG, kaiten: { ...CONFIG.kaiten, futureKey: 1 } }))).not.toThrow();
+  });
+
   it('имя хранилища — последняя часть адреса без .git', () => {
     expect(storeNameOf('https://example.com/acme/acme-tasks.git')).toBe('acme-tasks');
     expect(storeNameOf('git@example.com:acme/acme-tasks.git')).toBe('acme-tasks');

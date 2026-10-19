@@ -227,6 +227,8 @@ export interface CardPayload {
   properties?: Record<string, unknown>;
   asap?: boolean;
   due_date?: string;
+  /** 1 — на доске, 2 — в архиве; колонку и дорожку архив не меняет (живьём 19.10). */
+  condition?: 1 | 2;
 }
 
 export interface KaitenClientOptions {

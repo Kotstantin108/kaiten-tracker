@@ -54,7 +54,7 @@ export const RepoSchema = z.object({
 });
 export type RepoConfig = z.infer<typeof RepoSchema>;
 
-export const ProjectSchema = z.object({
+const ProjectObject = z.object({
   /** Название для людей: из него имя пространства и поля репозитория. */
   title: z.string().min(1),
   kaiten: z.object({
@@ -71,6 +71,8 @@ export const ProjectSchema = z.object({
     departments: z.array(z.string().min(1)).default([]),
     /** Дорожка закрытых больше месяца назад карточек: `Архив`. */
     archiveLane: z.string().min(1).optional(),
+    /** Закрытые больше месяца назад карточки — в штатный архив Kaiten, а не на дорожку. */
+    archiveInKaiten: z.boolean().default(false),
   }),
   repos: z.array(RepoSchema).min(1),
   /**
@@ -88,6 +90,20 @@ export const ProjectSchema = z.object({
   retireFields: z.array(z.string()).default([]),
   mapping: MappingSchema.optional(),
 });
+
+/**
+ * Архив Kaiten вместо дорожки «Архив» — без дорожки: и без имени в
+ * `kaiten.archiveLane`, и без её id в маппинге. Прежние версии `kaiten`
+ * переносят на дорожку по id из маппинга — оставленный id делил бы закрытые
+ * карточки между дорожкой и архивом.
+ */
+function archiveConflict(project: { kaiten: { archiveInKaiten: boolean; archiveLane?: string }; mapping?: { archiveLaneId?: number } }, ctx: z.RefinementCtx): void {
+  if (!project.kaiten.archiveInKaiten) return;
+  if (project.kaiten.archiveLane !== undefined) ctx.addIssue({ code: 'custom', path: ['kaiten', 'archiveLane'], message: 'вместе с archiveInKaiten дорожка «Архив» не нужна — уберите archiveLane' });
+  if (project.mapping?.archiveLaneId !== undefined) ctx.addIssue({ code: 'custom', path: ['mapping', 'archiveLaneId'], message: 'вместе с archiveInKaiten уберите и mapping.archiveLaneId' });
+}
+
+export const ProjectSchema = ProjectObject.superRefine(archiveConflict);
 export type ProjectConfig = z.infer<typeof ProjectSchema>;
 
 export const ConfigSchema = z
@@ -150,13 +166,15 @@ export const PeopleSchema = z.object({
 });
 export type People = z.infer<typeof PeopleSchema>;
 
-export const TasksRepoConfigSchema = ProjectSchema.extend({
+export const TasksRepoConfigSchema = ProjectObject.extend({
   /** Ключ проекта: имя копии для чтения, метка в сообщениях скриптов. */
   project: z.string().regex(/^[a-z0-9-]+$/, 'ключ проекта — латиница, цифры, дефис'),
   teams: z.array(z.string().min(1)).default([]),
   defaultTeam: z.string().optional(),
   people: PeopleSchema.default({ people: {}, emails: {} }),
-}).passthrough();
+})
+  .passthrough()
+  .superRefine(archiveConflict);
 export type TasksRepoConfig = z.infer<typeof TasksRepoConfigSchema>;
 
 /** Конфиг из `kaiten.json` → проект; `url` — адрес репозитория задач, если его знает вызывающий (`.kaiten`). */
