@@ -422,6 +422,7 @@ export function newTaskText(input: NewTaskInput, date: string): string | { error
     created_by: input.createdBy,
     created_via: input.createdVia,
     updated: date,
+    revised: date,
   });
   if (!parsed.success) return { error: parsed.error.issues.map((i) => `${i.path.join('.')}: ${i.message}`).join('; ') };
   // Пустой пункт скелета — заготовка для редактора; в задаче он был бы пустым пунктом чек-листа.
@@ -536,12 +537,12 @@ export function applyOp(op: Op, texts: TaskTexts, ctx: OpContext): OpResult {
       }
       const parsed = FrontmatterSchema.safeParse(raw.data);
       if (!parsed.success) return { error: parsed.error.issues.map((i) => `${i.path.join('.') || '(шапка)'}: ${i.message}`).join('; ') };
-      const foreign = foreignFieldChanges(task.fm, parsed.data).filter((f) => f !== 'updated' && f !== 'content_hash' && f !== 'files_hash');
+      const foreign = foreignFieldChanges(task.fm, parsed.data).filter((f) => f !== 'updated' && f !== 'revised' && f !== 'content_hash' && f !== 'files_hash');
       if (foreign.length > 0) return { error: `эти поля правятся не в тексте задачи: ${foreign.join(', ')} — верните их как были` };
       // Поля не-файла не тронуты, значит «изменилось ли» решает хеш файловой части.
       if (contentHash(parsed.data, raw.body) === op.baseHash) return { changes: [], summary: `задача ${ref} без изменений`, warnings: [] };
       // «Доставлено в Kaiten» правкой не подделать: берётся из задачи, не из текста.
-      const out = write(task, { ...parsed.data, content_hash: task.fm.content_hash, files_hash: task.fm.files_hash }, raw.body, ctx);
+      const out = write(task, { ...parsed.data, revised: ctx.date, content_hash: task.fm.content_hash, files_hash: task.fm.files_hash }, raw.body, ctx);
       if ('error' in out) return out;
       return { changes: [{ path: task.path, text: out.text }], summary: `задача ${ref} изменена`, warnings: out.warnings };
     }

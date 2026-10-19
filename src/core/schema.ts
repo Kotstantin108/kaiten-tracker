@@ -122,6 +122,10 @@ export const FIELDS = {
   // `main` в `show`/`list` — так соседняя задача знает, где лежит работа на ревью.
   branch: { owner: 'cli', required: false, schema: nonEmpty },
   updated: { owner: 'cli', required: true, schema: date },
+  // Последняя правка текста задачи (заголовок, «Суть», тело, связи): ставят
+  // `kaiten new` и `kaiten edit`, а не синхронизация и отметки пунктов. От неё
+  // считается возраст для «Можно младшему» (владелец 19.10.2026); нет — от `created`.
+  revised: { owner: 'cli', required: false, schema: date },
   planning: { owner: 'kaiten', required: false, schema: PlanningSchema },
   content_hash: { owner: 'cli', required: false, schema: z.string().regex(/^sha256:[a-f0-9]{64}$/, 'sha256:<64 hex>') },
   // Какие файлы (вложения и журнал) карточка уже получила; ставит только

@@ -740,15 +740,15 @@ describe('поля «Можно младшему»', () => {
     expect(w.fake.writes.length).toBe(writes);
   });
 
-  it('неготовая — «Нет» с причинами; задачу освежили — «Да», причины стираются', async () => {
-    const [path, text] = task('active/old.md', { tracker: '801', updated: '2026-06-01' }, READY);
+  it('постановку давно не правили — «Нет», хотя задачу трогали недавно; поправили — «Да», причины стираются', async () => {
+    const [path, text] = task('active/old.md', { tracker: '801', created: '2026-06-01', revised: '2026-06-01', updated: '2026-09-30' }, READY);
     const w = world([[path, text]]);
     seedCard(w.fake, { id: 801, ...seeded });
     await w.sync({ junior: JUNIOR, now: NOW });
     const card = w.fake.cards.get(801);
-    expect(card?.properties).toMatchObject({ id_7: [72], id_8: 'задача старше 90 дней' });
+    expect(card?.properties).toMatchObject({ id_7: [72], id_8: 'постановку не правили больше 90 дней' });
 
-    w.texts.set(path, (w.texts.get(path) ?? '').replace('updated: 2026-06-01', 'updated: 2026-09-30'));
+    w.texts.set(path, (w.texts.get(path) ?? '').replace('revised: 2026-06-01', 'revised: 2026-09-30'));
     await w.sync({ junior: JUNIOR, now: NOW });
     expect(card?.properties).toMatchObject({ id_7: [71], id_8: null });
   });

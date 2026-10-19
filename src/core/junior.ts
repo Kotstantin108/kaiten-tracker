@@ -63,10 +63,15 @@ export interface JuniorOptions {
   maxAgeDays: number;
 }
 
-export function juniorReadiness(fm: Pick<Frontmatter, 'type' | 'status' | 'updated'>, body: string, opts: JuniorOptions): JuniorReadiness {
+/**
+ * Возраст — от последней правки текста (`revised`), а не от `updated`: перенос
+ * карточки по доске, приоритет или отметка пункта постановку не освежают.
+ * Задача до поля `revised` — от `created`: лучше лишнее «Нет», чем «Да» наугад.
+ */
+export function juniorReadiness(fm: Pick<Frontmatter, 'type' | 'status' | 'created' | 'revised'>, body: string, opts: JuniorOptions): JuniorReadiness {
   if (!JUNIOR_TYPES.includes(fm.type) || !JUNIOR_STATUSES.includes(fm.status)) return null;
   const missing: string[] = [];
-  if (daysBetween(fm.updated, opts.today) > opts.maxAgeDays) missing.push(`задача старше ${opts.maxAgeDays} дней`);
+  if (daysBetween(fm.revised ?? fm.created, opts.today) > opts.maxAgeDays) missing.push(`постановку не правили больше ${opts.maxAgeDays} дней`);
   for (const section of JUNIOR_SECTIONS) missing.push(...sectionProblems(section, sectionText(body, section.name)));
   return { ok: missing.length === 0, missing };
 }

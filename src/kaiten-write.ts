@@ -338,7 +338,7 @@ async function newTask(args: string[]): Promise<void> {
   await commit(ctx, { kind: 'new', path: `active/${slug}.md`, text }, `новая задача ${slug}`);
   console.log(`Открыть: kaiten show ${slug}`);
   if (junior) {
-    const readiness = juniorReadiness({ type: taskType, status: 'inbox', updated: today() }, body, { today: today(), maxAgeDays: juniorState.maxAgeDays });
+    const readiness = juniorReadiness({ type: taskType, status: 'inbox', created: today(), revised: today() }, body, { today: today(), maxAgeDays: juniorState.maxAgeDays });
     if (readiness) console.log(readiness.ok ? 'Младшему: да.' : `Младшему: нет — не хватает: ${juniorMissingText(readiness.missing)}.`);
   }
 }

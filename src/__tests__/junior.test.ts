@@ -29,8 +29,8 @@ function body(...sections: string[]): string {
   return ['## Зачем\n\nЧтобы оплата подтверждалась.', '## Что сделать\n\nПовторять доставку.', ...sections, '## Критерии готовности\n\n- [ ] ретраи'].join('\n\n');
 }
 
-function check(text: string, fm: { type?: TaskType; status?: TaskStatus; updated?: string } = {}) {
-  return juniorReadiness({ type: fm.type ?? 'story', status: fm.status ?? 'backlog', updated: fm.updated ?? '2026-10-01' }, text, OPTS);
+function check(text: string, fm: { type?: TaskType; status?: TaskStatus; created?: string; revised?: string } = {}) {
+  return juniorReadiness({ type: fm.type ?? 'story', status: fm.status ?? 'backlog', created: fm.created ?? '2026-01-01', revised: fm.revised ?? '2026-10-01' }, text, OPTS);
 }
 
 describe('juniorReadiness', () => {
@@ -77,8 +77,11 @@ describe('juniorReadiness', () => {
 
   it('старше порога — устарела; ровно порог — ещё нет', () => {
     const full = body(PRODUCT_NO, DB_NO, N8N_NO);
-    expect(check(full, { updated: '2026-07-21' })?.ok).toBe(true);
-    expect(check(full, { updated: '2026-07-20' })).toEqual({ ok: false, missing: ['задача старше 90 дней'] });
+    expect(check(full, { revised: '2026-07-21' })?.ok).toBe(true);
+    expect(check(full, { revised: '2026-07-20' })).toEqual({ ok: false, missing: ['постановку не правили больше 90 дней'] });
+    // Задача до поля revised — от даты создания.
+    const legacy = juniorReadiness({ type: 'story', status: 'backlog', created: '2026-07-20' }, full, OPTS);
+    expect(legacy?.missing).toEqual(['постановку не правили больше 90 дней']);
   });
 
   it('epic, spike и взятые, заблокированные, закрытые задачи — признак не применим', () => {
@@ -93,8 +96,8 @@ describe('juniorReadiness', () => {
   });
 
   it('причины одной строкой — для поля карточки', () => {
-    const r = check(body(DB_NO), { updated: '2026-01-01' });
-    expect(juniorMissingText(r?.missing ?? [])).toBe('задача старше 90 дней; продукт: нет раздела; n8n: нет раздела');
+    const r = check(body(DB_NO), { revised: '2026-01-01' });
+    expect(juniorMissingText(r?.missing ?? [])).toBe('постановку не правили больше 90 дней; продукт: нет раздела; n8n: нет раздела');
   });
 });
 

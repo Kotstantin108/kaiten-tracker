@@ -185,6 +185,10 @@ describe('правка текста', () => {
     const [change] = ok(applyOp({ kind: 'edit', id: ID, text: edited, baseHash: base }, texts(), CTX));
     expect(change.text).toContain('Тест на таймаут и на 503');
     expect(fmOf(change.text).summary).toBe('Оплата зависает на два часа.');
+    // Правка текста освежает постановку; отметка пункта — нет.
+    expect(fmOf(change.text).revised).toBe('2026-09-28');
+    const [checked] = ok(applyOp({ kind: 'check', id: ID, items: ['Тест на таймаут'], checked: true }, texts(), CTX));
+    expect(fmOf(checked.text).revised).toBeUndefined();
   });
 
   it('поля Kaiten и CLI руками не меняются', () => {

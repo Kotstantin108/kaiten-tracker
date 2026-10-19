@@ -12,7 +12,7 @@
  *
  * Берутся задачи из active/, кроме «В работе» (по ним сейчас работают), у
  * которых постановка не проходит проверку `kaiten new`. Модель возвращает
- * только тело; шапку скрипт не отдаёт и не меняет (кроме `updated`). Ответ
+ * только тело; шапку скрипт не отдаёт и не меняет (кроме `updated` и `revised`). Ответ
  * принимается, только если механически:
  *   - каждая непустая строка старого тела, кроме заголовков, есть в новом
  *     (текст переносится между разделами, но не теряется и не переписывается);
@@ -304,7 +304,7 @@ async function main(): Promise<void> {
       const c = list.find((x) => x.slug === o.slug);
       if (!c) continue;
       const body = readFileSync(join(args.out, `${o.slug}.md`), 'utf8').trim();
-      writeFileSync(c.path, serializeTaskDocument({ ...c.fm, updated: today }, `\n${body}\n`), 'utf8');
+      writeFileSync(c.path, serializeTaskDocument({ ...c.fm, updated: today, revised: today }, `\n${body}\n`), 'utf8');
     }
   }
   const ok = outcomes.filter((o) => o.ok).length;
