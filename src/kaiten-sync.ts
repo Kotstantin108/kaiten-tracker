@@ -426,6 +426,10 @@ export function formatPlan(run: Pick<SyncRun, 'plan' | 'checklists'> & Partial<P
   out.push(
     `Создать карточек: ${count('create')}, обновить: ${count('update')}, связать с эпиком: ${count('link')}; из Kaiten в задачи: ${plan.mirror.length}; новых задач из карточек: ${adopt.length}`,
   );
+  const junior = plan.junior;
+  if (junior && junior.yes + junior.no + junior.cleared > 0) {
+    out.push(`«Можно младшему»: «Да» — ${junior.yes}, «Нет» — ${junior.no}, очистить — ${junior.cleared}`);
+  }
   for (const c of adopt) {
     const built = run.adopted?.get(c.card.id);
     const result = built === undefined ? '' : 'problem' in built ? ` — не перенести: ${built.problem}` : ` → ${built.item.slug}`;

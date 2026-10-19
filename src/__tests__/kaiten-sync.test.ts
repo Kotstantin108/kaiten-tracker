@@ -776,6 +776,19 @@ describe('поля «Можно младшему»', () => {
     expect(card?.properties).not.toHaveProperty('id_8');
   });
 
+  it('сухой прогон владельца — сколько карточек получат «Да», «Нет» и пустое поле', async () => {
+    const w = world([
+      task('active/a.md', { tracker: '810', updated: '2026-09-20' }, READY),
+      task('active/b.md', { tracker: '811', updated: '2026-09-20' }),
+      task('active/c.md', { tracker: '812', updated: '2026-09-20', status: 'in-progress' }, READY),
+    ]);
+    for (const id of [810, 811]) seedCard(w.fake, { id, ...seeded });
+    seedCard(w.fake, { id: 812, ...seeded, column_id: 104, properties: { ...seeded.properties, id_7: [71] } });
+    const run = await runKaitenSync(w.fake.client, { ...w.input(), junior: JUNIOR, now: NOW }, 'plan');
+    expect(formatPlan(run)).toContain('«Можно младшему»: «Да» — 1, «Нет» — 1, очистить — 1');
+    expect(w.fake.writes).toEqual([]);
+  });
+
   it('проект без полей признака — ничего не пишем', async () => {
     const [path, text] = task('active/off.md', { tracker: '803', updated: '2026-09-20' }, READY);
     const w = world([[path, text]]);

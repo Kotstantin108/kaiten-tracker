@@ -504,6 +504,8 @@ export interface SyncPlan {
   /** Как назвать задачу в выводе: id → ключ карточки. */
   names: Record<string, string>;
   report: SyncReport;
+  /** Сколько карточек получат «Можно младшему»: «Да», «Нет», пустое — для сухого прогона владельца. */
+  junior?: { yes: number; no: number; cleared: number };
 }
 
 export interface PlanInput {
@@ -738,5 +740,20 @@ export function planKaitenSync(input: PlanInput): SyncPlan {
 
   // Эпики — раньше задач: новой задаче нужна уже существующая карточка эпика.
   creates.sort((a, b) => Number(b.task.fm.type === 'epic') - Number(a.task.fm.type === 'epic'));
-  return { actions: [...creates, ...others], mirror, names, report };
+  const actions = [...creates, ...others];
+  return { actions, mirror, names, report, ...(junior ? { junior: juniorCounts(actions, junior) } : {}) };
+}
+
+function juniorCounts(actions: readonly SyncAction[], junior: JuniorSync): NonNullable<SyncPlan['junior']> {
+  const counts = { yes: 0, no: 0, cleared: 0 };
+  const field = key(junior.property.id);
+  for (const a of actions) {
+    const props = a.kind === 'create' ? a.fields.properties : a.kind === 'update' ? a.patch.properties : undefined;
+    if (!props || !(field in props)) continue;
+    const value = props[field];
+    if (value === null) counts.cleared += 1;
+    else if (sameValue(value, [junior.property.yes])) counts.yes += 1;
+    else counts.no += 1;
+  }
+  return counts;
 }
