@@ -59,7 +59,13 @@ export type Op =
    * `kaiten-adopt.ts`). Пакетом на проход. id выведен из карточки: задача с
    * таким id уже есть (перенёс другой разработчик) — пропускается.
    */
-  | { kind: 'adopt'; items: AdoptItem[] };
+  | { kind: 'adopt'; items: AdoptItem[] }
+  /**
+   * Скрипт оценки (`npm run assess -- --apply`) поставил «Оценку» в карточку:
+   * в файл — и зеркало (`assessment`), и что поставил скрипт (`assessed`), с
+   * датой операции. Как `synced`, не трогает `updated`.
+   */
+  | { kind: 'assessed'; items: Array<{ id: string; verdict: AssessVerdict }> };
 
 /** Что поменять в файле по карточке; `null` — в карточке поле пустое. */
 export interface MirrorItem {
@@ -469,6 +475,7 @@ export function applyOp(op: Op, texts: TaskTexts, ctx: OpContext): OpResult {
   if (op.kind === 'synced') return applySynced(op.items, texts);
   if (op.kind === 'mirror') return applyMirror(op.items, texts, ctx);
   if (op.kind === 'adopt') return applyAdopt(op.items, texts);
+  if (op.kind === 'assessed') return applyAssessed(op.items, texts, ctx);
 
   const task = byId(texts, op.id);
   if ('error' in task) return task;
@@ -637,6 +644,18 @@ function applyAdopt(items: readonly AdoptItem[], texts: TaskTexts): OpResult {
     changes.push({ path, text: item.text });
   }
   return { changes, summary: `из Kaiten новых задач: ${changes.length}`, warnings };
+}
+
+function applyAssessed(items: ReadonlyArray<{ id: string; verdict: AssessVerdict }>, texts: TaskTexts, ctx: OpContext): OpResult {
+  const all = records(texts);
+  const changes: FileChange[] = [];
+  for (const item of items) {
+    const task = all.find((x) => x.fm.id === item.id);
+    if (!task) continue;
+    const fm: Frontmatter = { ...task.fm, assessment: item.verdict, assessed: { verdict: item.verdict, date: ctx.date } };
+    changes.push({ path: task.path, text: serializeTaskDocument(fm, task.body) });
+  }
+  return { changes, summary: `оценки: ${changes.length}`, warnings: [] };
 }
 
 function applySynced(items: readonly SyncedItem[], texts: TaskTexts): OpResult {
