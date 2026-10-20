@@ -78,6 +78,7 @@ export function fileProblems(name: string, bytes: Uint8Array, existing: readonly
   else if (bytes.length > maxBytes) problems.push(`файл больше ${formatLimit(maxBytes)}`);
   else if (kind && !looksLike(kind, bytes)) problems.push(`содержимое не похоже на .${extension} — проверьте, тот ли это файл`);
   const lower = trimmed.toLowerCase();
+  // Так назывался журнал задачи в карточке: синхронизация такой файл убирает.
   if (lower === JOURNAL_FILE.toLowerCase()) problems.push(`имя «${JOURNAL_FILE}» занято журналом задачи — назовите файл иначе`);
   else if (existing.some((n) => n.toLowerCase() === lower)) problems.push(`в карточке уже есть файл «${trimmed}» — назовите новый иначе`);
   return problems;

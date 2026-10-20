@@ -30,12 +30,13 @@
  * списке карточек и сравниваются напрямую: правка их в интерфейсе Kaiten
  * возвращается к файлу (владелец — файл).
  *
- * ФАЙЛЫ КАРТОЧКИ (`taskFiles`). Вложения задачи и журнал (`ЖУРНАЛ.md`)
- * лежат в карточке файлами — человек открывает их без командной строки.
- * Владелец файла с тем же именем — репозиторий; файлы с другими именами
- * — людей. Что карточка уже получила — `files_hash`, отдельно от
- * `content_hash`: новая запись журнала меняет только файл журнала, описание
- * не перерисовывается. Задаче без `files_hash` (появилась до файлов) файлы
+ * ФАЙЛЫ КАРТОЧКИ (`taskFiles`). Вложения задачи лежат в карточке файлами —
+ * человек открывает их без командной строки. Владелец файла с тем же
+ * именем — репозиторий; файлы с другими именами — людей. Журнал — не файлом,
+ * а ссылкой на GitHub в описании (`journalUrl`, владелец 20.10.2026): файл
+ * перезаливался на каждую запись. Прежний файл журнала (`RETIRED_FILES`)
+ * доставка убирает. Что карточка уже получила — `files_hash`, отдельно от
+ * `content_hash`. Задаче без `files_hash` (появилась до файлов) файлы
  * доставляет только `--resend` скрипта владельца — так массовая загрузка
  * проходит через сухой прогон; новой карточке `files_hash` ставится сразу.
  *
@@ -136,10 +137,22 @@ function fitDescription(text: string, task: TaskRecord, base: string | null): st
   return `${kept}\n\n…Текст задачи длиннее, чем помещается в карточку. Полностью — ${where}.\n`;
 }
 
+/**
+ * Журнал задачи в карточке — ссылкой на GitHub, а не файлом: файл
+ * перезаливался на каждую запись и копил в карточке мусор (владелец
+ * 20.10.2026). Без журнала или без адреса репозитория задач — ссылки нет.
+ */
+export function journalUrl(task: TaskRecord, base: string | null): string | null {
+  if (!base || !task.log?.trim()) return null;
+  return `${base}/blob/main/${task.path.replace(/\.md$/, '.log.md')}`;
+}
+
 export function renderContent(task: TaskRecord, all: readonly TaskRecord[], base: string | null): RenderedContent {
   const { body, checklists } = extractChecklists(task.body.trim());
+  const journal = journalUrl(task, base);
+  const head = journal ? `${Q41_NOTICE}\n\nЖурнал работы — [в репозитории задач](${journal}).` : Q41_NOTICE;
   return {
-    description: fitDescription(`${Q41_NOTICE}\n\n${linkify(body, all, base).trim()}\n`, task, base),
+    description: fitDescription(`${head}\n\n${linkify(body, all, base).trim()}\n`, task, base),
     checklists: checklists.map((c) => ({ ...c, items: c.items.map((i) => ({ ...i, text: linkify(i.text, all, base) })) })),
   };
 }
@@ -155,7 +168,9 @@ export const RENDER_VERSION = 1;
 export function deliveredHash(task: TaskRecord, all: readonly TaskRecord[], base: string | null): string {
   const linked = [...task.body.matchAll(/\]\(\/(?:active|archive\/\d{4}-\d{2})\/([a-z0-9-]+)\.md/g)].map((m) => m[1]);
   const paths = [...new Set(linked)].sort().map((slug) => all.find((x) => x.slug === slug)?.path ?? null);
-  const payload = JSON.stringify([contentHash(task.fm, task.body), RENDER_VERSION, base, paths]);
+  // Ссылка на журнал — только у задач с журналом: у остальных хеш прежний, и карточки не перерисовываются.
+  const journal = journalUrl(task, base);
+  const payload = JSON.stringify([contentHash(task.fm, task.body), RENDER_VERSION, base, paths, ...(journal ? [journal] : [])]);
   return `sha256:${createHash('sha256').update(payload).digest('hex')}`;
 }
 export interface ExistingChecklist {
@@ -438,14 +453,13 @@ export interface FilesDelivery {
   hash: string;
 }
 
-export function taskFiles(task: TaskRecord, attachments: readonly AttachmentRef[]): TaskFile[] {
-  const files: TaskFile[] = [...attachments].sort((a, b) => a.name.localeCompare(b.name)).map((a) => ({ ...a }));
-  const log = task.log?.trim() ? task.log : null;
-  if (log !== null) {
-    files.push({ name: JOURNAL_FILE, sha: createHash('sha256').update(log).digest('hex'), size: Buffer.byteLength(log, 'utf8'), text: log });
-  }
-  return files;
+/** Файлы карточки — вложения задачи; журнал — ссылкой в описании (`journalUrl`). */
+export function taskFiles(attachments: readonly AttachmentRef[]): TaskFile[] {
+  return [...attachments].sort((a, b) => a.name.localeCompare(b.name)).map((a) => ({ ...a }));
 }
+
+/** Журнал, который синхронизация прикладывала файлом до 20.10.2026, — убрать из карточки. */
+export const RETIRED_FILES: readonly string[] = [JOURNAL_FILE];
 
 export function filesHash(files: readonly TaskFile[]): string {
   const payload = JSON.stringify(files.map((f) => [f.name, f.sha]));
@@ -644,7 +658,7 @@ export function planKaitenSync(input: PlanInput): SyncPlan {
   const junior: JuniorSync | undefined = input.junior ? { ...input.junior, today: localDate(new Date(input.now ?? Date.now()).toISOString()) } : undefined;
   const delivery = (task: TaskRecord): FilesDelivery | null => {
     if (!input.attachments) return null;
-    const wanted = taskFiles(task, input.attachments.get(task.slug) ?? []);
+    const wanted = taskFiles(input.attachments.get(task.slug) ?? []);
     return { wanted, hash: filesHash(wanted) };
   };
 

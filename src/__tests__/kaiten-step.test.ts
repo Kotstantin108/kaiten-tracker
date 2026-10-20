@@ -153,7 +153,7 @@ describe('одновременные шаги', { timeout: 60_000 }, () => {
 });
 
 describe('файлы карточки из хранилища', { timeout: 60_000 }, () => {
-  it('вложения (и во вложенной папке) и журнал — в новую карточку; запись в журнал — заменяет ЖУРНАЛ.md', async () => {
+  it('вложения (и во вложенной папке) — в новую карточку; журнал — ссылкой, запись в него файлов карточки не трогает', async () => {
     writeFileSync(settingsPath, JSON.stringify({ sync: { kaiten: true } }));
     const seed = join(tmp, 'seed');
     git(seed, 'pull', '-q');
@@ -189,7 +189,6 @@ describe('файлы карточки из хранилища', { timeout: 60_00
     expect(files()).toEqual([
       ['DRAFT.md', Buffer.byteLength('# Черновик\n')],
       ['img/scheme.png', 7],
-      ['ЖУРНАЛ.md', Buffer.byteLength('## [2026-09-28] Начал\n\nЧерновик приложен.\n')],
     ]);
     expect(git(remote, 'show', 'main:active/files.md')).toMatch(/files_hash: sha256:/);
 
@@ -197,10 +196,8 @@ describe('файлы карточки из хранилища', { timeout: 60_00
     if ('error' in recorded) throw new Error(recorded.error);
     fake.writes.length = 0;
     expect((await syncWithKaiten(ctx, fake.client))?.errors).toEqual([]);
-    expect(new TextDecoder().decode(card?.files?.find((f) => f.name === 'ЖУРНАЛ.md')?.content)).toContain('Продолжил.');
-    expect(card?.files?.filter((f) => f.name === 'ЖУРНАЛ.md')).toHaveLength(1);
-    expect(fake.writes.every((w) => w.includes('/files'))).toBe(true);
-    expect(fake.writes.length).toBeGreaterThan(0);
+    expect(files()).toHaveLength(2);
+    expect(fake.writes.some((w) => w.includes('/files'))).toBe(false);
   });
 });
 

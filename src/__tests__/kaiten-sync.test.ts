@@ -7,7 +7,7 @@ import { describe, expect, it } from 'vitest';
 
 import type { ConfigMapping } from '../config.js';
 import { contentHash, serializeTaskDocument } from '../core/document.js';
-import { DESCRIPTION_LIMIT, linkify, Q41_NOTICE, repoWebBase, type AttachmentRef } from '../core/kaiten-sync-plan.js';
+import { deliveredHash, DESCRIPTION_LIMIT, linkify, Q41_NOTICE, repoWebBase, type AttachmentRef } from '../core/kaiten-sync-plan.js';
 import { FrontmatterSchema, type Frontmatter } from '../core/schema.js';
 import { applyOp, tasksOf } from '../core/task-ops.js';
 import { formatPlan, runKaitenSync, type RunInput } from '../kaiten-sync.js';
@@ -308,7 +308,7 @@ describe('чек-лист — как в файле', () => {
   });
 });
 
-describe('файлы карточки: вложения и журнал', () => {
+describe('файлы карточки: вложения; журнал — ссылкой', () => {
   /** Хранилище вложений: slug → вложения, sha → содержимое. */
   function withFiles(w: ReturnType<typeof world>) {
     const refs = new Map<string, AttachmentRef[]>();
@@ -329,7 +329,7 @@ describe('файлы карточки: вложения и журнал', () => 
     return { attach, extra, names, text };
   }
 
-  it('новая карточка получает вложения и журнал; files_hash — в задачу; повтор — без записей', async () => {
+  it('новая карточка получает вложения, журнал — ссылкой в описании; files_hash — в задачу; повтор — без записей', async () => {
     const [path, text] = task('active/new.md', { status: 'inbox', created_via: 'agent' });
     const w = world([[path, text], ['active/new.log.md', '## [2026-09-28] Начал\n\nЧерновик готов.\n']]);
     const f = withFiles(w);
@@ -338,8 +338,8 @@ describe('файлы карточки: вложения и журнал', () => 
     const run = await w.sync(f.extra());
     expect(run.errors).toEqual([]);
     const card = [...w.fake.cards.values()][0];
-    expect(f.names(card.id)).toEqual(['DRAFT.md', 'img/scheme.md', 'ЖУРНАЛ.md']);
-    expect(f.text(card.id, 'ЖУРНАЛ.md')).toContain('Черновик готов.');
+    expect(f.names(card.id)).toEqual(['DRAFT.md', 'img/scheme.md']);
+    expect(card.description).toContain('Журнал работы — [в репозитории задач](https://github.com/org/acme-tasks/blob/main/active/new.log.md).');
     expect(w.texts.get(path)).toMatch(/files_hash: sha256:/);
 
     const writes = w.fake.writes.length;
@@ -348,73 +348,108 @@ describe('файлы карточки: вложения и журнал', () => 
     expect(w.fake.writes.length).toBe(writes);
   });
 
-  it('новая запись журнала: заменяется только ЖУРНАЛ.md — описание, чек-листы и чужие файлы не трогаются', async () => {
+  it('новая запись журнала карточку не трогает; первая запись и переезд в архив — меняют ссылку', async () => {
     const [path, text] = task('active/new.md', { status: 'inbox', created_via: 'agent' });
-    const w = world([[path, text], ['active/new.log.md', '## [2026-09-28] Начал\n']]);
+    const w = world([[path, text]]);
     const f = withFiles(w);
     await w.sync(f.extra());
     const card = [...w.fake.cards.values()][0];
-    card.files?.push({ id: '00000000-0000-4000-8000-999999999999', name: 'от заказчика.pdf', content: new Uint8Array([1, 2]) });
-    w.fake.writes.length = 0;
+    expect(card.description).not.toContain('Журнал работы');
 
+    w.texts.set('active/new.log.md', '## [2026-09-28] Начал\n');
+    await w.sync(f.extra());
+    expect(card.description).toContain('/blob/main/active/new.log.md');
+    w.fake.writes.length = 0;
     w.texts.set('active/new.log.md', '## [2026-09-28] Начал\n\n## [2026-09-29] Продолжил\n');
-    const run = await w.sync(f.extra());
-    expect(run.errors).toEqual([]);
-    expect(f.text(card.id, 'ЖУРНАЛ.md')).toContain('Продолжил');
-    expect(f.names(card.id)).toEqual(['ЖУРНАЛ.md', 'от заказчика.pdf']);
-    expect(w.fake.writes.every((x) => x.includes('/files'))).toBe(true);
-    expect(w.fake.writes.some((x) => x.startsWith('DELETE') && x.includes('999999999999'))).toBe(false);
+    expect((await w.sync(f.extra())).plan.actions).toEqual([]);
+    expect(w.fake.writes).toEqual([]);
+
+    w.texts.set('archive/2026-09/new.md', w.texts.get(path) ?? '');
+    w.texts.set('archive/2026-09/new.log.md', w.texts.get('active/new.log.md') ?? '');
+    w.texts.delete(path);
+    w.texts.delete('active/new.log.md');
+    await w.sync(f.extra());
+    expect(card.description).toContain('/blob/main/archive/2026-09/new.log.md');
+  });
+
+  it('без журнала хеш доставки прежний: карточки без журнала не перерисовываются', () => {
+    const [path, text] = task('active/open.md', { tracker: '740' });
+    const [plain] = tasksOf(new Map([[path, text]]));
+    const [withLog] = tasksOf(new Map([[path, text], ['active/open.log.md', '## [2026-09-28] Запись\n']]));
+    const base = 'https://github.com/org/acme-tasks';
+    expect(deliveredHash(withLog, [withLog], base)).not.toBe(deliveredHash(plain, [plain], base));
+    expect(deliveredHash(withLog, [withLog], null)).toBe(deliveredHash(plain, [plain], null));
+  });
+
+  it('прежний журнал-файл убирается из карточки; файлы людей и вложения остаются', async () => {
+    const [path, text] = task('active/open.md', { tracker: '700', files_hash: 'sha256:' + 'b'.repeat(64) });
+    const w = world([[path, text], ['active/open.log.md', '## [2026-09-28] Запись\n']]);
+    seedCard(w.fake, { id: 700, title: 'Сделать задачу', board_id: BOARD, properties: { id_4: 'Коротко для фаундера.', id_2: [21] } });
+    const card = w.fake.cards.get(700);
+    if (!card) throw new Error('нет карточки');
+    card.files = [
+      { id: '00000000-0000-4000-8000-000000000701', name: 'ЖУРНАЛ.md', content: new TextEncoder().encode('старый журнал') },
+      { id: '00000000-0000-4000-8000-000000000702', name: 'от заказчика.pdf', content: new Uint8Array([1]) },
+    ];
+    const f = withFiles(w);
+    f.attach('open', 'R.md', 'v1');
+    const dry = await runKaitenSync(w.fake.client, { ...w.input(), ...f.extra() }, 'details');
+    expect(formatPlan(dry).join('\n')).toContain('убрать прежний журнал-файл: «ЖУРНАЛ.md»');
+    await w.sync(f.extra());
+    expect(f.names(700)).toEqual(['R.md', 'от заказчика.pdf']);
   });
 
   it('карточка без files_hash: фон файлы не шлёт; --resend — открытым, закрытым — только через --only', async () => {
     const [openPath, openText] = task('active/open.md', { tracker: '700' });
     const [donePath, doneText] = task('archive/2026-09/done.md', { tracker: '701', status: 'done' });
-    const w = world([[openPath, openText], [donePath, doneText], ['active/open.log.md', '## [2026-09-28] Запись\n'], ['archive/2026-09/done.log.md', '## [2026-09-28] Запись\n']]);
+    const w = world([[openPath, openText], [donePath, doneText]]);
     for (const id of [700, 701]) seedCard(w.fake, { id, title: 'Сделать задачу', board_id: BOARD, properties: { id_4: 'Коротко для фаундера.', id_2: [21] } });
     const f = withFiles(w);
+    f.attach('open', 'R.md', 'v1');
+    f.attach('done', 'D.md', 'итог');
     await w.sync(f.extra());
     expect(f.names(700)).toEqual([]);
 
     const dry = await runKaitenSync(w.fake.client, { ...w.input(), ...f.extra({ resend: true }) }, 'details');
-    expect(formatPlan(dry).join('\n')).toContain('файлы: загрузить 1: «ЖУРНАЛ.md»');
+    expect(formatPlan(dry).join('\n')).toContain('файлы: загрузить 1: «R.md»');
     await w.sync(f.extra({ resend: true }));
-    expect(f.names(700)).toEqual(['ЖУРНАЛ.md']);
+    expect(f.names(700)).toEqual(['R.md']);
     expect(f.names(701)).toEqual([]);
     expect(w.texts.get(openPath)).toMatch(/files_hash: sha256:/);
 
     const doneId = tasksOf(w.texts).find((t) => t.slug === 'done')?.fm.id ?? '';
     await w.sync(f.extra({ resend: true, only: new Set([doneId]) }));
-    expect(f.names(701)).toEqual(['ЖУРНАЛ.md']);
+    expect(f.names(701)).toEqual(['D.md']);
 
     // Дальше — сам: повторное вложение с тем же именем заменяет файл.
-    f.attach('open', 'R.md', 'v1');
-    await w.sync(f.extra());
     f.attach('open', 'R.md', 'v2 длиннее');
     await w.sync(f.extra());
-    expect(f.names(700)).toEqual(['R.md', 'ЖУРНАЛ.md']);
+    expect(f.names(700)).toEqual(['R.md']);
     expect(f.text(700, 'R.md')).toBe('v2 длиннее');
   });
 
   it('обрыв между загрузкой и удалением: повтор нашего файла убирается, совпавший остаётся', async () => {
     const [path, text] = task('active/open.md', { tracker: '710' });
-    const w = world([[path, text], ['active/open.log.md', '## [2026-09-28] Запись\n']]);
+    const w = world([[path, text]]);
     seedCard(w.fake, { id: 710, title: 'Сделать задачу', board_id: BOARD, properties: { id_4: 'Коротко для фаундера.', id_2: [21] } });
     const f = withFiles(w);
+    f.attach('open', 'R.md', 'текст');
     await w.sync(f.extra({ resend: true }));
     const card = w.fake.cards.get(710);
-    const journal = card?.files?.[0];
-    if (!card || !journal) throw new Error('нет журнала');
-    card.files?.push({ id: '00000000-0000-4000-8000-000000000777', name: 'ЖУРНАЛ.md', content: new TextEncoder().encode('старый') });
+    const ours = card?.files?.[0];
+    if (!card || !ours) throw new Error('нет файла');
+    card.files?.push({ id: '00000000-0000-4000-8000-000000000777', name: 'R.md', content: new TextEncoder().encode('старый') });
     const run = await w.sync(f.extra({ resend: true }));
     expect(formatPlan(run).join('\n')).toContain('убрать повторов 1');
-    expect(card.files?.map((x) => x.id)).toEqual([journal.id]);
+    expect(card.files?.map((x) => x.id)).toEqual([ours.id]);
   });
 
   it('файлы — только по UUID карточки, по подписанной ссылке — без токена', async () => {
     const [path, text] = task('active/open.md', { tracker: '720' });
-    const w = world([[path, text], ['active/open.log.md', '## [2026-09-28] Запись\n']]);
+    const w = world([[path, text]]);
     seedCard(w.fake, { id: 720, title: 'Сделать задачу', board_id: BOARD, properties: { id_4: 'Коротко для фаундера.', id_2: [21] } });
     const f = withFiles(w);
+    f.attach('open', 'R.md', 'текст');
     await w.sync(f.extra({ resend: true }));
     await w.sync(f.extra({ resend: true }));
     expect(w.fake.signedFetches.length).toBeGreaterThan(0);
