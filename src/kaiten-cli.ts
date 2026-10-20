@@ -22,6 +22,7 @@ import { repoWebBase, type AttachmentRef } from './core/kaiten-sync-plan.js';
 import { KaitenClient } from './kaiten-client.js';
 import { apiErrorText, runKaitenSync, type SyncRun } from './kaiten-sync.js';
 import { KAITEN_LOCK, KAITEN_QUEUE, recordOp, sendInBackground, setKaitenErrors, syncStore, takeNotices, tryLock, withLockAsync } from './store-write.js';
+import { isOutdated, OUTDATED_NOTE, publishSyncVersion } from './self-update.js';
 import { defaultStorePath, gitText, isStore, listEntries, readBlobs, readStoreTree, StoreError, syncCopy, type StoreEntry } from './task-store.js';
 
 export class UsageError extends Error {
@@ -304,6 +305,12 @@ export async function syncWithKaiten(ctx: Context, client?: KaitenClient, onLock
   // Один шаг Kaiten на хранилище: второй параллельный создал бы вторую карточку той же задаче.
   return withLockAsync(ctx.store, KAITEN_LOCK, async () => {
     onLocked?.();
+    // Устаревший kaiten переписал бы карточки по-старому; обновиться он пробовал в начале команды.
+    if (isOutdated(ctx.store)) {
+      setKaitenErrors(ctx.store, [{ what: 'синхронизация', reason: OUTDATED_NOTE }]);
+      return null;
+    }
+    publishSyncVersion(ctx.store, today());
     let run: SyncRun;
     try {
       const loaded = loadTasks(ctx);

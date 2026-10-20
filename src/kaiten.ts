@@ -58,6 +58,7 @@ import { bodySections, formatLogTail, formatOutline, formatSearch, formatSection
 import { doctor, DOCTOR_HELP } from './kaiten-doctor.js';
 import { START_COMMANDS, START_HELP } from './kaiten-start.js';
 import { editableText, WRITE_COMMANDS, WRITE_HELP } from './kaiten-write.js';
+import { ensureFresh, outdatedMessage, rerun } from './self-update.js';
 import { hasPending, syncStore, withLock } from './store-write.js';
 import { cloneStore, isStore, readBlobs, StoreError, type StoreEntry } from './task-store.js';
 
@@ -488,6 +489,8 @@ async function pull(args: string[]): Promise<void> {
       changed = false;
     }
   }
+  // В свежих задачах версия синхронизации новее своей — обновиться и выполнить pull заново.
+  if (!offline) freshOrRerun(ctx.store);
   const { index } = loadTasks(ctx);
   // Проект известен только теперь: его описание — в загруженном репозитории задач.
   const copyDir = localCopyDir(userSettings, ctx.loaded.key);
@@ -512,10 +515,36 @@ async function send(): Promise<void> {
   await sendAll(resolveContext());
 }
 
+/**
+ * Устарел ли kaiten для задач проекта (`self-update.ts`): устарел — обновиться
+ * и выполнить команду заново новым кодом. Вызывать только там, где повтор
+ * безвреден: ничего не прочитано из stdin и не записано.
+ */
+function freshOrRerun(store: string): void {
+  const fresh = ensureFresh(store);
+  if (fresh.state === 'updated') {
+    console.error('kaiten обновлён до новой версии, команда выполняется заново.');
+    rerun();
+  }
+  if (fresh.state === 'outdated') console.error(`${outdatedMessage(fresh.reason)}\n`);
+}
+
+/** Задачи этого репозитория на машине; репозиторий не подключён — `null` (команда скажет сама). */
+function storeOrNull(): string | null {
+  try {
+    return resolveContext().store;
+  } catch {
+    return null;
+  }
+}
+
 const COMMANDS: Record<string, (args: string[]) => void | Promise<void>> = { list, show, search, files, pull, doctor, ...WRITE_COMMANDS, ...START_COMMANDS };
 
 async function main(): Promise<void> {
   const [command, ...args] = process.argv.slice(2);
+  const helpOnly = !command || command === 'help' || command === '--help' || command === '-h' || args.includes('--help') || args.includes('-h');
+  const store = helpOnly ? null : storeOrNull();
+  if (store) freshOrRerun(store);
   if (command === '__send') {
     await send();
     return;

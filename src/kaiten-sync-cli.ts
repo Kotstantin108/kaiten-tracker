@@ -45,6 +45,8 @@ import { formatPlan, runKaitenSync } from './kaiten-sync.js';
 import { KAITEN_LOCK, recordOp, syncStore, withLockAsync } from './store-write.js';
 import { readTasksTree } from './tasks-files.js';
 import { loadOwnerProject } from './owner-project.js';
+import { isOutdated, publishSyncVersion, storedSyncVersion } from './self-update.js';
+import { SYNC_VERSION } from './core/sync-version.js';
 import { listEntries, readStoreTree } from './task-store.js';
 
 function argValue(argv: string[], name: string): string | undefined {
@@ -78,6 +80,8 @@ async function main(): Promise<void> {
   if (!mapping) fail(`У проекта ${project.title} нет доски в kaiten.json — сначала npm run setup -- --tasks <рабочая копия> --apply`);
   if (owner.source.kind !== 'store' && apply) fail('--apply пишет ключи карточек в задачи — только из хранилища задач: --tasks <адрес репозитория задач>');
   const store = owner.source.kind === 'store' ? owner.source.store : '';
+  // Карточки этой копией переписались бы по-старому, а копии новее вернули бы их обратно.
+  if (store && isOutdated(store)) fail('В задачах версия синхронизации новее, чем у этой копии kaiten-tracker: обновите её (git pull) и повторите.', 1);
   const entries = owner.source.kind === 'store' ? listEntries(store) : [];
   const tree = owner.source.kind === 'dir' ? readTasksTree(owner.source.dir) : owner.source.kind === 'store' ? readStoreTree(store, entries) : fail('--config без --tasks: укажите, откуда брать задачи');
   const index = buildIndex(tree.files, tree.logs);
@@ -122,7 +126,14 @@ async function main(): Promise<void> {
     date: today(),
   };
   // Запись — под тем же замком, что фон и pull: иначе две карточки одной задаче.
-  const run = apply ? await withLockAsync(store, KAITEN_LOCK, () => runKaitenSync(client, input, 'apply')) : await runKaitenSync(client, input, 'details');
+  let unpublished = false;
+  const run = apply
+    ? await withLockAsync(store, KAITEN_LOCK, () => {
+        // Версия — в задачи раньше карточек: копии, которые её проверяют, остановятся до правок.
+        unpublished = !publishSyncVersion(store, today()) && storedSyncVersion(store) < SYNC_VERSION;
+        return runKaitenSync(client, input, 'apply');
+      })
+    : await runKaitenSync(client, input, 'details');
 
   const loadNote = firstLoad ? `, первая заливка (сделанные${firstLoad.withCancelled ? ' и отменённые' : ''} с ${firstLoad.closedSince})` : '';
   const resendNote = input.resend ? ', описание, чек-листы и файлы — заново' : '';
@@ -130,6 +141,7 @@ async function main(): Promise<void> {
   if (!project.tasksRepo?.url) console.log('Адреса репозитория задач нет — ссылки в описаниях будут просто текстом.');
   if (juniorSetting(project).state === 'needs-setup') console.log('Признак «Можно младшему» включён, а полей в Kaiten нет — они не пишутся: npm run setup.');
   for (const line of formatPlan(run)) console.log(line);
+  if (unpublished) console.log('Версия синхронизации в задачи не записана: kaiten-tracker запущен не с выпущенной main. Копии kaiten на других машинах о новой версии не узнают.');
   if (!apply) {
     console.log('\nСухой прогон: в Kaiten ничего не записано (--apply — выполнить).');
     return;

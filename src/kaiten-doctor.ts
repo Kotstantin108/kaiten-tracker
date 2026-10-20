@@ -29,6 +29,7 @@ import { belongsToProject, buildIndex } from './core/tasks-index.js';
 import { invocationDir, parse, peopleByEmail, SETTINGS_PATH, storeMessage } from './kaiten-cli.js';
 import { KaitenApiError, KaitenClient } from './kaiten-client.js';
 import { findProjectFile, loadSettings, parseProjectFile, SettingsError, type KaitenSettings } from './kaiten-context.js';
+import { isOutdated, updatesAvailable } from './self-update.js';
 import { readJournal } from './store-write.js';
 import { defaultStorePath, gitNetwork, gitText, isStore, listEntries, readBlobs, readStoreTree, StoreError } from './task-store.js';
 
@@ -207,6 +208,16 @@ function storeChecks(facts: NonNullable<RepoFacts['project']>, settings: KaitenS
   return checks;
 }
 
+/** Свежесть самого kaiten: устарел для задач проекта — карточки не обновляются; есть новая версия — подсказка. */
+function toolChecks(store: string | null, offline: boolean): Check[] {
+  const fix = 'git pull в папке kaiten (там, откуда его ставили).';
+  if (store && isOutdated(store)) return [{ level: 'fail', what: 'kaiten устарел для задач проекта: карточки Kaiten с этой машины не обновляются', fix }];
+  if (offline) return [];
+  const behind = updatesAvailable();
+  if (behind === null) return [];
+  return [behind > 0 ? { level: 'warn', what: 'есть новая версия kaiten', fix } : { level: 'ok', what: 'kaiten — последняя версия' }];
+}
+
 export async function doctor(args: string[]): Promise<void> {
   const { values } = parse('doctor', args, { offline: { type: 'boolean' } }, 0);
   const offline = values.offline === true;
@@ -228,6 +239,7 @@ export async function doctor(args: string[]): Promise<void> {
   const repo = repoChecks(workDir);
   checks.push(...repo.checks);
   if (repo.project && git[0].level === 'ok') checks.push(...storeChecks(repo.project, settings, email, offline));
+  checks.push(...toolChecks(repo.project?.store ?? null, offline));
 
   console.log(formatChecks(checks).join('\n'));
   if (checks.some((c) => c.level === 'fail')) process.exitCode = 1;

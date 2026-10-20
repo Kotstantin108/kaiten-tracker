@@ -345,3 +345,23 @@ describe('пункт и знаки препинания', () => {
     expect(matchItem(body, 'list --sort')).toEqual({ item: 'list --sort показывает позиции по алфавиту' });
   });
 });
+
+describe('версия синхронизации', () => {
+  const FILE = 'kaiten-sync.json';
+
+  it('пишется файлом в корень; повтор и более старая версия ничего не меняют', () => {
+    const [change] = ok(applyOp({ kind: 'sync-version', version: 2 }, texts(), CTX));
+    expect(change).toEqual({ path: FILE, text: '{\n  "version": 2\n}\n' });
+    expect(ok(applyOp({ kind: 'sync-version', version: 2 }, texts({ [FILE]: change.text ?? '' }), CTX))).toEqual([]);
+    expect(ok(applyOp({ kind: 'sync-version', version: 2 }, texts({ [FILE]: '{"version": 3}' }), CTX))).toEqual([]);
+    expect(ok(applyOp({ kind: 'sync-version', version: 3 }, texts({ [FILE]: change.text ?? '' }), CTX))).toHaveLength(1);
+  });
+
+  it('файл версии — не задача: операции с задачами и новые задачи его не замечают', () => {
+    const withVersion = texts({ [FILE]: '{"version": 2}' });
+    expect(ok(applyOp({ kind: 'log', id: ID, text: 'заметка' }, withVersion, CTX))).toHaveLength(1);
+    const text = task({ id: '01K5ZQ3R8F2K9M4N7P0T5V8W3B', tracker: undefined }).replace('Починить таймаут вебхука', 'Проверить версию');
+    const [created] = ok(applyOp({ kind: 'new', path: 'active/kaiten-sync.md', text }, withVersion, CTX));
+    expect(created.path).toBe('active/kaiten-sync.md');
+  });
+});

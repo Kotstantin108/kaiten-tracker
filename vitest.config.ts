@@ -6,6 +6,7 @@ export default defineConfig({
     environment: 'node',
     include: ['src/**/*.test.ts'],
     // Повторы сетевых вызовов git — без пауз: тесты обрывы связи не ждут.
-    env: { KAITEN_NET_RETRY: '0' },
+    // Папки kaiten нет: тесты не обновляют kaiten и не пишут версию синхронизации, на какой бы ветке ни шли.
+    env: { KAITEN_NET_RETRY: '0', KAITEN_TOOL_DIR: '' },
   },
 });

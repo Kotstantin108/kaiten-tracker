@@ -10,3 +10,4 @@ src/__*.tmp.ts
 wrangler.jsonc
 .wrangler/
 .dev.vars
+kaiten-update.lock

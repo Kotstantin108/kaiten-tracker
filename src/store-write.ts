@@ -29,6 +29,7 @@ import { closeSync, existsSync, mkdtempSync, openSync, readFileSync, renameSync,
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
+import { SYNC_VERSION_FILE } from './core/sync-version.js';
 import { applyOp, logStamp, type Op, type OpResult, type TaskTexts } from './core/task-ops.js';
 import { git, gitNetwork, gitText, isStore, listEntries, readBlobs, revOrNull, storeBranch, StoreError, type StoreErrorKind } from './task-store.js';
 
@@ -229,7 +230,7 @@ const TASK_TEXT_RE = /^(?:active|archive)\/.+\.md$/;
 function loadTexts(store: string, rev: string | null): Map<string, string> {
   const texts = new Map<string, string>();
   if (!rev) return texts;
-  const entries = listEntries(store, rev).filter((e) => TASK_TEXT_RE.test(e.path));
+  const entries = listEntries(store, rev).filter((e) => TASK_TEXT_RE.test(e.path) || e.path === SYNC_VERSION_FILE);
   const blobs = readBlobs(
     store,
     entries.map((e) => e.sha),

@@ -23,6 +23,7 @@ import { contentHash, foreignFieldChanges, parseTaskDocument, serializeTaskDocum
 import { lintTask, SLUG_RE } from './lint.js';
 import { CLOSED_STATUSES, FrontmatterSchema, JOURNAL_FILE, type AssessVerdict, type Frontmatter, type Priority, type TaskStatus, type TaskType } from './schema.js';
 import { renderSkeleton } from './skeleton.js';
+import { parseSyncVersion, renderSyncVersion, SYNC_VERSION_FILE } from './sync-version.js';
 import { buildIndex, refOf, type TaskRecord } from './tasks-index.js';
 
 export type Op =
@@ -65,7 +66,12 @@ export type Op =
    * в файл — и зеркало (`assessment`), и что поставил скрипт (`assessed`), с
    * датой операции. Как `synced`, не трогает `updated`.
    */
-  | { kind: 'assessed'; items: Array<{ id: string; verdict: AssessVerdict }> };
+  | { kind: 'assessed'; items: Array<{ id: string; verdict: AssessVerdict }> }
+  /**
+   * Версия синхронизации (`core/sync-version.ts`) — файлом в корне репозитория
+   * задач. Только растёт: поверх более новой операция ничего не меняет.
+   */
+  | { kind: 'sync-version'; version: number };
 
 /** Что поменять в файле по карточке; `null` — в карточке поле пустое. */
 export interface MirrorItem {
@@ -107,7 +113,7 @@ export interface OpContext {
   by?: string;
 }
 
-/** Файлы задач в памяти: путь → текст (задачи и журналы под active/ и archive/). */
+/** Файлы задач в памяти: путь → текст (задачи и журналы под active/ и archive/, файл версии синхронизации). */
 export type TaskTexts = ReadonlyMap<string, string>;
 
 export interface FileChange {
@@ -161,6 +167,8 @@ function records(texts: TaskTexts): TaskRecord[] {
   const files: Array<{ path: string; text: string }> = [];
   const logs = new Map<string, string>();
   for (const [path, text] of texts) {
+    // Файл версии синхронизации — не задача.
+    if (!path.endsWith('.md')) continue;
     if (path.endsWith('.log.md')) logs.set(path.replace(/\.log\.md$/, '.md'), text);
     else files.push({ path, text });
   }
@@ -409,7 +417,7 @@ export function uniqueSlug(base: string, taken: ReadonlySet<string>): string {
 
 export function takenSlugs(texts: TaskTexts): Set<string> {
   const out = new Set<string>();
-  for (const path of texts.keys()) if (!path.endsWith('.log.md')) out.add(path.split('/').at(-1)?.replace(/\.md$/, '') ?? '');
+  for (const path of texts.keys()) if (path.endsWith('.md') && !path.endsWith('.log.md')) out.add(path.split('/').at(-1)?.replace(/\.md$/, '') ?? '');
   return out;
 }
 
@@ -476,6 +484,10 @@ export function applyOp(op: Op, texts: TaskTexts, ctx: OpContext): OpResult {
   if (op.kind === 'mirror') return applyMirror(op.items, texts, ctx);
   if (op.kind === 'adopt') return applyAdopt(op.items, texts);
   if (op.kind === 'assessed') return applyAssessed(op.items, texts, ctx);
+  if (op.kind === 'sync-version') {
+    const changes = parseSyncVersion(texts.get(SYNC_VERSION_FILE)) >= op.version ? [] : [{ path: SYNC_VERSION_FILE, text: renderSyncVersion(op.version) }];
+    return { changes, summary: `версия синхронизации ${op.version}`, warnings: [] };
+  }
 
   const task = byId(texts, op.id);
   if ('error' in task) return task;
