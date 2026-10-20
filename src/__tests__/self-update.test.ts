@@ -70,6 +70,17 @@ describe('обновление папки kaiten', { timeout: 30_000 }, () => {
     expect(git(tool, 'rev-parse', 'HEAD')).toBe(head);
   });
 
+  it('autocrlf=true (Windows): файлы с CRLF в рабочей копии — не правки', () => {
+    const { tool, dev } = toolRepos();
+    git(tool, 'config', 'core.autocrlf', 'true');
+    rmSync(join(tool, 'code.ts'));
+    execFileSync('git', ['checkout', '--', 'code.ts'], { cwd: tool, stdio: 'ignore' });
+    expect(readFileSync(join(tool, 'code.ts'), 'utf8')).toContain('\r\n');
+    release(dev, 'code.ts', 'export const v = 2;\n');
+    expect(updateTool(tool)).toEqual({ ok: true, changed: true });
+    expect(canPublishVersion(tool)).toBe(true);
+  });
+
   it('свои правки, другая ветка, свои коммиты — не трогаем', () => {
     const dirty = toolRepos();
     release(dirty.dev, 'code.ts', 'export const v = 2;\n');

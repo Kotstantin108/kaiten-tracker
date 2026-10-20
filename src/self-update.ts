@@ -18,14 +18,14 @@
  * у всех, кому обновляться не на что.
  */
 
-import { spawnSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { parseSyncVersion, SYNC_VERSION, SYNC_VERSION_FILE } from './core/sync-version.js';
 import { recordOp, syncStore, withLock } from './store-write.js';
-import { git, gitText, StoreError } from './task-store.js';
+import { gitText, StoreError } from './task-store.js';
 
 /** Ветка, с которой обновляется `kaiten`. */
 const TOOL_BRANCH = 'main';
@@ -64,22 +64,22 @@ export const OUTDATED_NOTE = 'kaiten на этой машине устарел �
 
 const ENV = { ...process.env, GIT_TERMINAL_PROMPT: '0', GCM_INTERACTIVE: 'never' };
 
+/**
+ * git в папке kaiten — с настройками человека, без `core.autocrlf=false` из
+ * `task-store.ts`: там он для хранилища без рабочей копии, а здесь рабочая
+ * копия, и на Windows с `autocrlf=true` чистая папка выглядела бы правленой.
+ * Текст ошибки git наружу не выходит.
+ */
 function tryGit(dir: string, args: string[]): string | null {
   try {
-    return git(dir, args, undefined, ENV).toString('utf8').trim();
-  } catch (error) {
-    if (error instanceof StoreError) return null;
-    throw error;
+    return execFileSync('git', args, { cwd: dir, env: ENV, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true }).toString('utf8').trim();
+  } catch {
+    return null;
   }
 }
 
 function isAncestor(dir: string, ancestor: string, of: string): boolean {
-  try {
-    git(dir, ['merge-base', '--is-ancestor', ancestor, of]);
-    return true;
-  } catch {
-    return false;
-  }
+  return tryGit(dir, ['merge-base', '--is-ancestor', ancestor, of]) !== null;
 }
 
 /** Папка — чистая копия основной ветки (свои коммиты и правки не трогаем). Причина — если нет. */
