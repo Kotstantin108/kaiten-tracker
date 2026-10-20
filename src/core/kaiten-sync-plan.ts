@@ -3,7 +3,7 @@
  * и Kaiten → файл (этап 2b, `mirrorFromCard`).
  *
  * ЧТО ПИШЕТ KAITEN В ФАЙЛ (решение 9, Q30): статус (колонка), тип,
- * приоритет, команда, срок — всегда, Kaiten здесь владелец. Исполнителя пока
+ * приоритет, команда, срок, «Оценка» — всегда, Kaiten здесь владелец. Исполнителя пока
  * нет: список карточек не отдаёт участников, а читать каждую карточку на
  * каждом проходе дорого (`planning.assignee` — этап с кешем по `version`).
  *
@@ -57,7 +57,7 @@ import { AGENT_PREFIX, extractChecklists, type Checklist, type ChecklistItem } f
 import type { ConfigMapping, JuniorFields } from '../config.js';
 import { juniorMissingText, juniorReadiness } from './junior.js';
 import { JOURNAL_FILE, taskDate, type MirrorItem } from './task-ops.js';
-import { CLOSED_STATUSES, PRIORITIES, STATUSES, TASK_TYPES, type Priority, type TaskStatus, type TaskType } from './schema.js';
+import { ASSESS_VERDICTS, CLOSED_STATUSES, PRIORITIES, STATUSES, TASK_TYPES, type AssessVerdict, type Priority, type TaskStatus, type TaskType } from './schema.js';
 import { contentHash } from './document.js';
 import { epicOf, type TaskRecord } from './tasks-index.js';
 
@@ -605,6 +605,15 @@ export function mirrorFromCard(task: TaskRecord, card: CardView, mapping: Config
     const team = id === null ? null : (names.get(id) ?? null);
     if (team !== (task.fm.team ?? null)) {
       item.team = team;
+      changed = true;
+    }
+  }
+  // «Оценка» — только у проекта, где поле заведено: иначе в файлах не появится незнакомый старым `kaiten` ключ.
+  if (mapping.assessProperty) {
+    const id = firstId(card.properties[key(mapping.assessProperty.id)]);
+    const assessment: AssessVerdict | null = id === null ? null : (reverse<AssessVerdict>(mapping.assessProperty.values, ASSESS_VERDICTS).get(id) ?? null);
+    if (assessment !== (task.fm.assessment ?? null)) {
+      item.assessment = assessment;
       changed = true;
     }
   }

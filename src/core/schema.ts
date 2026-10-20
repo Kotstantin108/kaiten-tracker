@@ -37,6 +37,10 @@ export type Priority = (typeof PRIORITIES)[number];
 
 export const CREATED_VIA = ['agent', 'human'] as const;
 
+/** «Оценка» задачи (`npm run assess`): актуальна, похоже, сделана, похоже, устарела. */
+export const ASSESS_VERDICTS = ['actual', 'done', 'obsolete'] as const;
+export type AssessVerdict = (typeof ASSESS_VERDICTS)[number];
+
 /**
  * Имя журнала задачи среди файлов карточки Kaiten — вложение так назвать
  * нельзя. Здесь, а не в `task-ops.ts`: его же проверяет агентский сервер, а
@@ -127,6 +131,12 @@ export const FIELDS = {
   // считается возраст для «Можно младшему» (владелец 19.10.2026); нет — от `created`.
   revised: { owner: 'cli', required: false, schema: date },
   planning: { owner: 'kaiten', required: false, schema: PlanningSchema },
+  // «Оценка» карточки — зеркало Kaiten: скрипт оценки ставит её в карточку, человек
+  // поправляет там же. Нет поля — задачу не оценивали.
+  assessment: { owner: 'kaiten', required: false, schema: z.enum(ASSESS_VERDICTS) },
+  // Какую оценку поставил скрипт и когда — пишет только `npm run assess -- --apply`.
+  // Совпадает с `assessment` — оценка скрипта; расходится — её поправил человек.
+  assessed: { owner: 'cli', required: false, schema: z.object({ verdict: z.enum(ASSESS_VERDICTS), date }).strict() },
   content_hash: { owner: 'cli', required: false, schema: z.string().regex(/^sha256:[a-f0-9]{64}$/, 'sha256:<64 hex>') },
   // Какие файлы (вложения и журнал) карточка уже получила; ставит только
   // синхронизация. Нет поля — файлы этой задаче доставляет только `--resend`.

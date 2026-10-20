@@ -25,6 +25,7 @@
  * поменял в интерфейсе, план перезапишет: источник шаблонов — этот код.
  */
 
+import type { AssessVerdict } from './core/schema.js';
 import { kaitenTemplate } from './core/skeleton.js';
 import { PRIORITIES, type Priority, type TaskType } from './task-source.js';
 import type { Board, CardType, CustomProperty, SelectValue, Space } from './kaiten-client.js';
@@ -76,16 +77,21 @@ export interface DesiredStructure {
   junior: JuniorFields | null;
 }
 
-/** Выбор «Можно младшему» и строка «Младшему не хватает» — в типах story, tech, bug, необязательные. */
+/**
+ * Выбор «Можно младшему», строка «Младшему не хватает» и выбор «Оценка»
+ * (`npm run assess`) — в типах story, tech, bug, необязательные.
+ */
 export interface JuniorFields {
   select: { name: string; yes: string; no: string };
   missing: { name: string };
+  assess: { name: string; values: Record<AssessVerdict, string> };
   types: readonly TaskType[];
 }
 
 export const JUNIOR_FIELDS: JuniorFields = {
   select: { name: 'Можно младшему', yes: 'Да', no: 'Нет' },
   missing: { name: 'Младшему не хватает' },
+  assess: { name: 'Оценка', values: { actual: 'Актуальна', done: 'Похоже, сделана', obsolete: 'Похоже, устарела' } },
   types: ['story', 'tech', 'bug'],
 };
 
@@ -440,7 +446,7 @@ export function planSetup(current: CurrentStructure, desired: DesiredStructure =
   // Отключаем устаревшие поля по явному списку — но не те, что нужны схеме.
   const wantedNames = [
     ...SELECT_ROLES.map((r) => desired.selects[r].name),
-    ...(desired.junior ? [desired.junior.select.name, desired.junior.missing.name] : []),
+    ...(desired.junior ? [desired.junior.select.name, desired.junior.missing.name, desired.junior.assess.name] : []),
   ];
   for (const name of desired.retire) {
     const old = current.properties.filter(alive).find((p) => same(p.name, name) && !wantedNames.some((w) => same(w, name)));
@@ -496,11 +502,12 @@ export function planSetup(current: CurrentStructure, desired: DesiredStructure =
   return { actions, reused, extra };
 }
 
-/** Поля «Можно младшему» и «Младшему не хватает»: завести, варианты, добавить в типы. */
+/** Поля «Можно младшему», «Младшему не хватает» и «Оценка»: завести, варианты, добавить в типы. */
 function planJunior(current: CurrentStructure, junior: JuniorFields, types: DesiredStructure['types'], actions: SetupAction[], reused: string[]): void {
   const fields = [
-    { name: junior.select.name, type: 'select' as const, found: findSelect(current, junior.select.name) },
-    { name: junior.missing.name, type: 'string' as const, found: findText(current, junior.missing.name) },
+    { name: junior.select.name, type: 'select' as const, found: findSelect(current, junior.select.name), values: [junior.select.yes, junior.select.no] },
+    { name: junior.missing.name, type: 'string' as const, found: findText(current, junior.missing.name), values: [] },
+    { name: junior.assess.name, type: 'select' as const, found: findSelect(current, junior.assess.name), values: Object.values(junior.assess.values) },
   ];
   for (const field of fields) {
     const clash = findClash(current, field.name, field.type);
@@ -508,9 +515,11 @@ function planJunior(current: CurrentStructure, junior: JuniorFields, types: Desi
     if (!field.found) actions.push({ kind: 'create-property', name: field.name, type: field.type });
     else reused.push(`поле «${field.found.name}» (${field.found.id})`);
   }
-  const have = fields[0].found ? aliveValues(current, fields[0].found.id) : [];
-  for (const value of [junior.select.yes, junior.select.no]) {
-    if (!have.some((v) => same(v.value, value))) actions.push({ kind: 'create-select-value', property: junior.select.name, value });
+  for (const field of fields) {
+    const have = field.found ? aliveValues(current, field.found.id) : [];
+    for (const value of field.values) {
+      if (!have.some((v) => same(v.value, value))) actions.push({ kind: 'create-select-value', property: field.name, value });
+    }
   }
   for (const type of types.filter((t) => junior.types.includes(t.key))) {
     const found = findCardType(current, type.name);
@@ -548,6 +557,8 @@ export interface KaitenMapping {
   /** «Можно младшему»: варианты `yes`/`no`. */
   juniorProperty?: SelectMapping;
   juniorMissingProperty?: { id: number };
+  /** «Оценка»: варианты `actual`/`done`/`obsolete`. */
+  assessProperty?: SelectMapping;
 }
 
 /**
@@ -594,22 +605,30 @@ export function buildMapping(current: CurrentStructure, desired: DesiredStructur
   const summaryProperty = desired.summary ? findText(current, desired.summary.name) : undefined;
   if (desired.summary && !summaryProperty) missing.push(`поле «${desired.summary.name}»`);
 
-  let junior: Pick<KaitenMapping, 'juniorProperty' | 'juniorMissingProperty'> = {};
+  let junior: Pick<KaitenMapping, 'juniorProperty' | 'juniorMissingProperty' | 'assessProperty'> = {};
   if (desired.junior) {
     const spec = desired.junior;
-    const select = findSelect(current, spec.select.name);
-    const missingField = findText(current, spec.missing.name);
-    const valueId = (value: string): number | undefined => {
-      const found = select ? aliveValues(current, select.id).find((v) => same(v.value, value)) : undefined;
-      if (select && !found) missing.push(`вариант «${value}» поля «${spec.select.name}»`);
-      return found?.id;
+    /** Выбор с вариантами по ключу; чего нет — в `missing`. */
+    const selectMapping = (name: string, wanted: Record<string, string>): SelectMapping | undefined => {
+      const select = findSelect(current, name);
+      if (!select) {
+        missing.push(`поле-выбор «${name}»`);
+        return undefined;
+      }
+      const values: Record<string, number> = {};
+      for (const [key, value] of Object.entries(wanted)) {
+        const found = aliveValues(current, select.id).find((v) => same(v.value, value));
+        if (found) values[key] = found.id;
+        else missing.push(`вариант «${value}» поля «${name}»`);
+      }
+      return Object.keys(values).length === Object.keys(wanted).length ? { id: select.id, values } : undefined;
     };
-    if (!select) missing.push(`поле-выбор «${spec.select.name}»`);
+    const juniorProperty = selectMapping(spec.select.name, { yes: spec.select.yes, no: spec.select.no });
+    const missingField = findText(current, spec.missing.name);
     if (!missingField) missing.push(`поле «${spec.missing.name}»`);
-    const yes = valueId(spec.select.yes);
-    const no = valueId(spec.select.no);
-    if (select && missingField && yes !== undefined && no !== undefined) {
-      junior = { juniorProperty: { id: select.id, values: { yes, no } }, juniorMissingProperty: { id: missingField.id } };
+    const assessProperty = selectMapping(spec.assess.name, spec.assess.values);
+    if (juniorProperty && missingField && assessProperty) {
+      junior = { juniorProperty, juniorMissingProperty: { id: missingField.id }, assessProperty };
     }
   }
 

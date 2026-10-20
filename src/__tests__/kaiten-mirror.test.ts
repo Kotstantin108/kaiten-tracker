@@ -6,7 +6,7 @@
 import { describe, expect, it } from 'vitest';
 
 import type { ConfigMapping } from '../config.js';
-import { parseTaskDocument, serializeTaskDocument } from '../core/document.js';
+import { contentHash, parseTaskDocument, serializeTaskDocument } from '../core/document.js';
 import { localDate, mirrorFromCard, type CardView } from '../core/kaiten-sync-plan.js';
 import { FrontmatterSchema, type Frontmatter } from '../core/schema.js';
 import { applyOp, tasksOf, type TaskTexts } from '../core/task-ops.js';
@@ -87,6 +87,16 @@ describe('что Kaiten знает иначе', () => {
   it('колонка не из конфига — статус не трогаем и сообщаем', () => {
     expect(mirrorFromCard(task, card({ columnId: 999 }), MAPPING)).toEqual({ item: null, unknownColumn: true });
   });
+
+  it('«Оценка» — только когда поле заведено: иначе в файлах не появится ключ, незнакомый старым kaiten', () => {
+    const assessed = card({ properties: { ...card().properties, id_9: [92] } });
+    expect(mirrorFromCard(task, assessed, MAPPING).item).toBeNull();
+    const withAssess = { ...MAPPING, assessProperty: { id: 9, values: { actual: 91, done: 92, obsolete: 93 } } };
+    expect(mirrorFromCard(task, assessed, withAssess).item).toEqual({ id: ID, assessment: 'done' });
+    const [rated] = tasksOf(new Map([['active/t.md', file({ assessment: 'done' })]]));
+    expect(mirrorFromCard(rated, assessed, withAssess).item).toBeNull();
+    expect(mirrorFromCard(rated, card(), withAssess).item).toEqual({ id: ID, assessment: null });
+  });
 });
 
 describe('поля Kaiten в файле', () => {
@@ -109,6 +119,21 @@ describe('поля Kaiten в файле', () => {
     expect([fm.priority, fm.team, fm.planning]).toEqual([undefined, undefined, undefined]);
     apply(texts, { kind: 'mirror', items: [{ id: ID, due: '2026-10-05' }] });
     expect(fmOf(texts.get('active/t.md')).planning).toEqual({ due: '2026-10-05' });
+  });
+
+  it('оценка из Kaiten — в файл, пустая — убирается; запись скрипта (assessed) не трогается', () => {
+    const texts = new Map([['active/t.md', file({ assessed: { verdict: 'done', date: '2026-10-20' } })]]);
+    apply(texts, { kind: 'mirror', items: [{ id: ID, assessment: 'actual' }] });
+    expect(fmOf(texts.get('active/t.md'))).toMatchObject({ assessment: 'actual', assessed: { verdict: 'done', date: '2026-10-20' } });
+    apply(texts, { kind: 'mirror', items: [{ id: ID, assessment: null }] });
+    expect(fmOf(texts.get('active/t.md')).assessment).toBeUndefined();
+  });
+
+  it('kaiten edit оценку не меняет: её владельцы — Kaiten и скрипт оценки', () => {
+    const texts = new Map([['active/t.md', file()]]);
+    const [task] = tasksOf(texts);
+    const r = applyOp({ kind: 'edit', id: ID, text: file({ assessment: 'actual', assessed: { verdict: 'actual', date: '2026-10-20' } }), baseHash: contentHash(task.fm, task.body) }, texts as TaskTexts, CTX);
+    expect('error' in r && r.error).toMatch(/assessment, assessed/);
   });
 
   it('поле, с которым файл стал бы битым, — пропуск с подсказкой, остальные пишутся', () => {

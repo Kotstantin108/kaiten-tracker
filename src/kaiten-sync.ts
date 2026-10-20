@@ -461,6 +461,7 @@ export function formatPlan(run: Pick<SyncRun, 'plan' | 'checklists'> & Partial<P
       m.priority !== undefined ? `приоритет → ${m.priority ?? 'нет'}` : '',
       m.team !== undefined ? `команда → ${m.team ?? 'нет'}` : '',
       m.due !== undefined ? `срок → ${m.due ?? 'нет'}` : '',
+      m.assessment !== undefined ? `оценка → ${m.assessment ?? 'нет'}` : '',
     ].filter(Boolean);
     out.push(`  ← ${plan.names[m.id] ?? m.id}: ${fields.join(', ')}`);
   }

@@ -8,7 +8,7 @@
  * причиной, которую видит команда в поле карточки.
  */
 
-import type { Frontmatter, TaskStatus, TaskType } from './schema.js';
+import type { AssessVerdict, Frontmatter, TaskStatus, TaskType } from './schema.js';
 import { filledText, sectionText, SKELETONS } from './skeleton.js';
 
 interface JuniorSection {
@@ -63,17 +63,116 @@ export interface JuniorOptions {
   maxAgeDays: number;
 }
 
+/** Оценки, с которыми задача не для младшего, — словами для поля карточки. */
+const ASSESS_PROBLEMS: Partial<Record<AssessVerdict, string>> = { done: 'оценка: похоже, сделана', obsolete: 'оценка: похоже, устарела' };
+
+type ReadinessFields = Pick<Frontmatter, 'type' | 'status' | 'created' | 'revised' | 'assessment' | 'assessed'>;
+
 /**
  * Возраст — от последней правки текста (`revised`), а не от `updated`: перенос
  * карточки по доске, приоритет или отметка пункта постановку не освежают.
  * Задача до поля `revised` — от `created`: лучше лишнее «Нет», чем «Да» наугад.
+ * «Актуальна» от скрипта оценки освежает задачу так же, как правка (`freshSince`).
  */
-export function juniorReadiness(fm: Pick<Frontmatter, 'type' | 'status' | 'created' | 'revised'>, body: string, opts: JuniorOptions): JuniorReadiness {
+export function juniorReadiness(fm: ReadinessFields, body: string, opts: JuniorOptions): JuniorReadiness {
   if (!JUNIOR_TYPES.includes(fm.type) || !JUNIOR_STATUSES.includes(fm.status)) return null;
   const missing: string[] = [];
-  if (daysBetween(fm.revised ?? fm.created, opts.today) > opts.maxAgeDays) missing.push(`постановку не правили больше ${opts.maxAgeDays} дней`);
+  if (daysBetween(freshSince(fm), opts.today) > opts.maxAgeDays) missing.push(`постановку не правили больше ${opts.maxAgeDays} дней`);
   for (const section of JUNIOR_SECTIONS) missing.push(...sectionProblems(section, sectionText(body, section.name)));
+  const assessed = fm.assessment === undefined ? undefined : ASSESS_PROBLEMS[fm.assessment];
+  if (assessed) missing.push(assessed);
   return { ok: missing.length === 0, missing };
+}
+
+/** Чья оценка у задачи: скрипта (в Kaiten стоит то, что он поставил), человека или ничья. */
+export function assessedBy(fm: Pick<Frontmatter, 'assessment' | 'assessed'>): 'script' | 'human' | null {
+  if (fm.assessment === undefined) return null;
+  return fm.assessed?.verdict === fm.assessment ? 'script' : 'human';
+}
+
+/**
+ * С какого дня задача свежая: правка текста или «Актуальна» от скрипта
+ * оценки, которую владелец применил и никто не поправил в Kaiten.
+ */
+export function freshSince(fm: Pick<Frontmatter, 'created' | 'revised' | 'assessment' | 'assessed'>): string {
+  const revised = fm.revised ?? fm.created;
+  const confirmed = fm.assessed?.verdict === 'actual' && assessedBy(fm) === 'script' ? fm.assessed.date : undefined;
+  return confirmed !== undefined && confirmed > revised ? confirmed : revised;
+}
+
+/** Полных дней от `from` до `to` (обе — YYYY-MM-DD). */
+export function daysBetween(from: string, to: string): number {
+  return Math.floor((Date.parse(`${to}T00:00:00Z`) - Date.parse(`${from}T00:00:00Z`)) / 86_400_000);
+}
+
+/**
+ * Что не так с текстом раздела, предложенным скриптом оценки: тот же разбор,
+ * что у признака, но открытые продуктовые вопросы — честный ответ, а не
+ * ошибка (с ними признак просто «Нет»).
+ */
+export function proposedSectionProblems(name: string, text: string): string[] {
+  const section = JUNIOR_SECTIONS.find((s) => s.name === name);
+  if (!section) return [`нет такого раздела «${name}»`];
+  return sectionProblems(section, text).filter((p) => p !== openQuestions(section));
+}
+
+/** Разделы, которые признак не засчитывает (нет, пустой, не хватает пунктов), — их предлагает скрипт оценки. */
+export function incompleteSections(body: string): string[] {
+  return JUNIOR_SECTIONS.filter((s) => sectionProblems(s, sectionText(body, s.name)).some((p) => p !== openQuestions(s))).map((s) => s.name);
+}
+
+/** Раздел начинается с «Нет» — явное утверждение, что изменений нет. */
+export function saysNo(text: string): boolean {
+  const first = text.split('\n').find((line) => line.trim() !== '' && !line.trimStart().startsWith('#'));
+  return first !== undefined && NO_RE.test(plain(first));
+}
+
+/**
+ * Тело с текстами разделов: раздел, который есть, заменяется целиком (до
+ * следующего заголовка того же или более высокого уровня), которого нет —
+ * встаёт перед критериями в порядке `JUNIOR_SECTIONS`, как в каркасе.
+ */
+export function withJuniorSections(type: TaskType, body: string, texts: Readonly<Record<string, string>>): string {
+  let out = body;
+  const absent: string[] = [];
+  for (const section of JUNIOR_SECTIONS) {
+    const text = texts[section.name];
+    if (text === undefined) continue;
+    const block = [`## ${section.name}`, '', text.trim(), ''];
+    const replaced = replaceSection(out, section.name, block);
+    if (replaced === null) absent.push(...block);
+    else out = replaced;
+  }
+  if (absent.length === 0) return out;
+  const lines = out.replace(/\s+$/, '').split('\n');
+  const { criteria } = SKELETONS[type];
+  const at = criteria ? lines.findIndex((line) => line.replace(/[ \t]+$/, '') === `## ${criteria}`) : -1;
+  if (at === -1) return [...lines, '', ...absent].join('\n');
+  return [...lines.slice(0, at), ...absent, ...lines.slice(at)].join('\n') + '\n';
+}
+
+const HEADING_RE = /^(#{1,6})[ \t]+(.+?)[ \t]*#*[ \t]*$/;
+const FENCE_RE = /^\s*(```|~~~)/;
+
+/** Раздел `## name` (со строкой заголовка) заменить строками `block`; `null` — раздела нет. */
+function replaceSection(body: string, name: string, block: readonly string[]): string | null {
+  const lines = body.split('\n');
+  let inFence = false;
+  let start = -1;
+  let end = lines.length;
+  for (let i = 0; i < lines.length; i += 1) {
+    if (FENCE_RE.test(lines[i])) inFence = !inFence;
+    if (inFence) continue;
+    const m = HEADING_RE.exec(lines[i]);
+    if (!m) continue;
+    if (start >= 0 && m[1].length <= 2) {
+      end = i;
+      break;
+    }
+    if (start < 0 && m[1].length === 2 && m[2].replace(/[*_`]/g, '').trim() === name) start = i;
+  }
+  if (start < 0) return null;
+  return [...lines.slice(0, start), ...block, ...lines.slice(end)].join('\n');
 }
 
 /** Причины одной строкой — для поля «Младшему не хватает». */
@@ -122,10 +221,12 @@ function sectionProblems(section: JuniorSection, text: string | null): string[] 
   if (absent.length === 1) problems.push(`${section.short}: нет пункта «${absent[0]}»`);
   else if (absent.length > 1) problems.push(`${section.short}: нет пунктов ${absent.map((l) => `«${l}»`).join(', ')}`);
   const answer = values.get(MUST_BE_NO);
-  if (section.labels.includes(MUST_BE_NO) && answer !== undefined && !NO_RE.test(answer)) {
-    problems.push(`${section.short}: есть открытые вопросы`);
-  }
+  if (section.labels.includes(MUST_BE_NO) && answer !== undefined && !NO_RE.test(answer)) problems.push(openQuestions(section));
   return problems;
+}
+
+function openQuestions(section: JuniorSection): string {
+  return `${section.short}: есть открытые вопросы`;
 }
 
 /**
@@ -157,9 +258,4 @@ function labelValues(labels: readonly string[], lines: readonly string[]): Map<s
 
 function norm(label: string): string {
   return label.trim().toLowerCase().replace(/ё/g, 'е').replace(/\s+/g, ' ');
-}
-
-/** Полных дней от `from` до `to` (обе — YYYY-MM-DD). */
-function daysBetween(from: string, to: string): number {
-  return Math.floor((Date.parse(`${to}T00:00:00Z`) - Date.parse(`${from}T00:00:00Z`)) / 86_400_000);
 }

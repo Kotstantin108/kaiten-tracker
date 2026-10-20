@@ -15,6 +15,8 @@ import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 
 import { z } from 'zod';
 
+import type { AssessVerdict } from './core/schema.js';
+
 const SelectMappingSchema = z.object({ id: z.number(), values: z.record(z.string(), z.number()) });
 
 /** Блок id, который пишет `setup --apply` и читает импорт. */
@@ -38,6 +40,8 @@ export const MappingSchema = z.object({
   juniorProperty: SelectMappingSchema.optional(),
   /** Строка «Младшему не хватает». */
   juniorMissingProperty: z.object({ id: z.number() }).optional(),
+  /** Выбор «Оценка»: варианты `actual`/`done`/`obsolete` (`npm run assess`). */
+  assessProperty: SelectMappingSchema.optional(),
 });
 export type ConfigMapping = z.infer<typeof MappingSchema>;
 
@@ -55,6 +59,11 @@ export const RepoSchema = z.object({
   tasksDirName: z.string().optional(),
   /** `numbered` — школа globex (NNNN-slug.md), читается временным ридером пилота. */
   layout: z.enum(['folders', 'numbered']).default('folders'),
+  /**
+   * Общий репозиторий: агент оценки (`npm run assess`) видит его у каждой
+   * задачи, а не только у задач с этим `repo`, — например, сценарии n8n.
+   */
+  shared: z.boolean().default(false),
 });
 export type RepoConfig = z.infer<typeof RepoSchema>;
 
@@ -142,6 +151,21 @@ export function juniorSetting(project: Pick<ProjectConfig, 'kaiten' | 'mapping'>
   const no = select?.values.no;
   if (!select || !missing || yes === undefined || no === undefined) return { state: 'needs-setup', maxAgeDays: junior.maxAgeDays };
   return { state: 'on', maxAgeDays: junior.maxAgeDays, property: { id: select.id, yes, no }, missingPropertyId: missing.id };
+}
+
+/** Поле «Оценка»: id поля и его вариантов. */
+export interface AssessField {
+  id: number;
+  values: Record<AssessVerdict, number>;
+}
+
+/** Поле «Оценка» проекта; `undefined` — признак выключен или поле не заведено (`setup`). */
+export function assessField(project: Pick<ProjectConfig, 'kaiten' | 'mapping'>): AssessField | undefined {
+  const select = project.mapping?.assessProperty;
+  if (!project.kaiten.junior || !select) return undefined;
+  const { actual, done, obsolete } = select.values;
+  if (actual === undefined || done === undefined || obsolete === undefined) return undefined;
+  return { id: select.id, values: { actual, done, obsolete } };
 }
 
 export const ConfigSchema = z

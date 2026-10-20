@@ -5,8 +5,19 @@
  */
 import { describe, expect, it } from 'vitest';
 
-import { juniorMissingText, juniorReadiness, juniorTemplate, withJuniorTemplate } from '../core/junior.js';
-import type { TaskStatus, TaskType } from '../core/schema.js';
+import {
+  assessedBy,
+  freshSince,
+  incompleteSections,
+  juniorMissingText,
+  juniorReadiness,
+  juniorTemplate,
+  proposedSectionProblems,
+  saysNo,
+  withJuniorSections,
+  withJuniorTemplate,
+} from '../core/junior.js';
+import type { Frontmatter, TaskStatus, TaskType } from '../core/schema.js';
 import { newBodyProblems, newBodyTemplate } from '../core/skeleton.js';
 
 const OPTS = { today: '2026-10-19', maxAgeDays: 90 };
@@ -98,6 +109,62 @@ describe('juniorReadiness', () => {
   it('причины одной строкой — для поля карточки', () => {
     const r = check(body(DB_NO), { revised: '2026-01-01' });
     expect(juniorMissingText(r?.missing ?? [])).toBe('постановку не правили больше 90 дней; продукт: нет раздела; n8n: нет раздела');
+  });
+});
+
+describe('оценка и признак', () => {
+  const full = body(PRODUCT_NO, DB_NO, N8N_NO);
+  const fm = (over: Partial<Frontmatter>) => ({ type: 'story' as const, status: 'backlog' as const, created: '2026-01-01', revised: '2026-01-01', ...over });
+
+  it('«Похоже, сделана» и «Похоже, устарела» — «Нет» с причиной, кто бы ни поставил', () => {
+    expect(juniorReadiness(fm({ revised: '2026-10-01', assessment: 'done' }), full, OPTS)?.missing).toEqual(['оценка: похоже, сделана']);
+    expect(juniorReadiness(fm({ revised: '2026-10-01', assessment: 'obsolete', assessed: { verdict: 'obsolete', date: '2026-10-01' } }), full, OPTS)?.missing).toEqual(['оценка: похоже, устарела']);
+  });
+
+  it('«Актуальна» от скрипта освежает старую задачу; поправленная человеком — нет', () => {
+    const script = fm({ assessment: 'actual', assessed: { verdict: 'actual', date: '2026-10-01' } });
+    expect(juniorReadiness(script, full, OPTS)).toEqual({ ok: true, missing: [] });
+    expect(freshSince(script)).toBe('2026-10-01');
+    // Человек сначала поставил «Похоже, сделана», потом вернул «Актуальна» — это его оценка, а не скрипта.
+    const human = fm({ assessment: 'actual', assessed: { verdict: 'done', date: '2026-10-01' } });
+    expect(assessedBy(human)).toBe('human');
+    expect(juniorReadiness(human, full, OPTS)?.missing).toEqual(['постановку не правили больше 90 дней']);
+    expect(assessedBy(fm({}))).toBeNull();
+  });
+});
+
+describe('разделы от скрипта оценки', () => {
+  it('недостающие и неполные разделы — к дописыванию; полные и «Нет» — нет', () => {
+    expect(incompleteSections(body(PRODUCT_NO, '## Изменения в БД\n\n**Что меняется:** поле\n'))).toEqual(['Изменения в БД', 'Сценарии n8n']);
+    expect(incompleteSections(body(PRODUCT_NO, DB_FULL, N8N_NO))).toEqual([]);
+  });
+
+  it('открытые вопросы в предложенном разделе — честный ответ, а не ошибка; нехватка пунктов — ошибка', () => {
+    const product = '**Что решено:** кнопка.\n**Где зафиксировано:** чат продукта.\n**Открытые вопросы:** какой текст у ошибки';
+    expect(proposedSectionProblems('Продуктовые решения', product)).toEqual([]);
+    expect(proposedSectionProblems('Изменения в БД', '**Что меняется:** поле')).toEqual(['БД: нет пунктов «Миграция», «Откат», «Как проверить»']);
+    expect(proposedSectionProblems('Изменения в БД', '')).toEqual(['БД: раздел не заполнен']);
+  });
+
+  it('«Нет» — по первой строке раздела', () => {
+    expect(saysNo('Нет — только чтение.')).toBe(true);
+    expect(saysNo('Нетривиально')).toBe(false);
+    expect(saysNo('**Что меняется:** поле')).toBe(false);
+  });
+
+  it('есть раздел — заменяется на месте; нет — встаёт перед критериями в порядке каркаса', () => {
+    const before = body('## Изменения в БД\n\n**Что меняется:** поле\n\n### Подробности\n\nтекст');
+    const out = withJuniorSections('story', before, { 'Сценарии n8n': 'Нет.', 'Изменения в БД': 'Нет — только чтение.', 'Продуктовые решения': 'Нет.' });
+    const headings = out.split('\n').filter((l) => l.startsWith('#'));
+    expect(headings).toEqual(['## Зачем', '## Что сделать', '## Изменения в БД', '## Продуктовые решения', '## Сценарии n8n', '## Критерии готовности']);
+    expect(out).not.toContain('Подробности');
+    expect(check(out)).toEqual({ ok: true, missing: [] });
+    expect(out.endsWith('- [ ] ретраи\n')).toBe(true);
+  });
+
+  it('без критериев — в конец', () => {
+    const out = withJuniorSections('story', '## Зачем\n\nТекст.\n', { 'Сценарии n8n': 'Нет.' });
+    expect(out).toBe('## Зачем\n\nТекст.\n\n## Сценарии n8n\n\nНет.\n');
   });
 });
 

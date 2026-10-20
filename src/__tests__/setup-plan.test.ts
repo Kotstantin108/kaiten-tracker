@@ -282,10 +282,19 @@ describe('поля «Можно младшему»', () => {
   /** Всё заведено: оба поля с вариантами и в типах Story, Tech, Bug. */
   function ready(): CurrentStructure {
     const current = complete();
-    current.properties.push({ id: 500, uid: 'uid-junior', name: 'Можно младшему', type: 'select' }, { id: 501, uid: 'uid-missing', name: 'Младшему не хватает', type: 'string' });
+    current.properties.push(
+      { id: 500, uid: 'uid-junior', name: 'Можно младшему', type: 'select' },
+      { id: 501, uid: 'uid-missing', name: 'Младшему не хватает', type: 'string' },
+      { id: 502, uid: 'uid-assess', name: 'Оценка', type: 'select' },
+    );
     current.selectValues[500] = [
       { id: 5000, value: 'Да' },
       { id: 5001, value: 'Нет' },
+    ];
+    current.selectValues[502] = [
+      { id: 5020, value: 'Актуальна' },
+      { id: 5021, value: 'Похоже, сделана' },
+      { id: 5022, value: 'Похоже, устарела' },
     ];
     current.cardTypes = current.cardTypes.map((t) =>
       ['Story', 'Tech', 'Bug'].includes(t.name)
@@ -294,6 +303,7 @@ describe('поля «Можно младшему»', () => {
             card_properties: [
               { regular_property: null, property_uid: 'uid-junior', sort_order: 5, required: false },
               { regular_property: null, property_uid: 'uid-missing', sort_order: 6, required: false },
+              { regular_property: null, property_uid: 'uid-assess', sort_order: 7, required: false },
             ],
           }
         : t,
@@ -306,17 +316,36 @@ describe('поля «Можно младшему»', () => {
     expect(buildMapping(ready(), desired)).not.toHaveProperty('juniorProperty');
   });
 
-  it('с блоком: два поля, варианты Да/Нет, необязательно в Story, Tech, Bug — не в Epic и Spike', () => {
+  it('с блоком: три поля, варианты Да/Нет и оценки, необязательно в Story, Tech, Bug — не в Epic и Spike', () => {
     const plan = planSetup(complete(), withJunior);
     expect(plan.actions).toEqual([
       { kind: 'create-property', name: 'Можно младшему', type: 'select' },
       { kind: 'create-property', name: 'Младшему не хватает', type: 'string' },
+      { kind: 'create-property', name: 'Оценка', type: 'select' },
       { kind: 'create-select-value', property: 'Можно младшему', value: 'Да' },
       { kind: 'create-select-value', property: 'Можно младшему', value: 'Нет' },
+      { kind: 'create-select-value', property: 'Оценка', value: 'Актуальна' },
+      { kind: 'create-select-value', property: 'Оценка', value: 'Похоже, сделана' },
+      { kind: 'create-select-value', property: 'Оценка', value: 'Похоже, устарела' },
       ...['Story', 'Tech', 'Bug'].flatMap((typeName) => [
         { kind: 'add-type-property', typeName, property: 'Можно младшему', propertyType: 'select' },
         { kind: 'add-type-property', typeName, property: 'Младшему не хватает', propertyType: 'string' },
+        { kind: 'add-type-property', typeName, property: 'Оценка', propertyType: 'select' },
       ]),
+    ]);
+  });
+
+  it('этап 1 уже заведён — план добавляет только «Оценку»', () => {
+    const current = ready();
+    current.properties = current.properties.filter((p) => p.id !== 502);
+    delete current.selectValues[502];
+    current.cardTypes = current.cardTypes.map((t) => ({ ...t, card_properties: (t.card_properties ?? []).filter((p) => p.property_uid !== 'uid-assess') }));
+    expect(planSetup(current, withJunior).actions).toEqual([
+      { kind: 'create-property', name: 'Оценка', type: 'select' },
+      { kind: 'create-select-value', property: 'Оценка', value: 'Актуальна' },
+      { kind: 'create-select-value', property: 'Оценка', value: 'Похоже, сделана' },
+      { kind: 'create-select-value', property: 'Оценка', value: 'Похоже, устарела' },
+      ...['Story', 'Tech', 'Bug'].map((typeName) => ({ kind: 'add-type-property', typeName, property: 'Оценка', propertyType: 'select' })),
     ]);
   });
 
@@ -327,6 +356,7 @@ describe('поля «Можно младшему»', () => {
     expect(planSetup(current, withJunior).actions).toEqual([
       { kind: 'add-type-property', typeName: 'Tech', property: 'Можно младшему', propertyType: 'select' },
       { kind: 'add-type-property', typeName: 'Tech', property: 'Младшему не хватает', propertyType: 'string' },
+      { kind: 'add-type-property', typeName: 'Tech', property: 'Оценка', propertyType: 'select' },
     ]);
   });
 
@@ -340,7 +370,11 @@ describe('поля «Можно младшему»', () => {
   });
 
   it('маппинг: id выбора с вариантами yes/no и id строки; чего-то нет — ошибка', () => {
-    expect(buildMapping(ready(), withJunior)).toMatchObject({ juniorProperty: { id: 500, values: { yes: 5000, no: 5001 } }, juniorMissingProperty: { id: 501 } });
+    expect(buildMapping(ready(), withJunior)).toMatchObject({
+      juniorProperty: { id: 500, values: { yes: 5000, no: 5001 } },
+      juniorMissingProperty: { id: 501 },
+      assessProperty: { id: 502, values: { actual: 5020, done: 5021, obsolete: 5022 } },
+    });
     const current = ready();
     current.selectValues[500] = [{ id: 5000, value: 'Да' }];
     expect(() => buildMapping(current, withJunior)).toThrow(/вариант «Нет» поля «Можно младшему»/);

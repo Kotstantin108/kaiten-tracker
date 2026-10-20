@@ -93,7 +93,7 @@ async function readCurrent(client: KaitenClient, desired: DesiredStructure): Pro
   };
   const space = findSpace(current, desired);
   if (space) current.boards = await client.listBoards(space.id);
-  const selects = [...SELECT_ROLES.map((role) => desired.selects[role].name), ...(desired.junior ? [desired.junior.select.name] : [])];
+  const selects = [...SELECT_ROLES.map((role) => desired.selects[role].name), ...(desired.junior ? [desired.junior.select.name, desired.junior.assess.name] : [])];
   for (const name of selects) {
     const property = findSelect(current, name);
     if (property) current.selectValues[property.id] = await client.listSelectValues(property.id);

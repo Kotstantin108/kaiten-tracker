@@ -21,7 +21,7 @@
 
 import { contentHash, foreignFieldChanges, parseTaskDocument, serializeTaskDocument, TaskParseError } from './document.js';
 import { lintTask, SLUG_RE } from './lint.js';
-import { CLOSED_STATUSES, FrontmatterSchema, JOURNAL_FILE, type Frontmatter, type Priority, type TaskStatus, type TaskType } from './schema.js';
+import { CLOSED_STATUSES, FrontmatterSchema, JOURNAL_FILE, type AssessVerdict, type Frontmatter, type Priority, type TaskStatus, type TaskType } from './schema.js';
 import { renderSkeleton } from './skeleton.js';
 import { buildIndex, refOf, type TaskRecord } from './tasks-index.js';
 
@@ -69,6 +69,7 @@ export interface MirrorItem {
   priority?: Priority | null;
   team?: string | null;
   due?: string | null;
+  assessment?: AssessVerdict | null;
   /** Месяц закрытия (YYYY-MM) — по времени переноса карточки в колонку. */
   closedMonth?: string;
 }
@@ -588,6 +589,7 @@ function applyMirror(items: readonly MirrorItem[], texts: TaskTexts, ctx: OpCont
     if (item.type !== undefined) fm.type = item.type;
     if (item.priority !== undefined) fm.priority = item.priority ?? undefined;
     if (item.team !== undefined) fm.team = item.team ?? undefined;
+    if (item.assessment !== undefined) fm.assessment = item.assessment ?? undefined;
     if (item.due !== undefined) {
       const planning = { ...(fm.planning ?? {}), due: item.due ?? undefined };
       if (planning.due === undefined) delete planning.due;
