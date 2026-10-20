@@ -157,7 +157,11 @@ export function renderContent(task: TaskRecord, all: readonly TaskRecord[], base
   };
 }
 
-/** Версия отрисовки описания: поменяли рендер — поднять, и карточки перерисуются. */
+/**
+ * Версия отрисовки описания: поменяли рендер — поднять, и карточки
+ * перерисуются. Старая версия `kaiten` перерисовала бы их обратно — вместе с
+ * ней поднять и `SYNC_VERSION` (`core/sync-version.ts`).
+ */
 export const RENDER_VERSION = 1;
 
 /**
