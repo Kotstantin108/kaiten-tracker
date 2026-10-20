@@ -202,10 +202,11 @@ describe('прогон', () => {
       run: async ({ task: t }) => {
         if (t.fm.tracker === '601') return { error: 'агент не ответил' };
         if (t.fm.tracker === '602') return { answer: { verdict: 'maybe' } };
-        return { answer: answer(), costUsd: 0.5 };
+        return { answer: answer(), costUsd: 0.5, denied: ['git checkout main'] };
       },
     });
     expect(run.results.map((r) => r.ref)).toEqual(['600']);
+    expect(run.denied.map((d) => [d.task.fm.tracker, d.commands])).toEqual([['600', ['git checkout main']]]);
     expect(run.failed.map((f) => [f.task.fm.tracker, f.problems[0].slice(0, 17)])).toEqual([
       ['601', 'агент не ответил'],
       ['602', 'ответ не по схеме'],

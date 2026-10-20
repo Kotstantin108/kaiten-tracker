@@ -313,7 +313,8 @@ export function assessPrompt(task: TaskRecord, taskText: string, repos: readonly
           'При вердикте actual допиши разделы для младшего разработчика (только эти):',
           ...sectionRules,
           '«Нет» — утверждение: пиши его, только проверив по коду и сценариям, что изменений нет, и в noReason скажи, что проверил (файлы, поиск). Ложное «Нет» делает опасную задачу «безопасной» для младшего.',
-          '«Открытые вопросы»: «нет» — только если продуктовых вопросов действительно не осталось; иначе перечисли их.',
+          '«Продуктовые решения» — про то, что видит пользователь: тексты, правила, граничные случаи. Как писать код (какую функцию поменять, вынести ли общее) — не продуктовое решение и сюда не пишется.',
+          '«Открытые вопросы» — только поведение для пользователя, которого не решают ни задача, ни нынешний код и которое нельзя выбрать очевидно (по аналогии с соседними командами, по критериям). Выбор реализации, текст справки, порядок полей, догадки «стоит ли заодно…» — не вопросы. Таких вопросов нет — «нет».',
           'Пункты — строками `- **Метка:** текст`, без флажков `- [ ]`.',
           'При done и obsolete разделы не нужны — пустой список.',
         ]
@@ -329,7 +330,8 @@ export function assessPrompt(task: TaskRecord, taskText: string, repos: readonly
 
 // ── прогон ───────────────────────────────────────────────────────────────
 
-export type AgentOutcome = { answer: unknown; costUsd?: number } | { error: string };
+/** `denied` — команды, в которых агенту отказано: доказательства могли стать слабее, это в отчёт. */
+export type AgentOutcome = { answer: unknown; costUsd?: number; denied?: string[] } | { error: string };
 
 /** Запуск агента по одной задаче; в тестах — подделка без сети. */
 export type AgentRunner = (job: { task: TaskRecord; prompt: string; repo: CodeRepo }) => Promise<AgentOutcome>;
@@ -337,6 +339,7 @@ export type AgentRunner = (job: { task: TaskRecord; prompt: string; repo: CodeRe
 export interface AssessRun {
   results: AssessResult[];
   failed: Array<{ task: TaskRecord; problems: string[] }>;
+  denied: Array<{ task: TaskRecord; commands: string[] }>;
   costUsd: number;
 }
 
@@ -345,7 +348,8 @@ export async function runAssess(
   tasks: readonly TaskRecord[],
   deps: { repos: readonly CodeRepo[]; taskText: (task: TaskRecord) => string; run: AgentRunner; check: EvidenceCheck; parallel: number; onDone?: (task: TaskRecord, ok: boolean) => void },
 ): Promise<AssessRun> {
-  const out: AssessRun = { results: [], failed: [], costUsd: 0 };
+  const out: AssessRun = { results: [], failed: [], denied: [], costUsd: 0 };
+  const denied = new Map<string, string[]>();
   const byId = new Map<string, AssessResult | { problems: string[] }>();
   let next = 0;
   const worker = async (): Promise<void> => {
@@ -364,6 +368,7 @@ export async function runAssess(
         continue;
       }
       out.costUsd += outcome.costUsd ?? 0;
+      if (outcome.denied && outcome.denied.length > 0) denied.set(task.fm.id, outcome.denied);
       const parsed = AgentAnswerSchema.safeParse(outcome.answer);
       const verdict = parsed.success
         ? verifyAnswer(task, parsed.data, wanted, deps.check)
@@ -375,6 +380,8 @@ export async function runAssess(
   await Promise.all(Array.from({ length: Math.max(1, Math.min(deps.parallel, tasks.length)) }, worker));
   // Порядок отчёта — как у задач, а не как закончили агенты.
   for (const task of tasks) {
+    const commands = denied.get(task.fm.id);
+    if (commands) out.denied.push({ task, commands });
     const r = byId.get(task.fm.id);
     if (!r) continue;
     if ('problems' in r) out.failed.push({ task, problems: r.problems });
@@ -414,6 +421,10 @@ export function formatReport(input: { project: string; created: string; model: s
   if (run.failed.length > 0) {
     lines.push('', '## Агент не справился', '');
     for (const f of run.failed) lines.push(`- ${refOf(f.task)} — ${f.task.fm.title}: ${f.problems.join('; ')}`);
+  }
+  if (run.denied.length > 0) {
+    lines.push('', '## Агенту отказано в командах', '', 'Доказательства этих задач могли быть слабее: агент не смог выполнить команды.', '');
+    for (const d of run.denied) lines.push(`- ${refOf(d.task)} — ${d.task.fm.title}: ${d.commands.map((c) => `\`${c}\``).join(', ')}`);
   }
   if (input.skipped.length > 0) {
     lines.push('', '## Пропущено', '');

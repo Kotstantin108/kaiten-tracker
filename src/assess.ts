@@ -34,7 +34,7 @@
 import { execFileSync, spawn } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { isAbsolute, join, relative, resolve } from 'node:path';
+import { join, resolve } from 'node:path';
 
 import { z } from 'zod';
 
@@ -106,6 +106,7 @@ const ClaudeResultSchema = z
     result: z.string().optional(),
     structured_output: z.unknown().optional(),
     total_cost_usd: z.number().optional(),
+    permission_denials: z.array(z.object({ tool_name: z.string(), tool_input: z.object({ command: z.string().optional() }).passthrough().optional() }).passthrough()).optional(),
   })
   .passthrough();
 
@@ -171,16 +172,18 @@ function claudeRunner(model: string, repos: readonly CodeRepo[]): AgentRunner {
           done({ error: `агент не дал ответа по схеме (${r.subtype ?? 'ошибка'})${r.result ? `: ${r.result.slice(0, 300)}` : ''}` });
           return;
         }
-        done({ answer: r.structured_output, costUsd: r.total_cost_usd });
+        const denied = (r.permission_denials ?? []).map((d) => d.tool_input?.command ?? d.tool_name);
+        done({ answer: r.structured_output, costUsd: r.total_cost_usd, denied });
       });
       child.stdin.end(prompt);
     });
 }
 
 /**
- * Доказательства — по папкам: файл внутри рабочей копии, коммит — в истории
- * её текущей ветки. Исправление только в ветке задачи — ещё не сделано
- * (живьём 20.10: агент счёл сделанной задачу, чья правка не влита).
+ * Доказательства — по истории основной ветки папки (её проверили при
+ * запуске): файл или папка — в её последнем коммите, коммит — в её истории.
+ * Исправление только в ветке задачи — ещё не сделано (живьём 20.10: агент
+ * счёл сделанной задачу, чья правка не влита).
  */
 function folderCheck(repos: readonly CodeRepo[]): EvidenceCheck {
   const folder = (name: string): string | undefined => repos.find((r) => r.name === name)?.folder;
@@ -188,10 +191,7 @@ function folderCheck(repos: readonly CodeRepo[]): EvidenceCheck {
     repos: new Set(repos.map((r) => r.name)),
     fileExists: (name, path) => {
       const root = folder(name);
-      if (!root) return false;
-      const full = resolve(root, path);
-      const rel = relative(resolve(root), full);
-      return !rel.startsWith('..') && !isAbsolute(rel) && existsSync(full);
+      return root !== undefined && gitOk(root, ['cat-file', '-e', `HEAD:${path}`]) !== null;
     },
     commitExists: (name, sha) => {
       const root = folder(name);
@@ -224,6 +224,10 @@ async function assess(argv: string[]): Promise<void> {
     if (!existsSync(dir) || !statSync(dir).isDirectory()) fail(`--code ${name}: нет папки ${dir}`);
     const top = gitOk(dir, ['rev-parse', '--show-toplevel']);
     if (top === null) fail(`--code ${name}: ${dir} — не рабочая копия git`);
+    // Сделано — то, что в основной ветке: папка на ветке задачи показала бы невлитую правку сделанной.
+    const branch = gitOk(top, ['rev-parse', '--abbrev-ref', 'HEAD']);
+    if (branch !== config.branch) fail(`--code ${name}: папка на ветке ${branch ?? '?'}, а оценивают по ${config.branch} — переключите её (git switch ${config.branch}) или дайте другую копию`);
+    if (gitOk(top, ['status', '--porcelain', '--untracked-files=no'])) fail(`--code ${name}: в папке незакоммиченные правки — оценка была бы не по ${config.branch}`);
     repos.push({ name, folder: top.replace(/\\/g, '/'), shared: config.shared });
   }
   const missingShared = project.repos.filter((r) => r.shared && !repos.some((c) => c.name === r.name));
@@ -323,26 +327,35 @@ async function apply(argv: string[], file: string): Promise<void> {
         errors += 1;
         continue;
       }
-      try {
-        await client.updateCard(result.cardId, { properties: { [`id_${field.id}`]: [field.values[result.verdict]] } });
-        await client.addComment(result.cardId, step.comment);
-      } catch (error) {
-        console.error(`Не записано в Kaiten: ${name} — ${error instanceof Error ? error.message : String(error)}`);
-        errors += 1;
-        continue;
-      }
+      // Сначала разделы: комментарий в карточке говорит, что они дописаны, — это должно быть правдой.
+      // Не дошло до Kaiten — разделы остаются (полные разделы признак засчитывает), оценки нет: оцените снова.
       if (step.text !== null) {
         const edited = recordOp(store, { kind: 'edit', id: result.id, text: step.text, baseHash: result.baseHash }, `разделы для младшего: ${result.ref}`, date);
         if ('error' in edited) {
           console.error(`Разделы не записаны: ${name} — ${edited.error}`);
           errors += 1;
+          continue;
         }
       }
+      try {
+        await client.updateCard(result.cardId, { properties: { [`id_${field.id}`]: [field.values[result.verdict]] } });
+      } catch (error) {
+        console.error(`«Оценка» не записана в Kaiten: ${name} — ${error instanceof Error ? error.message : String(error)}`);
+        errors += 1;
+        continue;
+      }
+      // Отметка — сразу за полем: без неё оценку в карточке синхронизация сочла бы оценкой человека.
       const marked = recordOp(store, { kind: 'assessed', items: [{ id: result.id, verdict: result.verdict }] }, `оценка: ${result.ref}`, date);
       if ('error' in marked) {
         console.error(`Отметка оценки не записана: ${name} — ${marked.error}`);
         errors += 1;
         continue;
+      }
+      try {
+        await client.addComment(result.cardId, step.comment);
+      } catch (error) {
+        console.error(`Комментарий с доказательствами не записан: ${name} — ${error instanceof Error ? error.message : String(error)}; они — в отчёте`);
+        errors += 1;
       }
       applied += 1;
       console.log(`${name} — «${VERDICT_LABELS[result.verdict]}»${step.text !== null ? ', разделы дописаны' : ''}`);
