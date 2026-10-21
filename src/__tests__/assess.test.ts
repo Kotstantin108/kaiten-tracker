@@ -54,7 +54,7 @@ const REPOS: CodeRepo[] = [
 const CHECK: EvidenceCheck = {
   repos: new Set(['acme-app', 'acme-n8n']),
   fileExists: (repo, path) => repo === 'acme-app' && ['src/webhook.ts', 'src'].includes(path),
-  commitExists: (repo, sha) => repo === 'acme-app' && 'abc1234def'.startsWith(sha),
+  commitBranches: (repo, sha) => (repo !== 'acme-app' ? [] : 'abc1234def'.startsWith(sha) ? 'head' : 'bcd2345efa'.startsWith(sha) ? ['feature/retry', 'production'] : []),
 };
 const DB = '- **Что меняется:** таблица webhook_attempts.\n- **Миграция:** новая таблица.\n- **Откат:** удалить таблицу.\n- **Как проверить:** строка на каждую попытку.';
 const ALL = ['Продуктовые решения', 'Изменения в БД', 'Сценарии n8n'];
@@ -132,7 +132,7 @@ describe('ответ агента', () => {
     const r = verifyAnswer(task(), bad, ALL, CHECK);
     expect('problems' in r && r.problems).toEqual([
       'нет такого файла: acme-app: src/nope.ts',
-      'нет такого коммита в истории: acme-app @ fff0000',
+      'нет такого коммита ни в одной ветке: acme-app @ fff0000',
       'доказательство из репозитория «globex», которого агенту не давали',
       'путь вне репозитория: acme-app: ../secrets.txt',
       'доказательство без файла и коммита: acme-app',
@@ -168,6 +168,17 @@ describe('ответ агента', () => {
     expect(verifyAnswer(task(), answer({ verdict: 'done', sections: [], evidence: [] }), ALL, CHECK)).toEqual({ problems: ['«Похоже, сделана» без доказательств'] });
     const r = verifyAnswer(task(), answer({ verdict: 'done', sections: [], evidence: [{ repo: 'acme-app', path: '', commit: 'ABC1234', note: 'ретраи добавлены' }] }), ALL, CHECK);
     expect('result' in r && r.result).toMatchObject({ verdict: 'done', sections: {}, evidence: [{ commit: 'abc1234' }] });
+  });
+
+  it('коммит из другой ветки — доказательство с меткой ветки; «похоже…» только по таким — не принимается', () => {
+    const branch = { repo: 'acme-app', path: '', commit: 'bcd2345', note: 'ретраи в ветке задачи' };
+    const actual = verifyAnswer(task(), answer({ evidence: [branch] }), ALL, CHECK);
+    expect('result' in actual && actual.result.evidence).toEqual([{ repo: 'acme-app', commit: 'bcd2345', branches: ['feature/retry', 'production'], note: 'ретраи в ветке задачи' }]);
+    expect(verifyAnswer(task(), answer({ verdict: 'done', sections: [], evidence: [branch] }), ALL, CHECK)).toEqual({
+      problems: ['«Похоже, сделана» только по коммитам вне основной ветки (feature/retry, production) — пока не влито, это «Актуальна»'],
+    });
+    const done = verifyAnswer(task(), answer({ verdict: 'done', sections: [], evidence: [branch, { repo: 'acme-app', path: 'src/webhook.ts', commit: '', note: 'обработчик' }] }), ALL, CHECK);
+    expect('result' in done && done.result.verdict).toBe('done');
   });
 
   it('путь: относительный, без «..»; обратные слэши — прямые', () => {
@@ -250,6 +261,12 @@ describe('применение', () => {
     const step = planApply(result(t, { verdict: 'done', sections: [], evidence: [{ repo: 'acme-app', path: 'src', commit: 'abc1234', note: 'есть ретраи' }] }), t, TODAY);
     expect(step).toMatchObject({ text: null });
     expect('comment' in step && step.comment).toMatch(/Задачу закрывает человек/);
+  });
+
+  it('коммит из другой ветки — в комментарии с веткой', () => {
+    const t = task();
+    const step = planApply(result(t, { evidence: [{ repo: 'acme-app', path: '', commit: 'bcd2345', note: 'ретраи в ветке задачи' }] }), t, TODAY);
+    expect('comment' in step && step.comment).toContain('- acme-app: коммит `bcd2345` (не в основной ветке: feature/retry, production) — ретраи в ветке задачи');
   });
 
   it('постановку изменили, задачу взяли, карточка другая, задачи нет — не применяется', () => {

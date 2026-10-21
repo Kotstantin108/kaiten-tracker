@@ -180,10 +180,12 @@ function claudeRunner(model: string, repos: readonly CodeRepo[]): AgentRunner {
 }
 
 /**
- * Доказательства — по истории основной ветки папки (её проверили при
- * запуске): файл или папка — в её последнем коммите, коммит — в её истории.
- * Исправление только в ветке задачи — ещё не сделано (живьём 20.10: агент
- * счёл сделанной задачу, чья правка не влита).
+ * Доказательства — по основной ветке папки (её проверили при запуске): файл
+ * или папка — в её последнем коммите, коммит — в её истории или в другой
+ * ветке (своей или с сервера) с меткой ветки. Исправление только в ветке
+ * задачи — ещё не сделано (живьём 20.10: агент счёл сделанной задачу, чья
+ * правка не влита), но доказательство того, что работа идёт (живьём 21.10:
+ * выкат в ветке выката, проверка в ветке задачи).
  */
 function folderCheck(repos: readonly CodeRepo[]): EvidenceCheck {
   const folder = (name: string): string | undefined => repos.find((r) => r.name === name)?.folder;
@@ -193,10 +195,16 @@ function folderCheck(repos: readonly CodeRepo[]): EvidenceCheck {
       const root = folder(name);
       return root !== undefined && gitOk(root, ['cat-file', '-e', `HEAD:${path}`]) !== null;
     },
-    commitExists: (name, sha) => {
+    commitBranches: (name, sha) => {
       const root = folder(name);
-      if (!root || gitOk(root, ['cat-file', '-e', `${sha}^{commit}`]) === null) return false;
-      return gitOk(root, ['merge-base', '--is-ancestor', sha, 'HEAD']) !== null;
+      if (!root || gitOk(root, ['cat-file', '-e', `${sha}^{commit}`]) === null) return [];
+      if (gitOk(root, ['merge-base', '--is-ancestor', sha, 'HEAD']) !== null) return 'head';
+      const refs = gitOk(root, ['for-each-ref', '--contains', sha, '--format=%(refname)', 'refs/heads', 'refs/remotes']) ?? '';
+      const names = refs
+        .split('\n')
+        .filter((ref) => ref && !ref.endsWith('/HEAD'))
+        .map((ref) => ref.replace(/^refs\/heads\//, '').replace(/^refs\/remotes\/[^/]+\//, ''));
+      return [...new Set(names)].sort();
     },
   };
 }

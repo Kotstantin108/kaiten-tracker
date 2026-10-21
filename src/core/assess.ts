@@ -9,7 +9,8 @@
  * только человек: вердикты «похоже…» статус не меняют.
  *
  * Ответу агента не верим на слово: каждый файл должен лежать в переданных
- * папках, каждый коммит — быть в их истории, каждое «Нет» в разделе —
+ * папках, каждый коммит — быть в одной из их веток (не в основной — с меткой
+ * ветки; «похоже…» только по таким не принимается), каждое «Нет» в разделе —
  * обосновано, разделы — проходить разбор признака. Не прошёл — «агент не
  * справился» в отчёте, без записи и без повтора вслепую.
  */
@@ -134,7 +135,7 @@ export const AgentAnswerSchema = z
           .object({
             repo: z.string().describe('Имя репозитория из списка'),
             path: z.string().describe('Путь к существующему файлу или папке относительно корня репозитория; нет — пустая строка'),
-            commit: z.string().describe('Хеш коммита из истории репозитория; нет — пустая строка'),
+            commit: z.string().describe('Хеш коммита из любой ветки репозитория; нет — пустая строка'),
             note: z.string().describe('Что это доказывает'),
           })
           .strict(),
@@ -148,6 +149,8 @@ export interface Evidence {
   repo: string;
   path?: string;
   commit?: string;
+  /** Коммит не в основной ветке: в каких ветках он лежит. */
+  branches?: string[];
   note: string;
 }
 
@@ -166,7 +169,7 @@ export const AssessResultSchema = z
     sections: z.record(z.string(), z.string()),
     /** Обоснование каждого «Нет» по заголовку раздела. */
     noReasons: z.record(z.string(), z.string()),
-    evidence: z.array(z.object({ repo: z.string(), path: z.string().optional(), commit: z.string().optional(), note: z.string() }).strict()),
+    evidence: z.array(z.object({ repo: z.string(), path: z.string().optional(), commit: z.string().optional(), branches: z.array(z.string()).optional(), note: z.string() }).strict()),
   })
   .strict();
 export type AssessResult = z.infer<typeof AssessResultSchema>;
@@ -183,11 +186,15 @@ export const ResultsFileSchema = z
   .strict();
 export type ResultsFile = z.infer<typeof ResultsFileSchema>;
 
-/** Чем проверить доказательства: файл в папке репозитория, коммит в истории её текущей ветки. */
+/**
+ * Чем проверить доказательства: файл — в последнем коммите текущей ветки
+ * папки; коммит — `head`, если он в её истории, иначе ветки, в которых он
+ * лежит (пусто — ни в одной).
+ */
 export interface EvidenceCheck {
   repos: ReadonlySet<string>;
   fileExists: (repo: string, path: string) => boolean;
-  commitExists: (repo: string, sha: string) => boolean;
+  commitBranches: (repo: string, sha: string) => 'head' | readonly string[];
 }
 
 /** Путь внутри репозитория: относительный, без выхода наружу. */
@@ -224,8 +231,15 @@ export function verifyAnswer(task: TaskRecord, answer: AgentAnswer, wanted: read
     if (e.commit.trim()) {
       const sha = e.commit.trim().toLowerCase();
       if (!/^[0-9a-f]{7,40}$/.test(sha)) problems.push(`не хеш коммита: ${where}`);
-      else if (!check.commitExists(e.repo, sha)) problems.push(`нет такого коммита в истории: ${where}`);
-      else item.commit = sha;
+      else {
+        const at = check.commitBranches(e.repo, sha);
+        if (at === 'head') item.commit = sha;
+        else if (at.length === 0) problems.push(`нет такого коммита ни в одной ветке: ${where}`);
+        else {
+          item.commit = sha;
+          item.branches = [...at];
+        }
+      }
     }
     if (!e.path.trim() && !e.commit.trim()) problems.push(`доказательство без файла и коммита: ${e.repo}`);
     if (!item.note) problems.push(`не сказано, что доказывает: ${where}`);
@@ -252,6 +266,10 @@ export function verifyAnswer(task: TaskRecord, answer: AgentAnswer, wanted: read
     }
   } else if (evidence.length === 0) {
     problems.push(`«${VERDICT_LABELS[answer.verdict]}» без доказательств`);
+  } else if (!evidence.some((e) => e.path !== undefined || (e.commit !== undefined && !e.branches))) {
+    // Правка только в ветке задачи — ещё не сделано (живьём 20.10 агент счёл сделанной невлитую).
+    const branches = [...new Set(evidence.flatMap((e) => e.branches ?? []))];
+    problems.push(`«${VERDICT_LABELS[answer.verdict]}» только по коммитам вне основной ветки (${branches.join(', ')}) — пока не влито, это «Актуальна»`);
   }
 
   if (problems.length > 0) return { problems };
@@ -302,7 +320,7 @@ export function assessPrompt(task: TaskRecord, taskText: string, repos: readonly
     'Не уверен между actual и done/obsolete — actual: «похоже…» перепроверяет человек, а ложное «сделано» прячет задачу.',
     'Оценивай по текущей ветке каждой папки (обычно main): сделано — только то, что в её истории. Работа, которая лежит лишь в других ветках (ветка задачи, не влитый PR), — ещё не сделана: вердикт actual, а про ветку скажи в reasoning.',
     '',
-    'Доказательство — репозиторий из списка ниже и путь к существующему файлу (относительно корня репозитория) или хеш коммита из истории текущей ветки. Удалённого файла по пути нет — для него указывай коммит удаления. Каждое доказательство проверяется автоматически; выдуманное или из другой ветки — и оценка отбрасывается.',
+    'Доказательство — репозиторий из списка ниже и путь к файлу, существующему в текущей ветке (относительно корня репозитория), или хеш коммита. Коммит из другой ветки тоже доказательство — скрипт отметит его ветку, — но у done и obsolete хотя бы одно доказательство должно быть из текущей ветки. Удалённого файла по пути нет — для него указывай коммит удаления. Каждое доказательство проверяется автоматически; выдуманное — и оценка отбрасывается.',
     '',
     'Репозитории:',
     ...repoLines,
@@ -393,7 +411,8 @@ export async function runAssess(
 // ── отчёт ────────────────────────────────────────────────────────────────
 
 function evidenceLine(e: Evidence): string {
-  const where = [e.path ? `\`${e.path}\`` : '', e.commit ? `коммит \`${e.commit.slice(0, 10)}\`` : ''].filter(Boolean).join(', ');
+  const branches = e.branches && e.branches.length > 0 ? ` (не в основной ветке: ${e.branches.slice(0, 3).join(', ')}${e.branches.length > 3 ? ` и ещё ${e.branches.length - 3}` : ''})` : '';
+  const where = [e.path ? `\`${e.path}\`` : '', e.commit ? `коммит \`${e.commit.slice(0, 10)}\`${branches}` : ''].filter(Boolean).join(', ');
   return `- ${e.repo}: ${where} — ${e.note}`;
 }
 
