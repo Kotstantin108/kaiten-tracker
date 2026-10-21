@@ -1,0 +1,34 @@
+# Агентский сервер Kaiten + Caddy (HTTPS с сертификатом Let's Encrypt).
+#   cp .env.example .env   # заполнить
+#   docker compose up -d --build
+# Нужны: DNS-запись AGENT_HOST на этот хост, открытые порты 80 и 443.
+
+services:
+  agent:
+    build:
+      context: ../..
+      dockerfile: deploy/agent-server/Dockerfile
+    restart: unless-stopped
+    env_file: .env
+    volumes:
+      - agent-data:/data
+
+  caddy:
+    image: caddy:2.10-alpine
+    restart: unless-stopped
+    depends_on:
+      - agent
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      AGENT_HOST: ${AGENT_HOST}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+
+volumes:
+  agent-data:
+  caddy-data:
+  caddy-config:

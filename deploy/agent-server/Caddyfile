@@ -1,0 +1,7 @@
+# HTTPS перед агентским сервером: сертификат Caddy получает сам.
+{$AGENT_HOST} {
+	reverse_proxy agent:8787 {
+		# MCP отвечает потоком (SSE) — не копить ответ.
+		flush_interval -1
+	}
+}

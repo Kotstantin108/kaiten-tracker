@@ -25,7 +25,8 @@
     "normalize": "tsx src/normalize-tasks.ts",
     "install-machine": "node scripts/install.mjs",
     "agent:dev": "npx --yes wrangler@4.145.0 dev",
-    "agent:deploy": "npx --yes wrangler@4.145.0 deploy"
+    "agent:deploy": "npx --yes wrangler@4.145.0 deploy",
+    "agent:build": "node scripts/build-agent-server.mjs"
   },
   "dependencies": {
     "@cfworker/json-schema": "4.1.1",
@@ -37,6 +38,7 @@
   "devDependencies": {
     "@cloudflare/workers-types": "5.20260930.2",
     "@types/node": "^25.6.0",
+    "esbuild": "0.28.2",
     "tsx": "^4.21.0",
     "typescript": "^6.0.2",
     "vitest": "^4.1.4"

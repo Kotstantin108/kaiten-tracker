@@ -1,0 +1,12 @@
+# В образ агентского сервера — только исходники; токены и настройки машины — никогда.
+node_modules
+tmp
+dist
+.git
+.wrangler
+.env
+.env.*
+.dev.vars
+wrangler.jsonc
+kaiten.settings.json
+deploy/agent-server/.env
