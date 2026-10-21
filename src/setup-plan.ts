@@ -396,16 +396,13 @@ export function planSetup(current: CurrentStructure, desired: DesiredStructure =
 
   const space = findSpace(current, desired);
   // Папку, которую токен не видит, план не найдёт и завёл бы вторую с тем же
-  // именем, вынеся в неё пространство из настоящей.
-  if (desired.folder && space?.parent_entity_uid && !current.spaces.some((s) => s.uid === space.parent_entity_uid)) {
-    throw new Error(
-      `Пространство «${space.title}» лежит в папке, к которой у пользователя токена нет доступа: setup завёл бы вторую папку «${desired.folder}». ` +
-        'Дайте ему доступ к папке пространства и повторите.',
-    );
-  }
+  // именем, вынеся в неё пространство из настоящей. Такую папку и отделы в ней
+  // не трогаем; остальное (доска, типы, поля) от папки не зависит.
+  const hiddenFolder = desired.folder !== undefined && !!space?.parent_entity_uid && !current.spaces.some((s) => s.uid === space.parent_entity_uid);
 
-  const folder = findFolder(current, desired);
-  if (desired.folder) {
+  const folder = hiddenFolder ? undefined : findFolder(current, desired);
+  if (hiddenFolder) reused.push(`папка пространства — токену не видна: папку «${desired.folder ?? ''}» и пространства отделов не проверяю`);
+  else if (desired.folder) {
     if (!folder) actions.push({ kind: 'create-folder', title: desired.folder });
     else reused.push(`папка «${folder.title}» (${folder.id})`);
   }
@@ -413,8 +410,8 @@ export function planSetup(current: CurrentStructure, desired: DesiredStructure =
   if (!space) actions.push({ kind: 'create-space', title: desired.space });
   else {
     const rename = !same(space.title, desired.space);
-    const move = desired.folder !== undefined && (!folder?.uid || space.parent_entity_uid !== folder.uid);
-    if (rename || move) actions.push({ kind: 'move-space', id: space.id, from: space.title, title: desired.space, ...(desired.folder ? { folder: desired.folder } : {}) });
+    const move = desired.folder !== undefined && !hiddenFolder && (!folder?.uid || space.parent_entity_uid !== folder.uid);
+    if (rename || move) actions.push({ kind: 'move-space', id: space.id, from: space.title, title: desired.space, ...(desired.folder && !hiddenFolder ? { folder: desired.folder } : {}) });
     else reused.push(`пространство «${space.title}» (${space.id})`);
   }
 
@@ -502,7 +499,7 @@ export function planSetup(current: CurrentStructure, desired: DesiredStructure =
 
   if (desired.junior) planJunior(current, desired.junior, desired.types, actions, reused);
 
-  for (const department of desired.departments) {
+  for (const department of hiddenFolder ? [] : desired.departments) {
     const found = findDepartment(current, folder, department);
     if (found) reused.push(`пространство отдела «${found.title}» (${found.id})`);
     else actions.push({ kind: 'create-department', space: department.space, board: department.board, columns: department.columns.map((c) => ({ ...c })) });

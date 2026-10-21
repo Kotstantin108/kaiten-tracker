@@ -164,7 +164,7 @@ async function apply(client: KaitenClient, actions: SetupAction[], desired: Desi
         break;
       case 'move-space': {
         const folder = findFolder(current, desired);
-        if (desired.folder && !folder?.uid) throw new Error(`Папка «${desired.folder}» не нашлась`);
+        if (action.folder && !folder?.uid) throw new Error(`Папка «${action.folder}» не нашлась`);
         const saved = await client.updateSpace(action.id, { title: action.title, ...(folder?.uid ? { parent_entity_uid: folder.uid } : {}) });
         if (saved.title !== action.title || (folder?.uid && saved.parent_entity_uid !== folder.uid)) throw new Error(`Пространство «${action.from}» не переименовалось или не переехало в папку`);
         current = await readCurrent(client, desired);

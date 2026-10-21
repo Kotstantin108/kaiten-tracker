@@ -222,10 +222,11 @@ describe('папка, дорожки и отделы', () => {
     expect(planSetup(after(), nested).actions).toEqual([]);
   });
 
-  it('папка пространства токену не видна — отказ, а не вторая папка', () => {
+  it('папка пространства токену не видна — ни второй папки, ни переноса, ни отделов; переименование — без папки', () => {
     const current = after();
     current.spaces = current.spaces.filter((s) => s.uid !== 'uid-folder');
-    expect(() => planSetup(current, nested)).toThrow(/нет доступа/);
+    expect(planSetup(current, nested).actions).toEqual([]);
+    expect(planSetup(current, { ...nested, space: 'Разработка' }).actions).toEqual([{ kind: 'move-space', id: 10, from: 'Acme (разработка)', title: 'Разработка' }]);
   });
 
   describe('одно имя пространства в двух проектах', () => {
