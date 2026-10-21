@@ -222,6 +222,12 @@ describe('папка, дорожки и отделы', () => {
     expect(planSetup(after(), nested).actions).toEqual([]);
   });
 
+  it('папка пространства токену не видна — отказ, а не вторая папка', () => {
+    const current = after();
+    current.spaces = current.spaces.filter((s) => s.uid !== 'uid-folder');
+    expect(() => planSetup(current, nested)).toThrow(/нет доступа/);
+  });
+
   describe('одно имя пространства в двух проектах', () => {
     /** Acme и Globex: «Разработка» в каждой папке; Acme ещё не переименован. */
     function twoProjects(): CurrentStructure {

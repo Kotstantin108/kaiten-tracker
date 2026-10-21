@@ -394,13 +394,22 @@ export function planSetup(current: CurrentStructure, desired: DesiredStructure =
   const reused: string[] = [];
   const extra: string[] = [];
 
+  const space = findSpace(current, desired);
+  // Папку, которую токен не видит, план не найдёт и завёл бы вторую с тем же
+  // именем, вынеся в неё пространство из настоящей.
+  if (desired.folder && space?.parent_entity_uid && !current.spaces.some((s) => s.uid === space.parent_entity_uid)) {
+    throw new Error(
+      `Пространство «${space.title}» лежит в папке, к которой у пользователя токена нет доступа: setup завёл бы вторую папку «${desired.folder}». ` +
+        'Дайте ему доступ к папке пространства и повторите.',
+    );
+  }
+
   const folder = findFolder(current, desired);
   if (desired.folder) {
     if (!folder) actions.push({ kind: 'create-folder', title: desired.folder });
     else reused.push(`папка «${folder.title}» (${folder.id})`);
   }
 
-  const space = findSpace(current, desired);
   if (!space) actions.push({ kind: 'create-space', title: desired.space });
   else {
     const rename = !same(space.title, desired.space);
