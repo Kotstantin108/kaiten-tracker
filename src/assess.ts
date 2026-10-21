@@ -112,8 +112,8 @@ const ClaudeResultSchema = z
 
 /**
  * `claude -p` на задачу: текущая папка — репозиторий задачи, общие — через
- * `--add-dir`. Инструменты — только чтение; git — только log и show (в общих
- * репозиториях — через `git -C <папка>`). MCP-серверы не подключаются.
+ * `--add-dir`. Инструменты — только чтение; git — только log и show (и через
+ * `git -C <папка>` по любой из папок). MCP-серверы не подключаются.
  */
 function claudeRunner(model: string, repos: readonly CodeRepo[]): AgentRunner {
   // Без `$schema`: `claude` не знает адреса draft 2020-12 и отвергает схему (живьём 20.10).
@@ -121,7 +121,8 @@ function claudeRunner(model: string, repos: readonly CodeRepo[]): AgentRunner {
   return ({ prompt, repo }) =>
     new Promise((done) => {
       const others = repos.filter((r) => r.name !== repo.name);
-      const allowed = ['Read', 'Grep', 'Glob', 'Bash(git log:*)', 'Bash(git show:*)', ...others.flatMap((r) => [`Bash(git -C ${r.folder} log:*)`, `Bash(git -C ${r.folder} show:*)`])];
+      // `git -C` — и для папки задачи: агент пишет его и по своей папке, и отказ ослаблял доказательства (живьём 21.10).
+      const allowed = ['Read', 'Grep', 'Glob', 'Bash(git log:*)', 'Bash(git show:*)', ...repos.flatMap((r) => [`Bash(git -C ${r.folder} log:*)`, `Bash(git -C ${r.folder} show:*)`])];
       const args = [
         '-p',
         '--model',
