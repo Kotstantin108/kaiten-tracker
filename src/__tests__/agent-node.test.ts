@@ -127,6 +127,21 @@ describe('сервер на Node', () => {
     expect(bob).toContain('Bob');
   });
 
+  it('тело больше предела — 413: и по Content-Length, и потоком без него; сервер жив', async () => {
+    const base = await listen(createNodeHandler({ secret: SECRET, domain: 'acme.example.com', publicUrl: PUBLIC }, { oauthKv: kv(), store: kvAsStore(kv()), fetchImpl: kaiten }, 1000));
+    const big = 'token=' + 'a'.repeat(5000);
+    expect((await fetch(`${base}/key`, { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: big })).status).toBe(413);
+    const chunked = new ReadableStream<Uint8Array>({
+      start(controller) {
+        for (let i = 0; i < 5; i++) controller.enqueue(new TextEncoder().encode(i === 0 ? 'token=' : 'a'.repeat(1000)));
+        controller.close();
+      },
+    });
+    const streamed = await fetch(`${base}/key`, { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: chunked, duplex: 'half' } as RequestInit);
+    expect(streamed.status).toBe(413);
+    expect((await fetch(`${base}/`)).status).toBe(200);
+  });
+
   it('ответ: каждый Set-Cookie отдельно, тело потоком', async () => {
     const headers = new Headers({ 'Content-Type': 'text/event-stream' });
     headers.append('Set-Cookie', 'a=1; Path=/');
