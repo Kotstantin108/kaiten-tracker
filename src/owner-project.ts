@@ -7,7 +7,8 @@
  *                     читаются из неё, `setup` пишет id из Kaiten туда же
  *                     (закоммитить и отправить — руками);
  *   --tasks <адрес>   хранилище задач на этой машине (то же, что у `kaiten`;
- *                     загружается `kaiten pull` из подключённого репозитория).
+ *                     загружается `kaiten pull` из подключённого репозитория);
+ *                     перед чтением забирает свежие задачи, как `kaiten pull`.
  *
  * `--config <путь>` — `kaiten.json` откуда угодно (пробные прогоны, тесты).
  */
@@ -16,6 +17,7 @@ import { existsSync, statSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 
 import { loadTasksRepoConfig, projectFromTasksRepo, storeNameOf, TASKS_REPO_CONFIG, type LoadedProject, type People } from './config.js';
+import { syncStore } from './store-write.js';
 import { defaultStorePath, isStore, listEntries, readBlobs } from './task-store.js';
 
 export type OwnerSource = { kind: 'dir'; dir: string; configPath: string } | { kind: 'store'; store: string; url: string } | { kind: 'file'; configPath: string };
@@ -45,6 +47,13 @@ export function loadOwnerProject(argv: readonly string[]): OwnerProject {
   }
   const store = defaultStorePath(storeNameOf(tasks));
   if (!isStore(store)) throw new Error(`Задач по адресу ${tasks} на этой машине нет — kaiten pull из подключённого репозитория или --tasks <папка>`);
+  // Хранилище — как на последнем `kaiten pull`: без свежих задач их карточки
+  // выглядели бы чужими, а план — устаревшим.
+  try {
+    syncStore(store);
+  } catch {
+    throw new Error(`Свежие задачи по адресу ${tasks} не получены (нет связи или доступа к репозиторию) — повторите позже`);
+  }
   if (config) return { loaded: loadTasksRepoConfig(resolve(config)), source: { kind: 'store', store, url: tasks } };
   const entry = listEntries(store).find((e) => e.path === TASKS_REPO_CONFIG);
   if (!entry) throw new Error(`В репозитории задач нет ${TASKS_REPO_CONFIG}`);
