@@ -866,7 +866,10 @@ describe('поле «Было / Стало»', () => {
       task('active/before.md', { tracker: '912', status: 'review' }),
       task('active/answered.md', { tracker: '913', status: 'review', visual: 'no' }),
       task('active/spike.md', { tracker: '914', status: 'review', type: 'spike' }),
+      task('active/by-hand.md', { tracker: '915', status: 'review' }),
     ]);
+    // Ответ поставили руками в Kaiten — в отчёт не попадает, синхронизация его не стирает.
+    seedCard(w.fake, { id: 915, ...seeded, column_id: 106, column_changed_at: '2026-10-21T09:00:00Z', properties: { ...seeded.properties, id_9: [92] } });
     seedCard(w.fake, { id: 910, ...seeded, column_id: 106, column_changed_at: '2026-10-21T09:00:00Z' });
     seedCard(w.fake, { id: 911, ...seeded, column_id: 107, column_changed_at: '2026-10-22T09:00:00Z' });
     seedCard(w.fake, { id: 912, ...seeded, column_id: 106, column_changed_at: '2026-10-19T09:00:00Z' });
@@ -876,5 +879,7 @@ describe('поле «Было / Стало»', () => {
     expect(run.plan.report.withoutVisual).toEqual(['910 (late)', '911 (mirrored)']);
     expect(formatPlan(run)).toContain('На ревью или закрыты без ответа «Было / Стало» (перенесли в Kaiten руками): 910 (late), 911 (mirrored)');
     expect((await runKaitenSync(w.fake.client, w.input(), 'plan')).plan.report.withoutVisual).toEqual([]);
+    await w.sync({ visual: VISUAL });
+    expect(w.fake.cards.get(915)?.properties.id_9).toEqual([92]);
   });
 });

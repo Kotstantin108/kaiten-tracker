@@ -331,8 +331,8 @@ export interface FieldFlags {
 /**
  * Поля, которыми владеет файл: «Суть», «Репозиторий» и, если проект ведёт
  * признаки, «Можно младшему», «Младшему не хватает» и «Было / Стало».
- * Признак не применим (эпик, задача взята или закрыта; ответа ещё нет) —
- * поле пустое: `null`.
+ * «Можно младшему» не применим (эпик, задача взята или закрыта) — поле
+ * пустое: `null`. «Было / Стало» пишется, только когда ответ есть в задаче.
  */
 export function fileProperties(task: TaskRecord, mapping: ConfigMapping, flags: FieldFlags = {}): Record<string, unknown> {
   const props: Record<string, unknown> = {};
@@ -345,7 +345,8 @@ export function fileProperties(task: TaskRecord, mapping: ConfigMapping, flags: 
     props[key(junior.property.id)] = readiness === null ? null : [readiness.ok ? junior.property.yes : junior.property.no];
     props[key(junior.missingPropertyId)] = readiness === null || readiness.ok ? null : juniorMissingText(readiness.missing);
   }
-  if (visual) props[key(visual.property.id)] = task.fm.visual === undefined ? null : [visual.property[task.fm.visual]];
+  // Ответа в задаче нет — поле не трогаем: его могли поставить руками в Kaiten задаче, закрытой мимо kaiten.
+  if (visual && task.fm.visual !== undefined) props[key(visual.property.id)] = [visual.property[task.fm.visual]];
   return props;
 }
 
@@ -742,7 +743,7 @@ export function planKaitenSync(input: PlanInput): SyncPlan {
       mirror.push(fromKaiten.item);
       names[task.fm.id] = `${task.fm.tracker} (${task.slug})`;
     }
-    if (input.visual && missingVisual(task, fromKaiten.item?.status ?? task.fm.status, card, input.visual.since)) report.withoutVisual.push(`${task.fm.tracker} (${task.slug})`);
+    if (input.visual && missingVisual(task, fromKaiten.item?.status ?? task.fm.status, card, input.visual)) report.withoutVisual.push(`${task.fm.tracker} (${task.slug})`);
 
     const patch: { title?: string; properties?: Record<string, unknown>; lane_id?: number } = {};
     if (!sameValue(card.title, task.fm.title)) patch.title = task.fm.title;
@@ -791,11 +792,15 @@ export function planKaitenSync(input: PlanInput): SyncPlan {
   return { actions, mirror, names, report, ...(junior ? { junior: juniorCounts(actions, junior) } : {}) };
 }
 
-/** На ревью или «Сделано» с `since` без ответа «Было / Стало». Дата — переноса карточки в колонку. */
-function missingVisual(task: TaskRecord, status: TaskStatus, card: CardView, since: string): boolean {
+/**
+ * На ревью или «Сделано» с `since` без ответа «Было / Стало» — ни в задаче, ни
+ * в карточке (его можно поставить руками в Kaiten). Дата — переноса в колонку.
+ */
+function missingVisual(task: TaskRecord, status: TaskStatus, card: CardView, visual: VisualFields): boolean {
   if (task.fm.visual !== undefined || !visualApplies(task.fm.type)) return false;
+  if (firstId(card.properties[key(visual.property.id)]) !== null) return false;
   if (status !== 'review' && status !== 'done') return false;
-  return card.columnChangedAt !== undefined && localDate(card.columnChangedAt) >= since;
+  return card.columnChangedAt !== undefined && localDate(card.columnChangedAt) >= visual.since;
 }
 
 function juniorCounts(actions: readonly SyncAction[], junior: JuniorSync): NonNullable<SyncPlan['junior']> {
