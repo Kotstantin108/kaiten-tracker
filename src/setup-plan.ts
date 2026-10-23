@@ -75,7 +75,19 @@ export interface DesiredStructure {
   departments: readonly Department[];
   /** Поля признака «Можно младшему» (`kaiten.junior`); `null` — не заводим. */
   junior: JuniorFields | null;
+  /** Поле «Было / Стало» (`kaiten.visual`); `null` — не заводим. */
+  visual: VisualField | null;
 }
+
+/** Выбор «Было / Стало» — в типах story, tech, bug, необязательный: его ставят `kaiten review`/`done`. */
+export interface VisualField {
+  name: string;
+  yes: string;
+  no: string;
+  types: readonly TaskType[];
+}
+
+export const VISUAL_FIELD: VisualField = { name: 'Было / Стало', yes: 'Есть', no: 'Нет визуальных изменений', types: ['story', 'tech', 'bug'] };
 
 /**
  * Выбор «Можно младшему», строка «Младшему не хватает» и выбор «Оценка»
@@ -215,6 +227,7 @@ export const DESIRED: DesiredStructure = {
   lanes: { repos: {} },
   departments: [],
   junior: null,
+  visual: null,
 };
 
 /**
@@ -235,6 +248,7 @@ export function desiredForProject(input: {
   archiveLane?: string;
   departments?: readonly string[];
   junior?: boolean;
+  visual?: boolean;
 }): DesiredStructure {
   const unknown = (input.departments ?? []).filter((key) => !DEPARTMENTS.some((d) => d.key === key));
   if (unknown.length > 0) throw new Error(`Нет шаблона отдела: ${unknown.join(', ')} (есть: ${DEPARTMENTS.map((d) => d.key).join(', ')})`);
@@ -254,6 +268,7 @@ export function desiredForProject(input: {
     lanes: { repos: input.repoLanes ?? {}, ...(input.archiveLane ? { archive: input.archiveLane } : {}) },
     departments: DEPARTMENTS.filter((d) => (input.departments ?? []).includes(d.key)),
     junior: input.junior ? JUNIOR_FIELDS : null,
+    visual: input.visual ? VISUAL_FIELD : null,
   };
 }
 
@@ -453,6 +468,7 @@ export function planSetup(current: CurrentStructure, desired: DesiredStructure =
   const wantedNames = [
     ...SELECT_ROLES.map((r) => desired.selects[r].name),
     ...(desired.junior ? [desired.junior.select.name, desired.junior.missing.name, desired.junior.assess.name] : []),
+    ...(desired.visual ? [desired.visual.name] : []),
   ];
   for (const name of desired.retire) {
     const old = current.properties.filter(alive).find((p) => same(p.name, name) && !wantedNames.some((w) => same(w, name)));
@@ -498,6 +514,7 @@ export function planSetup(current: CurrentStructure, desired: DesiredStructure =
   }
 
   if (desired.junior) planJunior(current, desired.junior, desired.types, actions, reused);
+  if (desired.visual) planVisual(current, desired.visual, desired.types, actions, reused);
 
   for (const department of hiddenFolder ? [] : desired.departments) {
     const found = findDepartment(current, folder, department);
@@ -535,6 +552,23 @@ function planJunior(current: CurrentStructure, junior: JuniorFields, types: Desi
   }
 }
 
+/** Поле «Было / Стало»: завести, варианты, добавить в типы. */
+function planVisual(current: CurrentStructure, visual: VisualField, types: DesiredStructure['types'], actions: SetupAction[], reused: string[]): void {
+  const found = findSelect(current, visual.name);
+  const clash = findClash(current, visual.name, 'select');
+  if (clash) actions.push({ kind: 'retire-property', id: clash.id, name: clash.name, newName: `${clash.name} (${clash.type ?? 'другой тип'}, отключено)` });
+  if (!found) actions.push({ kind: 'create-property', name: visual.name, type: 'select' });
+  else reused.push(`поле «${found.name}» (${found.id})`);
+  const have = found ? aliveValues(current, found.id) : [];
+  for (const value of [visual.yes, visual.no]) {
+    if (!have.some((v) => same(v.value, value))) actions.push({ kind: 'create-select-value', property: visual.name, value });
+  }
+  for (const type of types.filter((t) => visual.types.includes(t.key))) {
+    const cardType = findCardType(current, type.name);
+    if (!(cardType && typeHas(cardType, found))) actions.push({ kind: 'add-type-property', typeName: type.name, property: visual.name, propertyType: 'select' });
+  }
+}
+
 /** Дорожки доски по схеме: продуктов (без повторов) и «Архив». */
 export function wantedLanes(desired: DesiredStructure): string[] {
   const titles = [...Object.values(desired.lanes.repos), ...(desired.lanes.archive ? [desired.lanes.archive] : [])];
@@ -565,6 +599,8 @@ export interface KaitenMapping {
   juniorMissingProperty?: { id: number };
   /** «Оценка»: варианты `actual`/`done`/`obsolete`. */
   assessProperty?: SelectMapping;
+  /** «Было / Стало»: варианты `yes`/`no`. */
+  visualProperty?: SelectMapping;
 }
 
 /**
@@ -611,24 +647,24 @@ export function buildMapping(current: CurrentStructure, desired: DesiredStructur
   const summaryProperty = desired.summary ? findText(current, desired.summary.name) : undefined;
   if (desired.summary && !summaryProperty) missing.push(`поле «${desired.summary.name}»`);
 
+  /** Выбор с вариантами по ключу; чего нет — в `missing`. */
+  const selectMapping = (name: string, wanted: Record<string, string>): SelectMapping | undefined => {
+    const select = findSelect(current, name);
+    if (!select) {
+      missing.push(`поле-выбор «${name}»`);
+      return undefined;
+    }
+    const values: Record<string, number> = {};
+    for (const [key, value] of Object.entries(wanted)) {
+      const found = aliveValues(current, select.id).find((v) => same(v.value, value));
+      if (found) values[key] = found.id;
+      else missing.push(`вариант «${value}» поля «${name}»`);
+    }
+    return Object.keys(values).length === Object.keys(wanted).length ? { id: select.id, values } : undefined;
+  };
   let junior: Pick<KaitenMapping, 'juniorProperty' | 'juniorMissingProperty' | 'assessProperty'> = {};
   if (desired.junior) {
     const spec = desired.junior;
-    /** Выбор с вариантами по ключу; чего нет — в `missing`. */
-    const selectMapping = (name: string, wanted: Record<string, string>): SelectMapping | undefined => {
-      const select = findSelect(current, name);
-      if (!select) {
-        missing.push(`поле-выбор «${name}»`);
-        return undefined;
-      }
-      const values: Record<string, number> = {};
-      for (const [key, value] of Object.entries(wanted)) {
-        const found = aliveValues(current, select.id).find((v) => same(v.value, value));
-        if (found) values[key] = found.id;
-        else missing.push(`вариант «${value}» поля «${name}»`);
-      }
-      return Object.keys(values).length === Object.keys(wanted).length ? { id: select.id, values } : undefined;
-    };
     const juniorProperty = selectMapping(spec.select.name, { yes: spec.select.yes, no: spec.select.no });
     const missingField = findText(current, spec.missing.name);
     if (!missingField) missing.push(`поле «${spec.missing.name}»`);
@@ -637,6 +673,7 @@ export function buildMapping(current: CurrentStructure, desired: DesiredStructur
       junior = { juniorProperty, juniorMissingProperty: { id: missingField.id }, assessProperty };
     }
   }
+  const visualProperty = desired.visual ? selectMapping(desired.visual.name, { yes: desired.visual.yes, no: desired.visual.no }) : undefined;
 
   const laneOf = (title: string): number | undefined => {
     const found = board?.lanes.find((l) => same(laneTitle(l), title));
@@ -674,5 +711,6 @@ export function buildMapping(current: CurrentStructure, desired: DesiredStructur
     ...(selects.team ? { teamProperty: selects.team } : {}),
     ...(summaryProperty ? { summaryProperty: { id: summaryProperty.id } } : {}),
     ...junior,
+    ...(visualProperty ? { visualProperty } : {}),
   };
 }

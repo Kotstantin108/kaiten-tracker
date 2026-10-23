@@ -15,16 +15,18 @@ import { existsSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { basename, join, resolve } from 'node:path';
 
-import { juniorSetting } from './config.js';
+import { juniorSetting, visualFields } from './config.js';
 import { contentHash, serializeTaskDocument } from './core/document.js';
 import { SLUG_RE } from './core/lint.js';
 import { JUNIOR_TYPES, juniorMissingText, juniorReadiness, withJuniorTemplate } from './core/junior.js';
 import { criteriaText, newBodyProblems, newBodyTemplate, SKELETONS, withCriteriaWaiver } from './core/skeleton.js';
-import { TASK_TYPES, type TaskType } from './core/schema.js';
+import { TASK_TYPES, type TaskType, type VisualAnswer } from './core/schema.js';
 import { ATTACHMENT_MAX_BYTES, attachmentNameProblem, BLOCKABLE, CANCELLABLE, hasWorkNote, matchItem, moveProblem, newTaskText, slugify, uniqueSlug, writesLog, type Op } from './core/task-ops.js';
 import { refOf, type TaskRecord } from './core/tasks-index.js';
 import { ulid } from './core/ulid.js';
+import { visualApplies, visualAttachName, visualAttachProblem, visualDecision } from './core/visual.js';
 import {
+  attachmentRefs,
   currentPerson,
   findTask,
   loadTasks,
@@ -44,6 +46,7 @@ import {
 import { progressLine } from './kaiten-format.js';
 import { git } from './kaiten-start.js';
 import { recordOp, storeBlob } from './store-write.js';
+import type { StoreEntry } from './task-store.js';
 
 export const WRITE_HELP: Record<string, string> = {
   new: `kaiten new "<заголовок>" — завести задачу.
@@ -118,6 +121,8 @@ ${TASK_REF_HELP}
 постановка. Файл с таким именем у задачи заменяется. Вложения и журнал
 задачи видны человеку файлами в карточке Kaiten — переносить текст
 вложения в постановку не нужно. Читать вложения — kaiten files <задача>.
+Скриншоты «Было / Стало» (было-<экран>.png, стало-<экран>.png; png или jpg,
+до 1 МБ) сами ложатся в папку было-стало/.
 ${TASK_REF_HELP}
 
 Флаги:
@@ -127,6 +132,7 @@ ${TASK_REF_HELP}
 
 Примеры:
   kaiten attach PRJ-123 report.pdf
+  kaiten attach PRJ-123 tmp/стало-главная-телефон.png
   kaiten attach PRJ-123 tmp/notes.md --as HANDOFF.md
   kaiten attach PRJ-123 HANDOFF.md --stdin <<'EOF'
   …текст…
@@ -168,21 +174,29 @@ ${TASK_REF_HELP}
 последний коммит текущего репозитория команда пишет в журнал сама. Эпик так
 не закрывают: его закрывают в Kaiten, когда закрыты его задачи.
 
+Если проект просит «Было / Стало», у story, tech, bug нужен ответ: скриншоты
+экрана до и после (kaiten attach PRJ-123 было-<экран>.png и стало-<экран>.png)
+или --no-visual с причиной, если на экране ничего не меняется.
+
 Флаги:
   --note <текст>      что смотреть на ревью (ветка, коммит, PR) — в журнал
   --unchecked <текст> почему часть критериев осталась без отметки — в журнал;
                       без этого флага задача с неотмеченными критериями на
                       ревью не уходит
+  --no-visual <текст> почему на экране ничего не меняется — вместо скриншотов
 
-Пример:
+Примеры:
   kaiten review PRJ-123 --note "PR #45"
+  kaiten review PRJ-124 --no-visual "только сценарий n8n"
 `,
   done: `kaiten done <задача> — задача сделана (влито в прод).
 
-Из «Ревью». Задача уходит в архив, в «Сделано».
+Из «Ревью». Задача уходит в архив, в «Сделано». «Было / Стало» — как у
+kaiten review, если на ревью ответа не дали.
 
 Флаги:
   --note <текст>      что влито и куда — в журнал
+  --no-visual <текст> почему на экране ничего не меняется — вместо скриншотов
 
 Пример:
   kaiten done PRJ-123 --note "влито в main, выкатано"
@@ -392,8 +406,12 @@ async function attach(args: string[]): Promise<void> {
     content = readFileSync(path);
   }
   name = name.replaceAll('\\', '/');
+  // Скриншоты было-…/стало-… — сразу в папку «Было / Стало»: по ней их находит kaiten review.
+  if (!stringFlag(values, 'as')) name = visualAttachName(name) ?? name;
   const problem = attachmentNameProblem(name);
   if (problem) throw new UsageError(`Имя вложения «${name}» не годится: ${problem}.`);
+  const visualProblem = visualAttachProblem(name, content.length);
+  if (visualProblem) throw new UsageError(`Вложение «${name}» не приложено: ${visualProblem}.`, 1);
   if (content.length === 0) throw new UsageError('Файл пуст — прикладывать нечего.', 1);
   if (content.length > ATTACHMENT_MAX_BYTES) {
     throw new UsageError(`Файл больше ${ATTACHMENT_MAX_BYTES / 1024 / 1024} МБ — такие к задаче не прикладываются: положите его в общее хранилище файлов и дайте ссылку в задаче.`, 1);
@@ -443,11 +461,17 @@ async function withReason(command: 'block' | 'cancel', args: string[]): Promise<
 }
 
 async function move(command: 'review' | 'done', args: string[]): Promise<void> {
-  const { values, positionals } = parse(command, args, { note: { type: 'string' }, ...(command === 'review' ? { unchecked: { type: 'string' as const } } : {}) }, 1);
+  const { values, positionals } = parse(
+    command,
+    args,
+    { note: { type: 'string' }, 'no-visual': { type: 'string' }, ...(command === 'review' ? { unchecked: { type: 'string' as const } } : {}) },
+    1,
+  );
   const ref = taskArg(positionals, command);
   const ctx = begin();
   currentPerson(ctx.loaded.people);
-  const task = findTask(loadTasks(ctx).index, ref);
+  const { index, entries } = loadTasks(ctx);
+  const task = findTask(index, ref);
   const status = command === 'review' ? 'review' : 'done';
   const problem = moveProblem(task, status);
   if (problem) throw new UsageError(`Не записано: ${problem}.`, 1);
@@ -468,12 +492,26 @@ async function move(command: 'review' | 'done', args: string[]): Promise<void> {
       1,
     );
   }
+  const visual = task.fm.status !== status ? visualFor(ctx, task, entries, command, stringFlag(values, 'no-visual')) : undefined;
   const given = stringFlag(values, 'note')?.trim();
   const work = command === 'review' ? workRef(ctx.workDir, given) : undefined;
-  const note = [given, work, open.length > 0 && why ? `не отмечено пунктов ${open.length}: ${why}` : undefined].filter(Boolean).join('; ') || undefined;
+  const note = [given, work, open.length > 0 && why ? `не отмечено пунктов ${open.length}: ${why}` : undefined, visual?.note].filter(Boolean).join('; ') || undefined;
   const card = task.fm.status !== status ? await moveCardFirst(ctx, task, status) : 'none';
-  await commit(ctx, { kind: 'move', id: task.fm.id, status, note }, `${command === 'review' ? 'ревью' : 'закрытие'} ${refOf(task)}`);
+  await commit(ctx, { kind: 'move', id: task.fm.id, status, note, ...(visual ? { visual: visual.visual } : {}) }, `${command === 'review' ? 'ревью' : 'закрытие'} ${refOf(task)}`);
   cardNotMovedNote(card);
+}
+
+/**
+ * Ответ «Было / Стало» для `review`/`done` — только в проекте, где поле
+ * заведено, и у story, tech, bug. Не хватает картинок или причины — отказ до
+ * карточки и записи. `undefined` — спрашивать не о чем.
+ */
+function visualFor(ctx: Context, task: TaskRecord, entries: readonly StoreEntry[], command: 'review' | 'done', noVisual: string | undefined): { visual: VisualAnswer; note?: string } | undefined {
+  if (!visualFields(ctx.loaded.project) || !visualApplies(task.fm.type)) return undefined;
+  const attachments = (attachmentRefs(entries).get(task.slug) ?? []).map((a) => a.name);
+  const decision = visualDecision({ attachments, noVisual, current: task.fm.visual, ref: refOf(task), command });
+  if ('problems' in decision) throw new UsageError(`Не записано:${decision.problems.map((p) => `\n  - ${p}`).join('')}`, 1);
+  return decision;
 }
 
 /** Ветка и последний коммит репозитория кода — для записи «на ревью»: где смотреть работу. */

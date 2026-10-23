@@ -21,7 +21,7 @@
 
 import { contentHash, foreignFieldChanges, parseTaskDocument, serializeTaskDocument, TaskParseError } from './document.js';
 import { lintTask, SLUG_RE } from './lint.js';
-import { CLOSED_STATUSES, FrontmatterSchema, JOURNAL_FILE, type AssessVerdict, type Frontmatter, type Priority, type TaskStatus, type TaskType } from './schema.js';
+import { CLOSED_STATUSES, FrontmatterSchema, JOURNAL_FILE, type AssessVerdict, type Frontmatter, type Priority, type TaskStatus, type TaskType, type VisualAnswer } from './schema.js';
 import { renderSkeleton } from './skeleton.js';
 import { parseSyncVersion, renderSyncVersion, SYNC_VERSION_FILE } from './sync-version.js';
 import { buildIndex, refOf, type TaskRecord } from './tasks-index.js';
@@ -32,8 +32,8 @@ export type Op =
   | { kind: 'log'; id: string; text: string }
   | { kind: 'cancel'; id: string; reason: string }
   | { kind: 'block'; id: string; reason: string }
-  /** Статус работы: `kaiten start` (в работу), `review`, `done`. Заметка — в журнал. */
-  | { kind: 'move'; id: string; status: WorkStatus; note?: string; assigned?: boolean; branch?: string }
+  /** Статус работы: `kaiten start` (в работу), `review`, `done`. Заметка — в журнал; `visual` — ответ «Было / Стало». */
+  | { kind: 'move'; id: string; status: WorkStatus; note?: string; assigned?: boolean; branch?: string; visual?: VisualAnswer }
   | { kind: 'edit'; id: string; text: string; baseHash: string }
   /**
    * Вложение задачи: файл `attachments/<slug>/<name>`. Содержимое уже лежит в
@@ -529,7 +529,7 @@ export function applyOp(op: Op, texts: TaskTexts, ctx: OpContext): OpResult {
       const assignedNote = from ? ` (из ${from}, по прямому поручению${priority ? `, приоритет ${priority}` : ''})` : '';
       const entry = `${MOVE_WORDS[op.status]}${assignedNote}${op.note?.trim() ? `: ${op.note.trim()}` : ''}`;
       const target = op.status === 'done' ? `archive/${ctx.date.slice(0, 7)}/${task.slug}.md` : task.path;
-      const fm: Frontmatter = { ...task.fm, status: op.status, ...(op.branch ? { branch: op.branch } : {}), ...(priority ? { priority } : {}) };
+      const fm: Frontmatter = { ...task.fm, status: op.status, ...(op.branch ? { branch: op.branch } : {}), ...(priority ? { priority } : {}), ...(op.visual ? { visual: op.visual } : {}) };
       const out = write(task, fm, task.body, ctx, target);
       if ('error' in out) return out;
       const changes: FileChange[] = [];

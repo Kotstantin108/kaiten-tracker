@@ -475,6 +475,7 @@ export function formatPlan(run: Pick<SyncRun, 'plan' | 'checklists'> & Partial<P
   if (run.adopt && run.adopt.problems.length > 0) out.push(`Карточки без задачи, которые не перенести — поправьте в Kaiten: ${run.adopt.problems.join('; ')}`);
   if (run.adopt && run.adopt.foreign.length > 0) out.push(`Карточки с чужим внешним ключом — не трогаем: ${run.adopt.foreign.join('; ')}`);
   if (r.unknownColumns.length > 0) out.push(`Карточка в колонке не из конфига — статус не переносим: ${r.unknownColumns.join(', ')}`);
+  if (r.withoutVisual.length > 0) out.push(`На ревью или закрыты без ответа «Было / Стало» (перенесли в Kaiten руками): ${r.withoutVisual.join(', ')}`);
   if (r.firstLoadCandidates > 0) out.push(`Перенесённых открытых задач без карточки: ${r.firstLoadCandidates} — только первой заливкой (--first-load).`);
   if (r.missingCards.length > 0) out.push(`Карточки нет на доске — не создаём заново: ${r.missingCards.join(', ')}`);
   if (r.archivedCards.length > 0) out.push(`Карточка в архиве Kaiten — не трогаем: ${r.archivedCards.join(', ')}`);

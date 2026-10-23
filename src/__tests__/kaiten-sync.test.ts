@@ -832,3 +832,49 @@ describe('поля «Можно младшему»', () => {
     expect(w.fake.cards.get(803)?.properties).not.toHaveProperty('id_7');
   });
 });
+
+describe('поле «Было / Стало»', () => {
+  const VISUAL = { state: 'on' as const, since: '2026-10-20', property: { id: 9, yes: 91, no: 92 } };
+  const seeded = { board_id: BOARD, title: 'Сделать задачу', properties: { id_4: 'Коротко для фаундера.', id_2: [21] } };
+
+  it('ответ из задачи — в поле; второй прогон — ни одной записи', async () => {
+    const w = world([task('active/yes.md', { tracker: '900', status: 'review', visual: 'yes' }), task('active/no.md', { tracker: '901', status: 'review', visual: 'no' })]);
+    seedCard(w.fake, { id: 900, ...seeded, column_id: 106 });
+    seedCard(w.fake, { id: 901, ...seeded, column_id: 106 });
+    expect((await w.sync({ visual: VISUAL })).errors).toEqual([]);
+    expect(w.fake.cards.get(900)?.properties.id_9).toEqual([91]);
+    expect(w.fake.cards.get(901)?.properties.id_9).toEqual([92]);
+    const writes = w.fake.writes.length;
+    expect((await w.sync({ visual: VISUAL })).plan.actions).toEqual([]);
+    expect(w.fake.writes.length).toBe(writes);
+  });
+
+  it('включили поле — у задач без ответа карточки не трогаем', async () => {
+    const w = world([task('active/open.md', { tracker: '902', status: 'backlog' }), task('active/epic.md', { tracker: '903', type: 'epic', repo: undefined })]);
+    seedCard(w.fake, { id: 902, ...seeded, column_id: 102 });
+    seedCard(w.fake, { id: 903, ...seeded, column_id: 102, properties: { id_4: 'Коротко для фаундера.' } });
+    await w.sync();
+    const writes = w.fake.writes.length;
+    expect((await w.sync({ visual: VISUAL })).plan.actions).toEqual([]);
+    expect(w.fake.writes.length).toBe(writes);
+  });
+
+  it('отчёт владельца: на ревью или «Сделано» без ответа с даты включения; переход мог уже зеркалить чужой проход', async () => {
+    const w = world([
+      task('active/late.md', { tracker: '910', status: 'review' }),
+      task('active/mirrored.md', { tracker: '911', status: 'backlog' }),
+      task('active/before.md', { tracker: '912', status: 'review' }),
+      task('active/answered.md', { tracker: '913', status: 'review', visual: 'no' }),
+      task('active/spike.md', { tracker: '914', status: 'review', type: 'spike' }),
+    ]);
+    seedCard(w.fake, { id: 910, ...seeded, column_id: 106, column_changed_at: '2026-10-21T09:00:00Z' });
+    seedCard(w.fake, { id: 911, ...seeded, column_id: 107, column_changed_at: '2026-10-22T09:00:00Z' });
+    seedCard(w.fake, { id: 912, ...seeded, column_id: 106, column_changed_at: '2026-10-19T09:00:00Z' });
+    seedCard(w.fake, { id: 913, ...seeded, column_id: 106, column_changed_at: '2026-10-21T09:00:00Z' });
+    seedCard(w.fake, { id: 914, ...seeded, column_id: 106, column_changed_at: '2026-10-21T09:00:00Z' });
+    const run = await runKaitenSync(w.fake.client, { ...w.input(), visual: VISUAL }, 'plan');
+    expect(run.plan.report.withoutVisual).toEqual(['910 (late)', '911 (mirrored)']);
+    expect(formatPlan(run)).toContain('На ревью или закрыты без ответа «Было / Стало» (перенесли в Kaiten руками): 910 (late), 911 (mirrored)');
+    expect((await runKaitenSync(w.fake.client, w.input(), 'plan')).plan.report.withoutVisual).toEqual([]);
+  });
+});

@@ -6,7 +6,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { kaitenTemplate } from '../core/skeleton.js';
-import { buildMapping, DEPARTMENTS, DESIRED, desiredForProject, findSpace, JUNIOR_FIELDS, planSetup, withSelectValues, type CurrentStructure, type DesiredStructure } from '../setup-plan.js';
+import { buildMapping, DEPARTMENTS, DESIRED, desiredForProject, findSpace, JUNIOR_FIELDS, planSetup, VISUAL_FIELD, withSelectValues, type CurrentStructure, type DesiredStructure } from '../setup-plan.js';
 
 /** Схема без «Сути» и шаблонов — для тестов полей-выборов; «Суть» проверяется отдельно. */
 const selectsOnly = (d: DesiredStructure): DesiredStructure => ({ ...d, summary: null, templates: false, suggested: [] });
@@ -392,5 +392,50 @@ describe('поля «Можно младшему»', () => {
     const base = { space: 'Acme', board: 'Задачи', repoField: 'Репозиторий', repoLabels: [], teams: [] };
     expect(desiredForProject(base).junior).toBeNull();
     expect(desiredForProject({ ...base, junior: true }).junior).toEqual(JUNIOR_FIELDS);
+  });
+});
+
+describe('поле «Было / Стало»', () => {
+  const withVisual: DesiredStructure = { ...desired, visual: VISUAL_FIELD };
+
+  function ready(): CurrentStructure {
+    const current = complete();
+    current.properties.push({ id: 600, uid: 'uid-visual', name: 'Было / Стало', type: 'select' });
+    current.selectValues[600] = [
+      { id: 6000, value: 'Есть' },
+      { id: 6001, value: 'Нет визуальных изменений' },
+    ];
+    current.cardTypes = current.cardTypes.map((t) =>
+      ['Story', 'Tech', 'Bug'].includes(t.name) ? { ...t, card_properties: [{ regular_property: null, property_uid: 'uid-visual', sort_order: 8, required: false }] } : t,
+    );
+    return current;
+  }
+
+  it('без блока visual — поля нет ни в плане, ни в маппинге', () => {
+    expect(planSetup(complete(), desired).actions).toEqual([]);
+    expect(buildMapping(ready(), desired)).not.toHaveProperty('visualProperty');
+  });
+
+  it('с блоком: выбор «Есть» / «Нет визуальных изменений», необязательно в Story, Tech, Bug', () => {
+    expect(planSetup(complete(), withVisual).actions).toEqual([
+      { kind: 'create-property', name: 'Было / Стало', type: 'select' },
+      { kind: 'create-select-value', property: 'Было / Стало', value: 'Есть' },
+      { kind: 'create-select-value', property: 'Было / Стало', value: 'Нет визуальных изменений' },
+      ...['Story', 'Tech', 'Bug'].map((typeName) => ({ kind: 'add-type-property', typeName, property: 'Было / Стало', propertyType: 'select' })),
+    ]);
+  });
+
+  it('заведено — пустой план и маппинг yes/no; варианта нет — ошибка', () => {
+    expect(planSetup(ready(), withVisual).actions).toEqual([]);
+    expect(buildMapping(ready(), withVisual)).toMatchObject({ visualProperty: { id: 600, values: { yes: 6000, no: 6001 } } });
+    const current = ready();
+    current.selectValues[600] = [{ id: 6000, value: 'Есть' }];
+    expect(() => buildMapping(current, withVisual)).toThrow(/вариант «Нет визуальных изменений» поля «Было \/ Стало»/);
+  });
+
+  it('конфиг: visual — поле в схеме проекта', () => {
+    const base = { space: 'Acme', board: 'Задачи', repoField: 'Репозиторий', repoLabels: [], teams: [] };
+    expect(desiredForProject(base).visual).toBeNull();
+    expect(desiredForProject({ ...base, visual: true }).visual).toEqual(VISUAL_FIELD);
   });
 });

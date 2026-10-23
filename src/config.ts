@@ -42,6 +42,8 @@ export const MappingSchema = z.object({
   juniorMissingProperty: z.object({ id: z.number() }).optional(),
   /** Выбор «Оценка»: варианты `actual`/`done`/`obsolete` (`npm run assess`). */
   assessProperty: SelectMappingSchema.optional(),
+  /** Выбор «Было / Стало»: варианты `yes`/`no` (`kaiten.visual`). */
+  visualProperty: SelectMappingSchema.optional(),
 });
 export type ConfigMapping = z.infer<typeof MappingSchema>;
 
@@ -91,6 +93,12 @@ const ProjectObject = z.object({
      * и n8n в каркасе задачи и два поля карточки. Нет блока — нет ничего.
      */
     junior: z.object({ maxAgeDays: z.number().int().positive().default(90) }).optional(),
+    /**
+     * «Было / Стало» (docs/visual-review.md): скриншоты до и после у задач на
+     * ревью. `since` — с какого дня спрашивать: в отчёт владельца попадают
+     * задачи без ответа, ушедшие на ревью или закрытые с этого дня.
+     */
+    visual: z.object({ since: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'дата YYYY-MM-DD') }).optional(),
   }),
   repos: z.array(RepoSchema).min(1),
   /**
@@ -166,6 +174,29 @@ export function assessField(project: Pick<ProjectConfig, 'kaiten' | 'mapping'>):
   const { actual, done, obsolete } = select.values;
   if (actual === undefined || done === undefined || obsolete === undefined) return undefined;
   return { id: select.id, values: { actual, done, obsolete } };
+}
+
+/**
+ * «Было / Стало» в проекте. Включено, а id поля в маппинге нет — ничего не
+ * спрашивается и не пишется до `setup`: ответ без поля в карточке некому показать.
+ */
+export type VisualSetting = { state: 'off' } | { state: 'needs-setup' } | { state: 'on'; since: string; property: { id: number; yes: number; no: number } };
+export type VisualFields = Extract<VisualSetting, { state: 'on' }>;
+
+export function visualSetting(project: Pick<ProjectConfig, 'kaiten' | 'mapping'>): VisualSetting {
+  const visual = project.kaiten.visual;
+  if (!visual) return { state: 'off' };
+  const select = project.mapping?.visualProperty;
+  const yes = select?.values.yes;
+  const no = select?.values.no;
+  if (!select || yes === undefined || no === undefined) return { state: 'needs-setup' };
+  return { state: 'on', since: visual.since, property: { id: select.id, yes, no } };
+}
+
+/** Поле «Было / Стало» для команд и синхронизации; `undefined` — выключено или ждёт setup. */
+export function visualFields(project: Pick<ProjectConfig, 'kaiten' | 'mapping'>): VisualFields | undefined {
+  const setting = visualSetting(project);
+  return setting.state === 'on' ? setting : undefined;
 }
 
 export const ConfigSchema = z

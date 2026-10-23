@@ -15,9 +15,11 @@
 
 import { spawnSync } from 'node:child_process';
 
+import { visualFields } from './config.js';
 import { branchName, startProblem } from './core/start.js';
 import { ASSIGNABLE, assignedPriority } from './core/task-ops.js';
 import { refOf, type TaskRecord } from './core/tasks-index.js';
+import { visualApplies } from './core/visual.js';
 import { cardNotMovedNote, currentPerson, findTask, loadTasks, moveCardFirst, parse, printNotices, resolveContext, TASK_REF_HELP, UsageError } from './kaiten-cli.js';
 import { commit } from './kaiten-write.js';
 
@@ -116,6 +118,10 @@ async function start(args: string[]): Promise<void> {
   }
   await commit(ctx, { kind: 'move', id: task.fm.id, status: 'in-progress', branch: result.branch, ...(assigned ? { assigned: true } : {}) }, `в работу ${refOf(task)}`);
   cardNotMovedNote(card);
+  // Обязательный ответ спросит kaiten review; здесь — только удобный момент снять «было».
+  if (visualFields(ctx.loaded.project) && visualApplies(task.fm.type)) {
+    console.log(`Задача меняет то, что видно на экране? Снимите «было» сейчас, пока код не тронут: kaiten attach ${refOf(task)} было-<экран>.png (как снимать — в скилле kaiten).`);
+  }
 }
 
 export const START_COMMANDS: Record<string, (args: string[]) => Promise<void>> = { start };

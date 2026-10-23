@@ -12,7 +12,7 @@ import { parseArgs, type ParseArgsConfig } from 'node:util';
 
 import { z } from 'zod';
 
-import { juniorFields, loadTasksRepoConfig, projectFromTasksRepo, storeNameOf, TASKS_REPO_CONFIG, type LoadedProject, type People } from './config.js';
+import { juniorFields, visualFields, loadTasksRepoConfig, projectFromTasksRepo, storeNameOf, TASKS_REPO_CONFIG, type LoadedProject, type People } from './config.js';
 import { CLOSED_STATUSES, type Priority, type TaskStatus } from './core/schema.js';
 import { JOURNAL_FILE, taskDate } from './core/task-ops.js';
 import { buildIndex, belongsToProject, resolveTask, type TaskIndex, type TaskRecord } from './core/tasks-index.js';
@@ -323,6 +323,7 @@ export async function syncWithKaiten(ctx: Context, client?: KaitenClient, onLock
           mapping,
           archiveInKaiten: ctx.loaded.project.kaiten.archiveInKaiten,
           junior: juniorFields(ctx.loaded.project),
+          visual: visualFields(ctx.loaded.project),
           ignore: ctx.loaded.project.ignoreCards,
           repoWebBase: repoWebBase(ctx.loaded.project.tasksRepo?.url),
           defaultTeam: ctx.loaded.config.defaultTeam,

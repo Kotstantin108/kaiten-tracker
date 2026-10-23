@@ -55,8 +55,9 @@
 import { createHash } from 'node:crypto';
 
 import { AGENT_PREFIX, extractChecklists, type Checklist, type ChecklistItem } from '../checklists.js';
-import type { ConfigMapping, JuniorFields } from '../config.js';
+import type { ConfigMapping, JuniorFields, VisualFields } from '../config.js';
 import { juniorMissingText, juniorReadiness } from './junior.js';
+import { visualApplies } from './visual.js';
 import { JOURNAL_FILE, taskDate, type MirrorItem } from './task-ops.js';
 import { ASSESS_VERDICTS, CLOSED_STATUSES, PRIORITIES, STATUSES, TASK_TYPES, type AssessVerdict, type Priority, type TaskStatus, type TaskType } from './schema.js';
 import { contentHash } from './document.js';
@@ -321,21 +322,30 @@ function selectValue(values: Record<string, number> | undefined, value: string |
 /** Поля признака и сегодняшняя дата, от которой считается возраст задачи. */
 export type JuniorSync = JuniorFields & { today: string };
 
+/** Признаки проекта, которые синхронизация пишет в поля карточки; нет — поле не пишется. */
+export interface FieldFlags {
+  junior?: JuniorSync;
+  visual?: VisualFields;
+}
+
 /**
  * Поля, которыми владеет файл: «Суть», «Репозиторий» и, если проект ведёт
- * признак, «Можно младшему» и «Младшему не хватает». Признак не применим
- * (эпик, задача взята или закрыта) — оба поля пустые: `null`.
+ * признаки, «Можно младшему», «Младшему не хватает» и «Было / Стало».
+ * Признак не применим (эпик, задача взята или закрыта; ответа ещё нет) —
+ * поле пустое: `null`.
  */
-export function fileProperties(task: TaskRecord, mapping: ConfigMapping, junior?: JuniorSync): Record<string, unknown> {
+export function fileProperties(task: TaskRecord, mapping: ConfigMapping, flags: FieldFlags = {}): Record<string, unknown> {
   const props: Record<string, unknown> = {};
   if (mapping.summaryProperty) props[key(mapping.summaryProperty.id)] = task.fm.summary;
   const repo = selectValue(mapping.repoProperty?.values, task.fm.repo);
   if (mapping.repoProperty && repo) props[key(mapping.repoProperty.id)] = repo;
+  const { junior, visual } = flags;
   if (junior) {
     const readiness = juniorReadiness(task.fm, task.body, junior);
     props[key(junior.property.id)] = readiness === null ? null : [readiness.ok ? junior.property.yes : junior.property.no];
     props[key(junior.missingPropertyId)] = readiness === null || readiness.ok ? null : juniorMissingText(readiness.missing);
   }
+  if (visual) props[key(visual.property.id)] = task.fm.visual === undefined ? null : [visual.property[task.fm.visual]];
   return props;
 }
 
@@ -351,9 +361,9 @@ export interface CreateFields {
 }
 
 /** Поля новой карточки: колонка, тип, приоритет и команда — только сейчас (решение 9). */
-export function createFields(task: TaskRecord, mapping: ConfigMapping, defaultTeam: string | undefined, junior?: JuniorSync): CreateFields {
+export function createFields(task: TaskRecord, mapping: ConfigMapping, defaultTeam: string | undefined, flags: FieldFlags = {}): CreateFields {
   // Пустое новой карточке не передаём: у неё и так ничего нет.
-  const props = Object.fromEntries(Object.entries(fileProperties(task, mapping, junior)).filter(([, v]) => v !== null));
+  const props = Object.fromEntries(Object.entries(fileProperties(task, mapping, flags)).filter(([, v]) => v !== null));
   const priority = selectValue(mapping.priorityProperty?.values, task.fm.priority);
   if (mapping.priorityProperty && priority) props[key(mapping.priorityProperty.id)] = priority;
   const team = selectValue(mapping.teamProperty?.values, task.fm.team ?? defaultTeam);
@@ -513,6 +523,12 @@ export interface SyncReport {
   closedWithoutCard: string[];
   /** Карточка в колонке, которой нет в конфиге, — статус не переносим. */
   unknownColumns: string[];
+  /**
+   * На ревью или закрыта с `kaiten.visual.since`, а ответа «Было / Стало» нет:
+   * карточку перенесли в Kaiten руками. По состоянию, а не по переходу — переход
+   * мог зеркалить в файл чужой фоновый проход.
+   */
+  withoutVisual: string[];
 }
 
 export interface SyncPlan {
@@ -558,6 +574,8 @@ export interface PlanInput {
   archiveInKaiten?: boolean;
   /** Поля «Можно младшему» (`kaiten.junior` и id из `setup`); нет — не пишем. */
   junior?: JuniorFields;
+  /** Поле «Было / Стало» (`kaiten.visual` и id из `setup`); нет — не пишем. */
+  visual?: VisualFields;
 }
 
 function reverse<T extends string>(values: Partial<Record<T, number>> | Record<string, number> | undefined, allowed: readonly T[]): Map<number, T> {
@@ -653,13 +671,14 @@ export function planKaitenSync(input: PlanInput): SyncPlan {
   const { tasks, mapping } = input;
   const cards = new Map(input.cards.map((c) => [c.id, c]));
   const ignore = new Set(input.ignore);
-  const report: SyncReport = { missingCards: [], unknownTrackers: [], ignored: [], archivedCards: [], firstLoadCandidates: 0, closedWithoutCard: [], unknownColumns: [] };
+  const report: SyncReport = { missingCards: [], unknownTrackers: [], ignored: [], archivedCards: [], firstLoadCandidates: 0, closedWithoutCard: [], unknownColumns: [], withoutVisual: [] };
   const mirror: MirrorItem[] = [];
   const names: Record<string, string> = {};
   const creates: SyncAction[] = [];
   const others: SyncAction[] = [];
   // Возраст задачи — от сегодняшнего дня того же «сейчас», что и переезд в архив.
   const junior: JuniorSync | undefined = input.junior ? { ...input.junior, today: localDate(new Date(input.now ?? Date.now()).toISOString()) } : undefined;
+  const flags: FieldFlags = { junior, visual: input.visual };
   const delivery = (task: TaskRecord): FilesDelivery | null => {
     if (!input.attachments) return null;
     const wanted = taskFiles(input.attachments.get(task.slug) ?? []);
@@ -687,7 +706,7 @@ export function planKaitenSync(input: PlanInput): SyncPlan {
       creates.push({
         kind: 'create',
         task,
-        fields: createFields(task, mapping, input.defaultTeam, junior),
+        fields: createFields(task, mapping, input.defaultTeam, flags),
         content: renderContent(task, tasks, input.repoWebBase),
         contentHash: hash,
         parentRef: epic ? epic.fm.id : null,
@@ -723,10 +742,11 @@ export function planKaitenSync(input: PlanInput): SyncPlan {
       mirror.push(fromKaiten.item);
       names[task.fm.id] = `${task.fm.tracker} (${task.slug})`;
     }
+    if (input.visual && missingVisual(task, fromKaiten.item?.status ?? task.fm.status, card, input.visual.since)) report.withoutVisual.push(`${task.fm.tracker} (${task.slug})`);
 
     const patch: { title?: string; properties?: Record<string, unknown>; lane_id?: number } = {};
     if (!sameValue(card.title, task.fm.title)) patch.title = task.fm.title;
-    const wanted = fileProperties(task, mapping, junior);
+    const wanted = fileProperties(task, mapping, flags);
     const diff = Object.fromEntries(Object.entries(wanted).filter(([k, v]) => !sameValue(card.properties[k], v)));
     if (Object.keys(diff).length > 0) patch.properties = diff;
     const repoKey = mapping.repoProperty ? key(mapping.repoProperty.id) : null;
@@ -769,6 +789,13 @@ export function planKaitenSync(input: PlanInput): SyncPlan {
   creates.sort((a, b) => Number(b.task.fm.type === 'epic') - Number(a.task.fm.type === 'epic'));
   const actions = [...creates, ...others];
   return { actions, mirror, names, report, ...(junior ? { junior: juniorCounts(actions, junior) } : {}) };
+}
+
+/** На ревью или «Сделано» с `since` без ответа «Было / Стало». Дата — переноса карточки в колонку. */
+function missingVisual(task: TaskRecord, status: TaskStatus, card: CardView, since: string): boolean {
+  if (task.fm.visual !== undefined || !visualApplies(task.fm.type)) return false;
+  if (status !== 'review' && status !== 'done') return false;
+  return card.columnChangedAt !== undefined && localDate(card.columnChangedAt) >= since;
 }
 
 function juniorCounts(actions: readonly SyncAction[], junior: JuniorSync): NonNullable<SyncPlan['junior']> {

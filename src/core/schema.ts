@@ -41,6 +41,10 @@ export const CREATED_VIA = ['agent', 'human'] as const;
 export const ASSESS_VERDICTS = ['actual', 'done', 'obsolete'] as const;
 export type AssessVerdict = (typeof ASSESS_VERDICTS)[number];
 
+/** Ответ «Было / Стало» (`core/visual.ts`): `yes` — картинки приложены, `no` — на экране ничего не меняется. */
+export const VISUAL_ANSWERS = ['yes', 'no'] as const;
+export type VisualAnswer = (typeof VISUAL_ANSWERS)[number];
+
 /**
  * Имя, под которым журнал задачи лежал файлом в карточке Kaiten до 20.10.2026
  * (теперь — ссылка в описании). Синхронизация такой файл из карточки убирает,
@@ -138,6 +142,8 @@ export const FIELDS = {
   // Какую оценку поставил скрипт и когда — пишет только `npm run assess -- --apply`.
   // Совпадает с `assessment` — оценка скрипта; расходится — её поправил человек.
   assessed: { owner: 'cli', required: false, schema: z.object({ verdict: z.enum(ASSESS_VERDICTS), date }).strict() },
+  // «Было / Стало» — ставят `kaiten review` и `kaiten done` по вложениям или по `--no-visual`.
+  visual: { owner: 'cli', required: false, schema: z.enum(VISUAL_ANSWERS) },
   content_hash: { owner: 'cli', required: false, schema: z.string().regex(/^sha256:[a-f0-9]{64}$/, 'sha256:<64 hex>') },
   // Какие файлы (вложения и журнал) карточка уже получила; ставит только
   // синхронизация. Нет поля — файлы этой задаче доставляет только `--resend`.

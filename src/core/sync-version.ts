@@ -10,7 +10,8 @@
 
 import { z } from 'zod';
 
-export const SYNC_VERSION = 2;
+/** 3 — «Было / Стало»: ключ `visual` в задачах, старая копия таких задач не читает. */
+export const SYNC_VERSION = 3;
 
 /** Файл версии в корне репозитория задач; пишет только синхронизация. */
 export const SYNC_VERSION_FILE = 'kaiten-sync.json';
