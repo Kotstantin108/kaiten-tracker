@@ -4,6 +4,7 @@
  * чтобы его можно было сразу передать в `kaiten show`.
  */
 
+import { juniorMissingText, type JuniorReadiness } from './core/junior.js';
 import { checklistProgress, childrenOf, epicOf, refOf, slugOf, type SearchHit, type TaskProblem, type TaskRecord } from './core/tasks-index.js';
 
 function pad(value: string, width: number): string {
@@ -180,7 +181,14 @@ function safeDecode(text: string): string {
   }
 }
 
-export function formatShow(all: readonly TaskRecord[], task: TaskRecord, attachments: readonly string[]): string {
+/** Признак «Можно младшему» строкой — как в выводе `kaiten new`; `null` — к задаче не применим. */
+export function juniorLine(readiness: JuniorReadiness): string | null {
+  if (readiness === null) return null;
+  return readiness.ok ? 'Младшему: да.' : `Младшему: нет — не хватает: ${juniorMissingText(readiness.missing)}.`;
+}
+
+/** `junior` — признак задачи, если проект отмечает задачи для младших. */
+export function formatShow(all: readonly TaskRecord[], task: TaskRecord, attachments: readonly string[], junior: JuniorReadiness = null): string {
   const fm = task.fm;
   const out: string[] = [`# ${fm.title}`, ''];
   const facts = [refOf(task), fm.type, fm.status, fm.priority ? `приоритет ${fm.priority}` : 'без приоритета'];
@@ -207,6 +215,8 @@ export function formatShow(all: readonly TaskRecord[], task: TaskRecord, attachm
 
   const progress = checklistProgress(task.body);
   if (progress.length > 0) out.push(`Пункты: ${progress.map((p) => `${p.name} ${p.done}/${p.total}`).join(' · ')}`);
+  const juniorText = juniorLine(junior);
+  if (juniorText) out.push(juniorText);
   if (attachments.length > 0) out.push(`Вложения (${attachments.length}): kaiten files ${refOf(task)}`);
   out.push('', `Суть: ${fm.summary}`, '', presentBody(all, task.body).trim());
 
@@ -264,11 +274,13 @@ export function formatProblems(problems: readonly TaskProblem[]): string[] {
   return ['', `Не читается задач: ${problems.length}. Что исправить:`, ...shown, ...more];
 }
 
-export function showJson(all: readonly TaskRecord[], task: TaskRecord, attachments: readonly string[]): object {
+/** `junior` — признак задачи; не передан — проект задачи для младших не отмечает, ключа нет. */
+export function showJson(all: readonly TaskRecord[], task: TaskRecord, attachments: readonly string[], junior?: JuniorReadiness): object {
   const epic = epicOf(all, task);
   const group = task.fm.type === 'epic' ? childrenOf(all, task) : epic ? childrenOf(all, epic).filter((t) => t !== task) : [];
   return {
     ...taskJson(all, task),
+    ...(junior !== undefined ? { junior } : {}),
     frontmatter: task.fm,
     body: presentBody(all, task.body),
     log: task.log === null ? null : presentBody(all, task.log),

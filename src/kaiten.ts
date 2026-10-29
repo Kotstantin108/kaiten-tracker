@@ -32,6 +32,8 @@ import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:
 import { tmpdir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
 
+import { juniorSetting } from './config.js';
+import { juniorReadiness, type JuniorReadiness } from './core/junior.js';
 import { STATUSES, TASK_TYPES, type TaskStatus, type TaskType } from './core/schema.js';
 import { filterTasks, refOf, resolveTask, SearchQueryError, searchTasks, sortTasks, type TaskFilter, type TaskIndex, type TaskRecord } from './core/tasks-index.js';
 import {
@@ -48,6 +50,7 @@ import {
   storeMessage,
   syncWithKaiten,
   TASK_REF_HELP,
+  today,
   UsageError,
   type Context,
   type Options,
@@ -114,20 +117,24 @@ const READ_HELP: Record<string, string> = {
 Флаги:
   --all               весь проект, все продукты
   --closed            показать и закрытые (done, cancelled)
+  --junior            только задачи, которые можно брать младшему (на доске —
+                      «Можно младшему: Да»); почему другим нельзя — kaiten show
 ${FILTER_HELP}
 
 Примеры:
   kaiten list
   kaiten list --all --epic PRJ-100
   kaiten list --status ready,in-progress
+  kaiten list --junior --all
 `,
   show: `kaiten show <задача> — задача целиком.
 
 Заголовок, «Суть», статус, приоритет, исполнитель и срок, постановка с
 пунктами, журнал; для задачи — её эпик и соседние задачи, для эпика — все его
-задачи. Ссылки на другие задачи и вложения показаны командами kaiten. В
-конце — файлы, которые люди приложили прямо в карточку Kaiten (их нет среди
-вложений задачи); открыть их — в карточке.
+задачи. Если проект отмечает задачи для младших — можно ли брать её младшему
+и чего для этого не хватает. Ссылки на другие задачи и вложения показаны
+командами kaiten. В конце — файлы, которые люди приложили прямо в карточку
+Kaiten (их нет среди вложений задачи); открыть их — в карточке.
 ${TASK_REF_HELP}
 
 Большую задачу можно читать по частям:
@@ -252,21 +259,38 @@ function attachmentName(entry: StoreEntry, task: TaskRecord): string {
   return entry.path.slice(`attachments/${task.slug}/`.length);
 }
 
+/**
+ * Признак «Можно младшему» — тот же, что синхронизация пишет в карточку:
+ * считается из файла задачи, без сети. `undefined` — проект задачи для
+ * младших не отмечает. Поля в Kaiten для этого не нужны: ждёт `setup` — всё
+ * равно считаем.
+ */
+function juniorOf(ctx: Context): ((task: TaskRecord) => JuniorReadiness) | undefined {
+  const setting = juniorSetting(ctx.loaded.project);
+  if (setting.state === 'off') return undefined;
+  const opts = { today: today(), maxAgeDays: setting.maxAgeDays };
+  return (task) => juniorReadiness(task.fm, task.body, opts);
+}
+
 function list(args: string[]): void {
-  const { values } = parse('list', args, { ...FILTERS, all: { type: 'boolean' }, closed: { type: 'boolean' } }, 0);
+  const { values } = parse('list', args, { ...FILTERS, all: { type: 'boolean' }, closed: { type: 'boolean' }, junior: { type: 'boolean' } }, 0);
   const ctx = readContext();
   const { index } = loadTasks(ctx);
   const filter = buildFilter(ctx, index, values);
+  const junior = juniorOf(ctx);
+  // Отказ, а не пустой список: пустой агент прочтёт как «задач для младших нет».
+  if (values.junior && !junior) throw new UsageError('В этом проекте задачи для младших не отмечают — уберите --junior.');
   const scope = filter.repo ?? (values.all ? null : ctx.currentRepo);
   if (scope) filter.repo = scope;
 
-  const tasks = sortTasks(filterTasks(index.tasks, filter));
+  const found = sortTasks(filterTasks(index.tasks, filter));
+  const tasks = values.junior && junior ? found.filter((t) => junior(t)?.ok === true) : found;
   if (values.json) {
-    console.log(JSON.stringify(tasks.map((t) => taskJson(index.tasks, t)), null, 2));
+    console.log(JSON.stringify(tasks.map((t) => ({ ...taskJson(index.tasks, t), ...(junior ? { junior: junior(t) } : {}) })), null, 2));
   } else {
     const where = scope ? `${ctx.title} · ${scope}` : `${ctx.title}, весь проект`;
     const which = filter.statuses?.length ? filter.statuses.join(', ') : filter.closed ? 'все' : 'открытые';
-    console.log(`${where} · ${which}: ${tasks.length}\n`);
+    console.log(`${where} · ${which}${values.junior ? ', можно младшему' : ''}: ${tasks.length}\n`);
     if (tasks.length > 0) console.log(formatTaskLines(index.tasks, tasks, !scope).join('\n'));
   }
   reportProblems(index);
@@ -293,8 +317,9 @@ async function show(args: string[]): Promise<void> {
   const task = findTask(index, positionals[0]);
   const attachments = attachmentsOf(entries, task).map((e) => attachmentName(e, task));
   const tail = count(values, 'log', 1000);
+  const junior = juniorOf(ctx)?.(task);
   if (values.raw) process.stdout.write(editableText(task));
-  else if (values.json) console.log(JSON.stringify(showJson(index.tasks, task, attachments), null, 2));
+  else if (values.json) console.log(JSON.stringify(showJson(index.tasks, task, attachments, junior), null, 2));
   else if (values.outline) process.stdout.write(formatOutline(task, attachments));
   else if (typeof values.section === 'string') {
     const text = formatSection(index.tasks, task, values.section);
@@ -309,7 +334,7 @@ async function show(args: string[]): Promise<void> {
     // Как читать большую задачу по частям — здесь, а не в скилле: подсказка нужна, только когда задача большая.
     const lines = task.body.split('\n').length;
     if (lines > LONG_TASK_LINES) console.log(`Задача большая (${lines} строк). По частям: kaiten show ${refOf(task)} --outline, --section "<раздел>", --todo.\n`);
-    process.stdout.write(formatShow(index.tasks, task, attachments));
+    process.stdout.write(formatShow(index.tasks, task, attachments, junior ?? null));
     const foreign = await foreignCardFiles(ctx, task, attachments);
     if (foreign && 'unreachable' in foreign) console.log('\nФайлы карточки Kaiten не прочитаны: Kaiten не ответил.');
     else if (foreign && foreign.files.length > 0) {

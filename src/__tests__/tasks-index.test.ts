@@ -10,7 +10,7 @@ import type { TaskFileText } from '../core/lint.js';
 import { FrontmatterSchema, type Frontmatter } from '../core/schema.js';
 import { belongsToProject, buildIndex, checklistProgress, childrenOf, epicOf, filterTasks, refOf, resolveTask, SearchQueryError, searchTasks, sortTasks, stem, type TaskRecord } from '../core/tasks-index.js';
 import { openCriteria } from '../kaiten-write.js';
-import { formatLogTail, formatOutline, formatProblems, formatSearch, formatSection, formatShow, formatTaskLines, formatTodo, presentBody, progressLine } from '../kaiten-format.js';
+import { formatLogTail, formatOutline, formatProblems, formatSearch, formatSection, formatShow, formatTaskLines, formatTodo, presentBody, progressLine, showJson } from '../kaiten-format.js';
 
 const EPIC_ID = '01K5ZQ3R8F2K9M4N7P0T5V8W2X';
 const IDS = ['01K5ZQ3R8F2K9M4N7P0T5V8W3A', '01K5ZQ3R8F2K9M4N7P0T5V8W3B', '01K5ZQ3R8F2K9M4N7P0T5V8W3C', '01K5ZQ3R8F2K9M4N7P0T5V8W3D'];
@@ -175,6 +175,19 @@ describe('вывод', () => {
     expect(text).toMatch(/## Другие задачи эпика \(2\)[\s\S]*android-intro/);
     // Где лежат задачи, вывод не называет.
     expect(text).not.toMatch(/active\/|archive\/|\.md\b/);
+    // Проект задачи для младших не отмечает — строки нет.
+    expect(text).not.toContain('Младшему');
+  });
+
+  it('show: можно ли младшему — строкой, как в kaiten new; не применимо — строки нет', () => {
+    const task = bySlug('webhook-timeout');
+    expect(formatShow(index.tasks, task, [], { ok: true, missing: [] })).toContain('\nМладшему: да.\n');
+    const no = formatShow(index.tasks, task, [], { ok: false, missing: ['БД: нет раздела', 'n8n: раздел не заполнен'] });
+    expect(no).toContain('\nМладшему: нет — не хватает: БД: нет раздела; n8n: раздел не заполнен.\n');
+    expect(formatShow(index.tasks, task, [], null)).not.toContain('Младшему');
+    expect(showJson(index.tasks, task, [], { ok: true, missing: [] })).toMatchObject({ junior: { ok: true, missing: [] } });
+    expect(showJson(index.tasks, task, [], null)).toMatchObject({ junior: null });
+    expect(showJson(index.tasks, task, [])).not.toHaveProperty('junior');
   });
 
   it('ни поиск, ни журнал, ни нечитаемые задачи не называют путей', () => {
