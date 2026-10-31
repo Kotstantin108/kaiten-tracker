@@ -50,9 +50,9 @@ import {
   type SyncPlan,
   type TaskFile,
 } from './core/kaiten-sync-plan.js';
-import type { AdoptItem, Op, SyncedItem } from './core/task-ops.js';
+import type { AdoptItem, MirrorItem, Op, SyncedItem } from './core/task-ops.js';
 import { refOf, type TaskRecord } from './core/tasks-index.js';
-import { KaitenApiError, type Card, type KaitenClient } from './kaiten-client.js';
+import { isOutage, KaitenApiError, type Card, type KaitenClient } from './kaiten-client.js';
 
 export interface SyncOp {
   op: Op;
@@ -212,6 +212,7 @@ function describe(action: SyncAction): string {
   const ref = refOf(action.task);
   if (action.kind === 'create') return `создать карточку для ${ref}`;
   if (action.kind === 'link') return `связать ${ref} с эпиком`;
+  if (action.kind === 'replay') return `перенести карточку ${ref} в статус задачи`;
   return `обновить карточку ${ref}`;
 }
 
@@ -301,13 +302,20 @@ export async function runKaitenSync(client: KaitenClient, input: RunInput, mode:
   // Поля Kaiten в файлы — они не зависят от записи в Kaiten.
   if (plan.mirror.length > 0) run.ops.push({ op: { kind: 'mirror', items: plan.mirror }, what: `поля из Kaiten (${plan.mirror.length})` });
 
+  for (const moved of plan.report.movedByHuman) {
+    run.errors.push({ what: `статус ${moved.ref}`, message: `карточку передвинули в Kaiten, пока он был недоступен отсюда; задача теперь в статусе ${moved.status}` });
+  }
+
   const synced: SyncedItem[] = [];
   const syncedNames: string[] = [];
+  const settled: MirrorItem[] = [];
   // Карточки, созданные в этом проходе, — для связи задач с только что созданным эпиком.
   const created = new Map<string, number>();
   for (const action of plan.actions) {
     try {
-      if (action.kind === 'create') {
+      if (action.kind === 'replay') {
+        settled.push(await replayMoves(client, action, run));
+      } else if (action.kind === 'create') {
         const existing = await client.findCardByExternalId(action.fields.external_id, input.boardId);
         const card =
           existing ??
@@ -374,7 +382,29 @@ export async function runKaitenSync(client: KaitenClient, input: RunInput, mode:
     const what = synced.length === 1 ? `карточка ${syncedNames[0]}` : `карточки Kaiten (${synced.length})`;
     run.ops.push({ op: { kind: 'synced', items: synced }, what });
   }
+  if (settled.length > 0) run.ops.push({ op: { kind: 'mirror', items: settled }, what: `статусы дошли до Kaiten (${settled.length})` });
   return run;
+}
+
+/**
+ * Довести карточку по шагам очереди. Сбой — наверх: очередь остаётся, следующий
+ * проход продолжит. Отказ доски — статус задачи возвращается к последнему принятому,
+ * и следующая команда скажет почему: так решил владелец 30.10.2026.
+ */
+async function replayMoves(client: KaitenClient, action: Extract<SyncAction, { kind: 'replay' }>, run: SyncRun): Promise<MirrorItem> {
+  let accepted = action.from;
+  for (const step of action.steps) {
+    try {
+      await client.updateCard(action.cardId, { column_id: step.columnId, ...(step.reopen ? { condition: 1 as const } : {}), ...(step.properties ? { properties: step.properties } : {}) });
+      accepted = step.status;
+    } catch (error) {
+      if (isOutage(error)) throw error;
+      const reason = apiErrorText(error);
+      run.errors.push({ what: `статус ${refOf(action.task)}`, message: `Kaiten не принял перевод в ${step.status}: ${reason}. Задача возвращена в ${accepted}` });
+      return { id: action.task.fm.id, status: accepted, settled: 'all', note: `Kaiten не принял перевод в ${step.status}: ${reason}. Задача возвращена в ${accepted}` };
+    }
+  }
+  return { id: action.task.fm.id, settled: action.total };
 }
 
 function parentCardId(action: Extract<SyncAction, { kind: 'create' }>, tasks: readonly TaskRecord[], created: ReadonlyMap<string, number>): number | null {
@@ -430,7 +460,7 @@ export function formatPlan(run: Pick<SyncRun, 'plan' | 'checklists'> & Partial<P
   const count = (kind: SyncAction['kind']): number => plan.actions.filter((a) => a.kind === kind).length;
   const adopt = run.adopt?.candidates ?? [];
   out.push(
-    `Создать карточек: ${count('create')}, обновить: ${count('update')}, связать с эпиком: ${count('link')}; из Kaiten в задачи: ${plan.mirror.length}; новых задач из карточек: ${adopt.length}`,
+    `Создать карточек: ${count('create')}, обновить: ${count('update')}, связать с эпиком: ${count('link')}, догнать статус: ${count('replay')}; из Kaiten в задачи: ${plan.mirror.length}; новых задач из карточек: ${adopt.length}`,
   );
   const junior = plan.junior;
   if (junior && junior.yes + junior.no + junior.cleared > 0) {
@@ -458,7 +488,8 @@ export function formatPlan(run: Pick<SyncRun, 'plan' | 'checklists'> & Partial<P
         .filter(Boolean)
         .join(', ');
       out.push(`  ~ ${refOf(a.task)} (${a.task.slug}): ${what}${a.content ? lists : ''}${a.files ? files : ''}${a.firstDelivery && a.content ? ' [первая доставка]' : ''}`);
-    } else out.push(`  → ${refOf(a.task)} в эпик ${a.parentId}`);
+    } else if (a.kind === 'replay') out.push(`  ⇒ ${refOf(a.task)}: карточка → ${a.steps.map((s) => s.status).join(' → ')}`);
+    else out.push(`  → ${refOf(a.task)} в эпик ${a.parentId}`);
   }
   for (const m of plan.mirror) {
     const fields = [
@@ -468,6 +499,7 @@ export function formatPlan(run: Pick<SyncRun, 'plan' | 'checklists'> & Partial<P
       m.team !== undefined ? `команда → ${m.team ?? 'нет'}` : '',
       m.due !== undefined ? `срок → ${m.due ?? 'нет'}` : '',
       m.assessment !== undefined ? `оценка → ${m.assessment ?? 'нет'}` : '',
+      m.settled !== undefined ? 'статус больше не ждёт Kaiten' : '',
     ].filter(Boolean);
     out.push(`  ← ${plan.names[m.id] ?? m.id}: ${fields.join(', ')}`);
   }

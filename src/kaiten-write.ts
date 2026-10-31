@@ -6,7 +6,7 @@
  * следующая команда.
  *
  * Kaiten обновляется при включённой синхронизации (`sync.kaiten`): текст —
- * в фоне, статус — сразу и сначала в карточке (`moveCardFirst`): отказ доски
+ * в фоне, статус — сразу и сначала в карточке (`moveCardFirst`; Kaiten недоступен — в очередь задачи): отказ доски
  * останавливает команду.
  */
 
@@ -31,6 +31,8 @@ import {
   findTask,
   loadTasks,
   cardNotMovedNote,
+  queuedOf,
+  type MoveStep,
   moveCardFirst,
   parse,
   printNotices,
@@ -455,8 +457,9 @@ async function withReason(command: 'block' | 'cancel', args: string[]): Promise<
     const hint = command === 'block' ? 'заблокировать можно только открытую' : `отменить можно только из ${CANCELLABLE.join(', ')}`;
     throw new UsageError(`Не записано: задача ${refOf(task)} в статусе ${task.fm.status}: ${hint}`, 1);
   }
-  const card = await moveCardFirst(ctx, task, command === 'block' ? 'blocked' : 'cancelled');
-  await commit(ctx, { kind: command, id: task.fm.id, reason }, what);
+  const queue: MoveStep[] = [];
+  const card = await moveCardFirst(ctx, task, command === 'block' ? 'blocked' : 'cancelled', undefined, undefined, queue);
+  await commit(ctx, { kind: command, id: task.fm.id, reason, ...queuedOf(queue) }, what);
   cardNotMovedNote(card);
 }
 
@@ -496,8 +499,9 @@ async function move(command: 'review' | 'done', args: string[]): Promise<void> {
   const given = stringFlag(values, 'note')?.trim();
   const work = command === 'review' ? workRef(ctx.workDir, given) : undefined;
   const note = [given, work, open.length > 0 && why ? `не отмечено пунктов ${open.length}: ${why}` : undefined, visual?.note].filter(Boolean).join('; ') || undefined;
-  const card = task.fm.status !== status ? await moveCardFirst(ctx, task, status) : 'none';
-  await commit(ctx, { kind: 'move', id: task.fm.id, status, note, ...(visual ? { visual: visual.visual } : {}) }, `${command === 'review' ? 'ревью' : 'закрытие'} ${refOf(task)}`);
+  const queue: MoveStep[] = [];
+  const card = task.fm.status !== status ? await moveCardFirst(ctx, task, status, undefined, undefined, queue) : 'none';
+  await commit(ctx, { kind: 'move', id: task.fm.id, status, note, ...(visual ? { visual: visual.visual } : {}), ...queuedOf(queue) }, `${command === 'review' ? 'ревью' : 'закрытие'} ${refOf(task)}`);
   cardNotMovedNote(card);
 }
 

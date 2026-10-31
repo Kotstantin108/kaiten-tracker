@@ -30,10 +30,10 @@ export type Op =
   | { kind: 'new'; path: string; text: string }
   | { kind: 'check'; id: string; items: string[]; checked: boolean }
   | { kind: 'log'; id: string; text: string }
-  | { kind: 'cancel'; id: string; reason: string }
-  | { kind: 'block'; id: string; reason: string }
-  /** Статус работы: `kaiten start` (в работу), `review`, `done`. Заметка — в журнал; `visual` — ответ «Было / Стало». */
-  | { kind: 'move'; id: string; status: WorkStatus; note?: string; assigned?: boolean; branch?: string; visual?: VisualAnswer }
+  | { kind: 'cancel'; id: string; reason: string; queued?: QueuedMoves }
+  | { kind: 'block'; id: string; reason: string; queued?: QueuedMoves }
+  /** Статус работы: `kaiten start` (в работу), `review`, `done`. Заметка — в журнал; `visual` — ответ «Было / Стало»; `queued` — Kaiten недоступен, карточка догонит. */
+  | { kind: 'move'; id: string; status: WorkStatus; note?: string; assigned?: boolean; branch?: string; visual?: VisualAnswer; queued?: QueuedMoves }
   | { kind: 'edit'; id: string; text: string; baseHash: string }
   /**
    * Вложение задачи: файл `attachments/<slug>/<name>`. Содержимое уже лежит в
@@ -84,7 +84,30 @@ export interface MirrorItem {
   assessment?: AssessVerdict | null;
   /** Месяц закрытия (YYYY-MM) — по времени переноса карточки в колонку. */
   closedMonth?: string;
+  /**
+   * Что снять из `pending_moves`: сколько шагов дошло до карточки или `all` — очередь
+   * отменена. Числом, потому что за время прохода команда могла дописать новый шаг.
+   */
+  settled?: number | 'all';
+  /** Запись в журнал задачи: почему статус вернулся. */
+  note?: string;
 }
+
+/** Статус сменён без Kaiten (тот недоступен): что записать в `pending_moves`. */
+export interface QueuedMoves {
+  /** Момент смены статуса, ISO: карточку, сдвинутую позже, двигал уже человек. */
+  at: string;
+  steps: Array<{ status: TaskStatus; priority?: Priority }>;
+}
+
+/** Поле `pending_moves` после операции: новые шаги — в хвост уже ожидающих. */
+function withQueued(task: TaskRecord, queued: QueuedMoves | undefined): Pick<Frontmatter, 'pending_moves'> | Record<string, never> {
+  if (!queued) return {};
+  const current = task.fm.pending_moves;
+  return { pending_moves: { since: current?.since ?? queued.at, from: current?.from ?? task.fm.status, steps: [...(current?.steps ?? []), ...queued.steps] } };
+}
+
+const QUEUED_NOTE = '; карточка в Kaiten обновится, когда он вернётся';
 
 /** Готовый файл задачи из карточки; путь выбирает применение (занятое имя — следующее свободное). */
 export interface AdoptItem {
@@ -512,12 +535,12 @@ export function applyOp(op: Op, texts: TaskTexts, ctx: OpContext): OpResult {
       }
       if (!op.reason.trim()) return { error: 'укажите причину отмены' };
       const archived = `archive/${ctx.date.slice(0, 7)}/${task.slug}.md`;
-      const out = write(task, { ...task.fm, status: 'cancelled' }, task.body, ctx, archived);
+      const out = write(task, { ...task.fm, status: 'cancelled', ...withQueued(task, op.queued) }, task.body, ctx, archived);
       if ('error' in out) return out;
       // Файл переезжает один раз за жизнь задачи (Q42) — вместе с журналом.
       const changes: FileChange[] = [{ path: task.path, text: null }];
       if (task.log !== null) changes.push({ path: logPath(task.path), text: null });
-      changes.push({ path: archived, text: out.text }, { path: logPath(archived), text: appendLog(task.log, ctx, `отменена: ${op.reason.trim()}`) });
+      changes.push({ path: archived, text: out.text }, { path: logPath(archived), text: appendLog(task.log, ctx, `отменена: ${op.reason.trim()}${op.queued ? QUEUED_NOTE : ''}`) });
       return { changes, summary: `задача ${ref} отменена`, warnings: [] };
     }
     case 'move': {
@@ -527,9 +550,9 @@ export function applyOp(op: Op, texts: TaskTexts, ctx: OpContext): OpResult {
       const from = op.status === 'in-progress' ? ASSIGNED_FROM[task.fm.status] : undefined;
       const priority = op.status === 'in-progress' ? assignedPriority(task, op.assigned === true) : undefined;
       const assignedNote = from ? ` (из ${from}, по прямому поручению${priority ? `, приоритет ${priority}` : ''})` : '';
-      const entry = `${MOVE_WORDS[op.status]}${assignedNote}${op.note?.trim() ? `: ${op.note.trim()}` : ''}`;
+      const entry = `${MOVE_WORDS[op.status]}${assignedNote}${op.note?.trim() ? `: ${op.note.trim()}` : ''}${op.queued ? QUEUED_NOTE : ''}`;
       const target = op.status === 'done' ? `archive/${ctx.date.slice(0, 7)}/${task.slug}.md` : task.path;
-      const fm: Frontmatter = { ...task.fm, status: op.status, ...(op.branch ? { branch: op.branch } : {}), ...(priority ? { priority } : {}), ...(op.visual ? { visual: op.visual } : {}) };
+      const fm: Frontmatter = { ...task.fm, status: op.status, ...(op.branch ? { branch: op.branch } : {}), ...(priority ? { priority } : {}), ...(op.visual ? { visual: op.visual } : {}), ...withQueued(task, op.queued) };
       const out = write(task, fm, task.body, ctx, target);
       if ('error' in out) return out;
       const changes: FileChange[] = [];
@@ -544,12 +567,12 @@ export function applyOp(op: Op, texts: TaskTexts, ctx: OpContext): OpResult {
     case 'block': {
       if (!BLOCKABLE.includes(task.fm.status)) return { error: `задача ${ref} в статусе ${task.fm.status}: заблокировать можно только открытую` };
       if (!op.reason.trim()) return { error: 'укажите, что блокирует задачу' };
-      const out = write(task, { ...task.fm, status: 'blocked' }, task.body, ctx);
+      const out = write(task, { ...task.fm, status: 'blocked', ...withQueued(task, op.queued) }, task.body, ctx);
       if ('error' in out) return out;
       return {
         changes: [
           { path: task.path, text: out.text },
-          { path: logPath(task.path), text: appendLog(task.log, ctx, `заблокирована: ${op.reason.trim()}`) },
+          { path: logPath(task.path), text: appendLog(task.log, ctx, `заблокирована: ${op.reason.trim()}${op.queued ? QUEUED_NOTE : ''}`) },
         ],
         summary: `задача ${ref} заблокирована`,
         warnings: [],
@@ -614,6 +637,12 @@ function applyMirror(items: readonly MirrorItem[], texts: TaskTexts, ctx: OpCont
       if (planning.due === undefined) delete planning.due;
       fm.planning = Object.values(planning).some((v) => v !== undefined && v !== null) ? planning : undefined;
     }
+    if (item.settled !== undefined && fm.pending_moves) {
+      const { steps } = fm.pending_moves;
+      const left = item.settled === 'all' ? [] : steps.slice(item.settled);
+      if (left.length === 0) delete fm.pending_moves;
+      else fm.pending_moves = { ...fm.pending_moves, from: steps[steps.length - left.length - 1]?.status ?? fm.pending_moves.from, steps: left };
+    }
     const closed = CLOSED_STATUSES.includes(fm.status);
     const inArchive = task.path.startsWith('archive/');
     let path = task.path;
@@ -625,12 +654,15 @@ function applyMirror(items: readonly MirrorItem[], texts: TaskTexts, ctx: OpCont
       continue;
     }
     count += 1;
+    const log = item.note ? appendLog(task.log, ctx, item.note) : task.log;
     if (path === task.path) {
       changes.push({ path, text: out.text });
+      if (item.note) changes.push({ path: logPath(path), text: log });
       continue;
     }
     changes.push({ path: task.path, text: null }, { path, text: out.text });
-    if (task.log !== null) changes.push({ path: logPath(task.path), text: null }, { path: logPath(path), text: task.log });
+    if (task.log !== null) changes.push({ path: logPath(task.path), text: null });
+    if (log !== null) changes.push({ path: logPath(path), text: log });
   }
   return { changes, summary: `из Kaiten: задач ${count}`, warnings };
 }

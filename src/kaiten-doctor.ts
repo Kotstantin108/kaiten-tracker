@@ -27,7 +27,7 @@ import { juniorSetting, visualSetting, projectFromTasksRepo, storeNameOf, TASKS_
 import { rulesState, SKILL_PATH, skillState } from './core/repo-connect.js';
 import { belongsToProject, buildIndex } from './core/tasks-index.js';
 import { invocationDir, parse, peopleByEmail, SETTINGS_PATH, storeMessage } from './kaiten-cli.js';
-import { KaitenApiError, KaitenClient } from './kaiten-client.js';
+import { isOutage, KaitenApiError, KaitenClient, outageText } from './kaiten-client.js';
 import { findProjectFile, loadSettings, parseProjectFile, SettingsError, type KaitenSettings } from './kaiten-context.js';
 import { isOutdated, updatesAvailable } from './self-update.js';
 import { readJournal } from './store-write.js';
@@ -123,6 +123,7 @@ async function kaitenLogin(settings: KaitenSettings): Promise<Check> {
     return { level: 'ok', what: 'вход в Kaiten работает' };
   } catch (error) {
     const status = error instanceof KaitenApiError ? error.status : -1;
+    if (status !== 0 && isOutage(error)) return { level: 'warn', what: `${outageText(error)} — вход не проверен`, fix: 'Сбой или работы на стороне Kaiten. С задачами можно работать как обычно, статусы тоже меняются: карточки обновятся сами, когда он вернётся.' };
     if (status === 401 || status === 403) return { level: 'fail', what: 'Kaiten не принял токен', fix: `Выпустите новый личный токен в Kaiten и запишите его в ${SETTINGS_PATH}.` };
     if (status === 0) return { level: 'warn', what: 'нет связи с Kaiten — вход не проверен', fix: 'Проверьте интернет и домен Kaiten в настройках; без связи: kaiten doctor --offline.' };
     return { level: 'warn', what: `Kaiten ответил неожиданно${status > 0 ? ` (${status})` : ''} — вход не проверен`, fix: 'Проверьте домен Kaiten в настройках.' };

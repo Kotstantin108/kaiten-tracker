@@ -144,6 +144,20 @@ export const FIELDS = {
   assessed: { owner: 'cli', required: false, schema: z.object({ verdict: z.enum(ASSESS_VERDICTS), date }).strict() },
   // «Было / Стало» — ставят `kaiten review` и `kaiten done` по вложениям или по `--no-visual`.
   visual: { owner: 'cli', required: false, schema: z.enum(VISUAL_ANSWERS) },
+  // Статус сменили, пока Kaiten был недоступен: `from` — что Kaiten принял последним,
+  // `steps` — переходы для карточки по порядку. Пока поле есть, статус ведёт файл, а не
+  // карточка; снимает его синхронизация, когда карточка догнала (`core/kaiten-sync-plan.ts`).
+  pending_moves: {
+    owner: 'cli',
+    required: false,
+    schema: z
+      .object({
+        since: z.string().datetime(),
+        from: z.enum(STATUSES),
+        steps: z.array(z.object({ status: z.enum(STATUSES), priority: z.enum(PRIORITIES).optional() }).strict()).min(1),
+      })
+      .strict(),
+  },
   content_hash: { owner: 'cli', required: false, schema: z.string().regex(/^sha256:[a-f0-9]{64}$/, 'sha256:<64 hex>') },
   // Какие файлы (вложения и журнал) карточка уже получила; ставит только
   // синхронизация. Нет поля — файлы этой задаче доставляет только `--resend`.

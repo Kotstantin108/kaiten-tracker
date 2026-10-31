@@ -5,7 +5,7 @@
  */
 
 import { spawn } from 'node:child_process';
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseArgs, type ParseArgsConfig } from 'node:util';
@@ -14,12 +14,12 @@ import { z } from 'zod';
 
 import { juniorFields, visualFields, loadTasksRepoConfig, projectFromTasksRepo, storeNameOf, TASKS_REPO_CONFIG, type LoadedProject, type People } from './config.js';
 import { CLOSED_STATUSES, type Priority, type TaskStatus } from './core/schema.js';
-import { JOURNAL_FILE, taskDate } from './core/task-ops.js';
+import { JOURNAL_FILE, taskDate, type QueuedMoves } from './core/task-ops.js';
 import { buildIndex, belongsToProject, resolveTask, type TaskIndex, type TaskRecord } from './core/tasks-index.js';
 import { localCopyDir, loadSettings, PROJECT_FILE, readProjectFile, type KaitenSettings } from './kaiten-context.js';
 import { formatProblems } from './kaiten-format.js';
 import { repoWebBase, type AttachmentRef } from './core/kaiten-sync-plan.js';
-import { KaitenClient } from './kaiten-client.js';
+import { isOutage, KaitenClient, outageText, type KaitenApiError } from './kaiten-client.js';
 import { apiErrorText, runKaitenSync, type SyncRun } from './kaiten-sync.js';
 import { KAITEN_LOCK, KAITEN_QUEUE, recordOp, sendInBackground, setKaitenErrors, syncStore, takeNotices, tryLock, withLockAsync } from './store-write.js';
 import { isOutdated, OUTDATED_NOTE, publishSyncVersion } from './self-update.js';
@@ -262,6 +262,7 @@ export async function foreignCardFiles(ctx: Context, task: TaskRecord, attachmen
   if (cardId === null || ctx.loaded.project.ignoreCards.includes(cardId)) return null;
   const login = settings().kaiten;
   if (!login && !client) return null;
+  if (!client && kaitenDownNote(ctx.store)) return { unreachable: true };
   // Это самая частая команда агентов: без связи — не дольше 3 секунд и без повтора.
   const timed: typeof fetch = (input, init) => fetch(input, { ...init, signal: AbortSignal.timeout(3000) });
   const kaiten = client ?? new KaitenClient({ domain: login?.domain ?? '', token: login?.token ?? '', maxRetries: 0, fetchImpl: timed });
@@ -311,6 +312,11 @@ export async function syncWithKaiten(ctx: Context, client?: KaitenClient, onLock
       return null;
     }
     publishSyncVersion(ctx.store, today());
+    const down = await kaitenDown(ctx.store, client, login);
+    if (down) {
+      setKaitenErrors(ctx.store, [{ what: 'синхронизация', reason: `${down}; задачи и статусы записываются, карточки догонят, когда он вернётся` }]);
+      return null;
+    }
     let run: SyncRun;
     try {
       const loaded = loadTasks(ctx);
@@ -334,7 +340,8 @@ export async function syncWithKaiten(ctx: Context, client?: KaitenClient, onLock
         'apply',
       );
     } catch (error) {
-      setKaitenErrors(ctx.store, [{ what: 'синхронизация', reason: apiErrorText(error) }]);
+      if (isOutage(error)) noteKaitenDown(ctx.store, outageText(error));
+      setKaitenErrors(ctx.store, [{ what: 'синхронизация', reason: isOutage(error) ? `${outageText(error)}; задачи и статусы записываются, карточки догонят, когда он вернётся` : apiErrorText(error) }]);
       return null;
     }
     for (const { op, what } of run.ops) {
@@ -372,6 +379,11 @@ export async function syncWithKaiten(ctx: Context, client?: KaitenClient, onLock
  *
  * `priority` — тем же запросом поставить карточке приоритет (`start --assigned`
  * для задачи без приоритета).
+ *
+ * `'queued'` — Kaiten недоступен (сбой, а не отказ): шаг ложится в `queue`, команда
+ * пишет его в задачу (`pending_moves`), и работа не останавливается; ограничения доски
+ * проверит синхронизация, когда он вернётся. Задача уже ждёт Kaiten — шаг встаёт в
+ * ту же очередь, иначе карточка перескочила бы через шаги.
  */
 export async function moveCardFirst(
   ctx: Context,
@@ -379,7 +391,8 @@ export async function moveCardFirst(
   status: TaskStatus,
   client?: KaitenClient,
   priority?: Priority,
-): Promise<'moved' | 'off' | 'none'> {
+  queue: MoveStep[] = [],
+): Promise<CardMove> {
   const current = settings();
   const cardId = task.fm.tracker !== undefined && /^\d+$/.test(task.fm.tracker) ? Number(task.fm.tracker) : null;
   const column = ctx.loaded.project.mapping?.columns[status];
@@ -387,7 +400,12 @@ export async function moveCardFirst(
   if (!current.sync.kaiten) return 'off';
   const login = current.kaiten;
   if (!login && !client) throw new UsageError('Не настроен вход в Kaiten: kaiten.domain и kaiten.token в настройках kaiten.', 2);
-  const kaiten = client ?? new KaitenClient({ domain: login?.domain ?? '', token: login?.token ?? '' });
+  const enqueue = (): 'queued' => {
+    queue.push({ status, ...(priority !== undefined ? { priority } : {}) });
+    return 'queued';
+  };
+  if (task.fm.pending_moves || queue.length > 0 || (!client && kaitenDownNote(ctx.store))) return enqueue();
+  const kaiten = client ?? quickClient(login);
   try {
     const priorityProperty = ctx.loaded.project.mapping?.priorityProperty;
     const value = priority !== undefined ? priorityProperty?.values[priority] : undefined;
@@ -397,13 +415,92 @@ export async function moveCardFirst(
     const reopen = !CLOSED_STATUSES.includes(status) ? { condition: 1 as const } : {};
     await kaiten.updateCard(cardId, { column_id: column, ...reopen, ...(properties ? { properties } : {}) });
   } catch (error) {
+    // 5xx может быть и ответом на сам запрос: сбой — только если Kaiten не отвечает и на простой вопрос.
+    if (isOutage(error) && (await confirmedDown(ctx.store, kaiten, error))) return enqueue();
     throw new UsageError(`Не записано: Kaiten не разрешил — ${apiErrorText(error)}`, 1);
   }
+  markKaitenUp(ctx.store);
   return 'moved';
 }
 
-/** Карточка не сдвинута, потому что обновление Kaiten выключено, — что сделать человеку. */
-export function cardNotMovedNote(result: 'moved' | 'off' | 'none'): void {
+/** Поле операции для команд статуса: шаги, которые ждут Kaiten. */
+export function queuedOf(queue: readonly MoveStep[]): { queued?: QueuedMoves } {
+  return queue.length > 0 ? { queued: { at: new Date().toISOString(), steps: [...queue] } } : {};
+}
+
+// ── Kaiten недоступен ───────────────────────────────────────────────────
+
+export type CardMove = 'moved' | 'off' | 'none' | 'queued';
+export type MoveStep = QueuedMoves['steps'][number];
+
+export const KAITEN_DOWN_NOTE = '  Kaiten сейчас недоступен. Статус записан в задачу, карточка обновится сама, когда он вернётся. Продолжайте работу: повторять команду не нужно.';
+
+const DOWN_FILE = 'kaiten-down.json';
+/** Сколько помнить о сбое: команды не ждут ответа заново, а вернувшийся Kaiten замечается быстро. */
+const DOWN_TTL_MS = 60_000;
+const QUICK_TIMEOUT_MS = 8000;
+
+/** Клиент для команд, которые ждёт человек: один короткий повтор, без долгих пауз. */
+function quickClient(login: KaitenSettings['kaiten']): KaitenClient {
+  const timed: typeof fetch = (input, init) => fetch(input, { ...init, signal: AbortSignal.timeout(QUICK_TIMEOUT_MS) });
+  return new KaitenClient({ domain: login?.domain ?? '', token: login?.token ?? '', maxRetries: 1, fetchImpl: timed, sleep: (ms) => new Promise((r) => setTimeout(r, Math.min(ms, 500))) });
+}
+
+/** Недавний сбой — его описание; не было или устарел — `null`. */
+export function kaitenDownNote(store: string, now = Date.now()): string | null {
+  try {
+    const { at, note } = JSON.parse(readFileSync(join(store, DOWN_FILE), 'utf8')) as { at: number; note: string };
+    return now - at < DOWN_TTL_MS ? note : null;
+  } catch {
+    return null;
+  }
+}
+
+function noteKaitenDown(store: string, note: string): void {
+  try {
+    writeFileSync(join(store, DOWN_FILE), JSON.stringify({ at: Date.now(), note }));
+  } catch {
+    // Память о сбое только экономит время: не записалась — спросим Kaiten ещё раз.
+  }
+}
+
+/** Явная команда спрашивает Kaiten заново, а не верит памяти о сбое. */
+export function markKaitenUp(store: string): void {
+  rmSync(join(store, DOWN_FILE), { force: true });
+}
+
+async function confirmedDown(store: string, kaiten: KaitenClient, cause: KaitenApiError): Promise<boolean> {
+  try {
+    await kaiten.currentUser();
+    return false;
+  } catch (error) {
+    if (!isOutage(error)) return false;
+    noteKaitenDown(store, outageText(cause));
+    return true;
+  }
+}
+
+/** Перед шагом Kaiten: отвечает ли он. Описание сбоя или `null`; прочие ошибки покажет сам шаг. */
+async function kaitenDown(store: string, client: KaitenClient | undefined, login: KaitenSettings['kaiten']): Promise<string | null> {
+  if (!client) {
+    const known = kaitenDownNote(store);
+    if (known) return known;
+  }
+  try {
+    await (client ?? quickClient(login)).currentUser();
+    markKaitenUp(store);
+    return null;
+  } catch (error) {
+    if (!isOutage(error)) return null;
+    const note = outageText(error);
+    noteKaitenDown(store, note);
+    return note;
+  }
+}
+
+/** Карточка не сдвинута: что это значит для человека и агента. */
+export function cardNotMovedNote(result: CardMove): void {
+  if (result === 'queued') console.log(KAITEN_DOWN_NOTE);
   if (result !== 'off') return;
   console.log('  Карточка в Kaiten не сдвинута: обновление Kaiten выключено в настройках kaiten. Переставьте её в Kaiten руками — иначе задача вернётся в прежний статус.');
 }

@@ -261,6 +261,16 @@ export class KaitenApiError extends Error {
   }
 }
 
+/** Ответ или обрыв, в котором виноват не запрос: нет связи, лимит, сбой или работы на стороне Kaiten. */
+export function isOutage(error: unknown): error is KaitenApiError {
+  return error instanceof KaitenApiError && (error.status === 0 || error.status === 429 || error.status >= 500);
+}
+
+/** Сбой — словами для человека и агента. */
+export function outageText(error: KaitenApiError): string {
+  return error.status === 0 ? 'нет связи с Kaiten' : `Kaiten недоступен (${error.status})`;
+}
+
 const defaultSleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 
 export class KaitenClient {

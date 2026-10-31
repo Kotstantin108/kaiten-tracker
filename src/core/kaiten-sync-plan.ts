@@ -61,7 +61,7 @@ import { visualApplies } from './visual.js';
 import { JOURNAL_FILE, taskDate, type MirrorItem } from './task-ops.js';
 import { ASSESS_VERDICTS, CLOSED_STATUSES, PRIORITIES, STATUSES, TASK_TYPES, type AssessVerdict, type Priority, type TaskStatus, type TaskType } from './schema.js';
 import { contentHash } from './document.js';
-import { epicOf, type TaskRecord } from './tasks-index.js';
+import { epicOf, refOf, type TaskRecord } from './tasks-index.js';
 
 /** Первая строка описания карточки (Q41). */
 export const Q41_NOTICE = 'Текст обновляется автоматически из репозитория. Правки — комментарием.';
@@ -508,7 +508,17 @@ export type SyncAction =
       /** В архив Kaiten — последней записью, после описания и файлов (`archiveDue`). */
       archive: boolean;
     }
-  | { kind: 'link'; task: TaskRecord; parentId: number; childId: number };
+  | { kind: 'link'; task: TaskRecord; parentId: number; childId: number }
+  /** Статус сменили без Kaiten (`pending_moves`): довести карточку по шагам, раньше остальных записей. */
+  | { kind: 'replay'; task: TaskRecord; cardId: number; from: TaskStatus; steps: ReplayStep[]; total: number };
+
+export interface ReplayStep {
+  status: TaskStatus;
+  columnId: number;
+  properties?: Record<string, unknown>;
+  /** Открытый статус: карточку достаём и из архива Kaiten, как `kaiten start`. */
+  reopen: boolean;
+}
 
 export interface SyncReport {
   /** Карточки нет в списке доски (архив или удалена) — не создаём заново. */
@@ -524,6 +534,8 @@ export interface SyncReport {
   closedWithoutCard: string[];
   /** Карточка в колонке, которой нет в конфиге, — статус не переносим. */
   unknownColumns: string[];
+  /** Пока Kaiten был недоступен для этой машины, карточку передвинул человек: его решение важнее очереди. */
+  movedByHuman: Array<{ ref: string; status: TaskStatus }>;
   /**
    * На ревью или закрыта с `kaiten.visual.since`, а ответа «Было / Стало» нет:
    * карточку перенесли в Kaiten руками. По состоянию, а не по переходу — переход
@@ -607,12 +619,13 @@ function firstId(value: unknown): number | null {
  * Что Kaiten знает о задаче иначе, чем файл: только поля Kaiten. Пусто —
  * `item: null`. Колонка не из конфига — статус не трогаем и сообщаем.
  */
-export function mirrorFromCard(task: TaskRecord, card: CardView, mapping: ConfigMapping): { item: MirrorItem | null; unknownColumn: boolean } {
+export function mirrorFromCard(task: TaskRecord, card: CardView, mapping: ConfigMapping, keepOwn = false): { item: MirrorItem | null; unknownColumn: boolean } {
   const item: MirrorItem = { id: task.fm.id };
   let changed = false;
   let unknownColumn = false;
 
-  if (card.columnId !== undefined) {
+  // `keepOwn` — карточка ещё догоняет файл: её статус и приоритет устарели.
+  if (card.columnId !== undefined && !keepOwn) {
     const status = reverse<TaskStatus>(mapping.columns, STATUSES).get(card.columnId);
     if (status === undefined) unknownColumn = true;
     else if (status !== task.fm.status) {
@@ -628,7 +641,7 @@ export function mirrorFromCard(task: TaskRecord, card: CardView, mapping: Config
       changed = true;
     }
   }
-  if (mapping.priorityProperty) {
+  if (mapping.priorityProperty && !keepOwn) {
     const id = firstId(card.properties[key(mapping.priorityProperty.id)]);
     const priority: Priority | null = id === null ? null : (reverse<Priority>(mapping.priorityProperty.values, PRIORITIES).get(id) ?? null);
     if (priority !== (task.fm.priority ?? null)) {
@@ -668,13 +681,49 @@ function cardIdOf(tracker: string | undefined): number | null {
   return tracker !== undefined && /^\d+$/.test(tracker) ? Number(tracker) : null;
 }
 
+type PendingDecision =
+  /** Карточка уже там, где файл: очередь снять. */
+  | { kind: 'settled' }
+  /** Карточку передвинул человек позже смены статуса: побеждает он. */
+  | { kind: 'human'; status: TaskStatus }
+  | { kind: 'replay'; steps: ReplayStep[] };
+
+/**
+ * Что делать со статусом, сменённым без Kaiten. Карточка могла дойти до части
+ * шагов (обрыв на середине) — тогда только оставшиеся: колонка из очереди значит
+ * «дошла сюда», а не «передвинул человек».
+ */
+export function pendingDecision(task: TaskRecord, card: CardView, mapping: ConfigMapping): PendingDecision {
+  const pending = task.fm.pending_moves;
+  if (!pending) return { kind: 'settled' };
+  const priorityProperty = mapping.priorityProperty;
+  const steps = pending.steps.flatMap((step): ReplayStep[] => {
+    const columnId = mapping.columns[step.status];
+    if (columnId === undefined) return [];
+    const value = step.priority !== undefined ? priorityProperty?.values[step.priority] : undefined;
+    const properties = priorityProperty && value !== undefined ? { [key(priorityProperty.id)]: [value] } : undefined;
+    return [{ status: step.status, columnId, ...(properties ? { properties } : {}), reopen: !CLOSED_STATUSES.includes(step.status) }];
+  });
+  if (steps.length === 0) return { kind: 'settled' };
+  const reached = steps.map((s) => s.columnId).lastIndexOf(card.columnId ?? -1);
+  if (reached === steps.length - 1) return { kind: 'settled' };
+  if (reached >= 0) return { kind: 'replay', steps: steps.slice(reached + 1) };
+  const movedAfter = card.columnChangedAt !== undefined && Date.parse(card.columnChangedAt) > Date.parse(pending.since);
+  if (movedAfter && card.columnId !== mapping.columns[pending.from]) {
+    const status = reverse<TaskStatus>(mapping.columns, STATUSES).get(card.columnId ?? -1);
+    if (status !== undefined) return { kind: 'human', status };
+  }
+  return { kind: 'replay', steps };
+}
+
 export function planKaitenSync(input: PlanInput): SyncPlan {
   const { tasks, mapping } = input;
   const cards = new Map(input.cards.map((c) => [c.id, c]));
   const ignore = new Set(input.ignore);
-  const report: SyncReport = { missingCards: [], unknownTrackers: [], ignored: [], archivedCards: [], firstLoadCandidates: 0, closedWithoutCard: [], unknownColumns: [], withoutVisual: [] };
+  const report: SyncReport = { missingCards: [], unknownTrackers: [], ignored: [], archivedCards: [], firstLoadCandidates: 0, closedWithoutCard: [], unknownColumns: [], movedByHuman: [], withoutVisual: [] };
   const mirror: MirrorItem[] = [];
   const names: Record<string, string> = {};
+  const replays: SyncAction[] = [];
   const creates: SyncAction[] = [];
   const others: SyncAction[] = [];
   // Возраст задачи — от сегодняшнего дня того же «сейчас», что и переезд в архив.
@@ -726,21 +775,42 @@ export function planKaitenSync(input: PlanInput): SyncPlan {
       continue;
     }
     const card = cards.get(cardId);
+    const pending = task.fm.pending_moves;
     if (!card) {
       report.missingCards.push(`${task.slug} (${cardId})`);
+      // Двигать нечего — задача не должна вечно ждать карточку, которой нет.
+      if (pending) {
+        mirror.push({ id: task.fm.id, settled: 'all' });
+        names[task.fm.id] = `${task.fm.tracker} (${task.slug})`;
+      }
       continue;
     }
-    if (card.archived) {
+    const decision = pending ? pendingDecision(task, card, mapping) : null;
+    if (pending && decision?.kind === 'replay') {
+      replays.push({ kind: 'replay', task, cardId, from: pending.from, steps: decision.steps, total: pending.steps.length });
+    }
+    if (card.archived && decision?.kind !== 'replay') {
+      if (pending) {
+        mirror.push({ id: task.fm.id, settled: 'all' });
+        names[task.fm.id] = `${task.fm.tracker} (${task.slug})`;
+      }
       // Закрытое уходит в штатный архив Kaiten — это порядок, а не находка;
       // в отчёт — только открытая задача с карточкой в архиве.
       if (!CLOSED_STATUSES.includes(task.fm.status)) report.archivedCards.push(`${task.slug} (${cardId})`);
       continue;
     }
 
-    const fromKaiten = mirrorFromCard(task, card, mapping);
+    const fromKaiten = mirrorFromCard(task, card, mapping, decision?.kind === 'replay');
     if (fromKaiten.unknownColumn) report.unknownColumns.push(`${task.slug} (${cardId})`);
-    if (fromKaiten.item) {
-      mirror.push(fromKaiten.item);
+    const settled: Partial<MirrorItem> =
+      decision?.kind === 'settled' && pending
+        ? { settled: pending.steps.length }
+        : decision?.kind === 'human'
+          ? { settled: 'all', status: decision.status, note: `карточку передвинули в Kaiten, пока он был недоступен отсюда: статус ${decision.status}` }
+          : {};
+    if (decision?.kind === 'human') report.movedByHuman.push({ ref: refOf(task), status: decision.status });
+    if (fromKaiten.item || settled.settled !== undefined) {
+      mirror.push({ ...(fromKaiten.item ?? { id: task.fm.id }), ...settled });
       names[task.fm.id] = `${task.fm.tracker} (${task.slug})`;
     }
     if (input.visual && missingVisual(task, fromKaiten.item?.status ?? task.fm.status, card, input.visual)) report.withoutVisual.push(`${task.fm.tracker} (${task.slug})`);
@@ -788,7 +858,8 @@ export function planKaitenSync(input: PlanInput): SyncPlan {
 
   // Эпики — раньше задач: новой задаче нужна уже существующая карточка эпика.
   creates.sort((a, b) => Number(b.task.fm.type === 'epic') - Number(a.task.fm.type === 'epic'));
-  const actions = [...creates, ...others];
+  // Статусы — первыми: остальное (архив, дорожка) считается по уже догнавшей карточке на следующем проходе.
+  const actions = [...replays, ...creates, ...others];
   return { actions, mirror, names, report, ...(junior ? { junior: juniorCounts(actions, junior) } : {}) };
 }
 

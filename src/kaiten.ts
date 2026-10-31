@@ -39,6 +39,8 @@ import { filterTasks, refOf, resolveTask, SearchQueryError, searchTasks, sortTas
 import {
   findTask,
   foreignCardFiles,
+  kaitenDownNote,
+  markKaitenUp,
   loadTasks,
   parse,
   printNotices,
@@ -292,6 +294,8 @@ function list(args: string[]): void {
     const which = filter.statuses?.length ? filter.statuses.join(', ') : filter.closed ? 'все' : 'открытые';
     console.log(`${where} · ${which}${values.junior ? ', можно младшему' : ''}: ${tasks.length}\n`);
     if (tasks.length > 0) console.log(formatTaskLines(index.tasks, tasks, !scope).join('\n'));
+    const waiting = tasks.filter((t) => t.fm.pending_moves).length;
+    if (waiting > 0) console.log(`\nСтатусы ещё не в карточках Kaiten: ${waiting}. Обновятся сами, когда он вернётся.`);
   }
   reportProblems(index);
 }
@@ -335,6 +339,7 @@ async function show(args: string[]): Promise<void> {
     const lines = task.body.split('\n').length;
     if (lines > LONG_TASK_LINES) console.log(`Задача большая (${lines} строк). По частям: kaiten show ${refOf(task)} --outline, --section "<раздел>", --todo.\n`);
     process.stdout.write(formatShow(index.tasks, task, attachments, junior ?? null));
+    if (task.fm.pending_moves) console.log(`\nСтатус ${task.fm.status} ещё не в карточке Kaiten: она обновится сама, когда он вернётся. Работать по задаче это не мешает.`);
     const foreign = await foreignCardFiles(ctx, task, attachments);
     if (foreign && 'unreachable' in foreign) console.log('\nФайлы карточки Kaiten не прочитаны: Kaiten не ответил.');
     else if (foreign && foreign.files.length > 0) {
@@ -529,9 +534,12 @@ async function pull(args: string[]): Promise<void> {
   console.log(`Задачи проекта ${ctx.title} ${changed ? 'обновлены' : 'уже свежие'}: открытых ${open}, всего ${index.tasks.length}.`);
   if (sent > 0) console.log(`Отправлено изменений: ${sent}.`);
   reportProblems(index);
+  markKaitenUp(ctx.store);
   const kaiten = await syncWithKaiten(ctx);
   if (kaiten && kaiten.done > 0) console.log(`Kaiten обновлён: ${kaiten.done}.`);
   for (const e of kaiten?.errors ?? []) console.error(`Kaiten: ${e.what} — ${e.message}.`);
+  const down = kaitenDownNote(ctx.store);
+  if (down) console.log(`${down[0].toUpperCase()}${down.slice(1)}. С задачами можно работать как обычно, статусы тоже меняются: карточки обновятся сами, когда он вернётся.`);
   refreshLocalCopy(ctx, copyDir);
 }
 

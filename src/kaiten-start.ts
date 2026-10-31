@@ -20,7 +20,7 @@ import { branchName, startProblem } from './core/start.js';
 import { ASSIGNABLE, assignedPriority } from './core/task-ops.js';
 import { refOf, type TaskRecord } from './core/tasks-index.js';
 import { visualApplies } from './core/visual.js';
-import { cardNotMovedNote, currentPerson, findTask, loadTasks, moveCardFirst, parse, printNotices, resolveContext, TASK_REF_HELP, UsageError } from './kaiten-cli.js';
+import { cardNotMovedNote, currentPerson, findTask, loadTasks, moveCardFirst, parse, printNotices, queuedOf, resolveContext, TASK_REF_HELP, UsageError, type MoveStep } from './kaiten-cli.js';
 import { commit } from './kaiten-write.js';
 
 export const START_HELP = `kaiten start <задача> — взять задачу в работу.
@@ -105,18 +105,19 @@ async function start(args: string[]): Promise<void> {
     return;
   }
   let card: Awaited<ReturnType<typeof moveCardFirst>>;
+  const queue: MoveStep[] = [];
   try {
     // Доска пускает «В работу» только из «Готово к работе»: неразобранную задачу карточка проходит в два шага,
     // высший приоритет (если его не было) — с первым из них.
     const priority = assignedPriority(task, assigned);
-    if (ASSIGNABLE.includes(task.fm.status)) await moveCardFirst(ctx, task, 'ready', undefined, priority);
-    card = await moveCardFirst(ctx, task, 'in-progress');
+    if (ASSIGNABLE.includes(task.fm.status)) await moveCardFirst(ctx, task, 'ready', undefined, priority, queue);
+    card = await moveCardFirst(ctx, task, 'in-progress', undefined, undefined, queue);
   } catch (error) {
     // Ветка уже заведена — так и сказать, иначе человек решит, что не сделано ничего.
     if (error instanceof UsageError) throw new UsageError(`${error.message}\nВетка ${result.branch} заведена, задача осталась в прежнем статусе.`, error.code);
     throw error;
   }
-  await commit(ctx, { kind: 'move', id: task.fm.id, status: 'in-progress', branch: result.branch, ...(assigned ? { assigned: true } : {}) }, `в работу ${refOf(task)}`);
+  await commit(ctx, { kind: 'move', id: task.fm.id, status: 'in-progress', branch: result.branch, ...(assigned ? { assigned: true } : {}), ...queuedOf(queue) }, `в работу ${refOf(task)}`);
   cardNotMovedNote(card);
   // Обязательный ответ спросит kaiten review; здесь — только удобный момент снять «было».
   if (visualFields(ctx.loaded.project) && visualApplies(task.fm.type)) {
