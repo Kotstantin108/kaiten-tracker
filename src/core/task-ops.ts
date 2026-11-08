@@ -25,6 +25,7 @@ import { CLOSED_STATUSES, FrontmatterSchema, JOURNAL_FILE, type AssessVerdict, t
 import { renderSkeleton } from './skeleton.js';
 import { parseSyncVersion, renderSyncVersion, SYNC_VERSION_FILE } from './sync-version.js';
 import { buildIndex, refOf, type TaskRecord } from './tasks-index.js';
+import { VISUAL_DIR } from './visual.js';
 
 export type Op =
   | { kind: 'new'; path: string; text: string }
@@ -41,6 +42,13 @@ export type Op =
    * хранит намерение, а не мегабайты. Файл с таким именем заменяется.
    */
   | { kind: 'attach'; id: string; name: string; blob: string }
+  /**
+   * Убрать картинки «Было / Стало» из задачи: лишние экраны сверх предела,
+   * повторы, чужие файлы в папке. Только папка `было-стало/`: её файлы в
+   * карточке сверка убирает вслед за задачей, а файл с другим именем в
+   * карточке не отличить от приложенного человеком.
+   */
+  | { kind: 'detach'; id: string; names: string[] }
   /**
    * Служебная операция синхронизации: карточки получили содержимое с этим
    * хешем (и, при создании, — свой ключ). Пакетом — один коммит на проход,
@@ -583,6 +591,18 @@ export function applyOp(op: Op, texts: TaskTexts, ctx: OpContext): OpResult {
       if (problem) return { error: problem };
       if (!/^[0-9a-f]{40,64}$/.test(op.blob)) return { error: 'содержимое вложения не найдено' };
       return { changes: [{ path: `attachments/${task.slug}/${op.name}`, text: null, blob: op.blob }], summary: `вложение ${op.name} приложено к задаче ${ref}`, warnings: [] };
+    }
+    case 'detach': {
+      if (op.names.length === 0) return { error: 'не названо, что убрать' };
+      for (const name of op.names) {
+        const problem = attachmentNameProblem(name);
+        if (problem) return { error: problem };
+        if (!name.toLowerCase().startsWith(`${VISUAL_DIR}/`)) return { error: `${name}: убрать можно только картинку «Было / Стало»` };
+      }
+      // Файла уже нет (убрали с другой машины) — git ничего не изменит, и запись выйдет пустой.
+      const changes: FileChange[] = op.names.map((name) => ({ path: `attachments/${task.slug}/${name}`, text: null }));
+      const summary = op.names.length === 1 ? `вложение ${op.names[0]} убрано из задачи ${ref}` : `из задачи ${ref} убрано вложений: ${op.names.length}`;
+      return { changes, summary, warnings: [] };
     }
     case 'edit': {
       if (contentHash(task.fm, task.body) !== op.baseHash) {

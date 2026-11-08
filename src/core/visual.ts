@@ -44,6 +44,34 @@ export function visualAttachProblem(name: string, size: number): string | null {
   return null;
 }
 
+/** Экран картинки из папки `было-стало/` (`было-стало/было-x.png` → «x»); `null` — не картинка «Было / Стало». */
+function visualScreen(name: string): string | null {
+  if (!name.toLowerCase().startsWith(`${VISUAL_DIR}/`)) return null;
+  const file = name.slice(VISUAL_DIR.length + 1);
+  return file.includes('/') ? null : (parsePicture(file)?.screen ?? null);
+}
+
+/** Команда, которой убирают лишние экраны, — для отказов. */
+export function visualDetachHint(ref: string): string {
+  return `kaiten detach ${ref} было-<экран>.png стало-<экран>.png`;
+}
+
+/**
+ * Не даст ли картинка задаче экранов больше предела — проверка `attach` до
+ * записи, а не отказ `review` после 40 приложенных скриншотов. Картинка
+ * имеющегося экрана (переснятая или вторая половина пары) предел не трогает.
+ */
+export function visualLimitProblem(name: string, attachments: readonly string[], ref: string): string | null {
+  const screen = visualScreen(name);
+  if (screen === null) return null;
+  const screens = new Set(attachments.map(visualScreen).filter((s): s is string => s !== null));
+  if (screens.has(screen) || screens.size < VISUAL_MAX_PAIRS) return null;
+  return (
+    `у задачи уже ${screens.size} экранов «Было / Стало», больше ${VISUAL_MAX_PAIRS} не прикладывается — покажите главное. ` +
+    `Переснятый экран приложите под его прежним именем; чтобы показать этот экран вместо другого, сначала уберите тот: ${visualDetachHint(ref)}`
+  );
+}
+
 /** Ответ и запись для журнала (её нет, когда ответ уже был в задаче) — или что исправить. */
 export type VisualDecision = { visual: VisualAnswer; note?: string } | { problems: string[] };
 
@@ -71,7 +99,7 @@ export function visualDecision(input: VisualInput): VisualDecision {
     const file = inDir ? name.slice(VISUAL_DIR.length + 1) : name;
     const picture = file.includes('/') ? null : parsePicture(file);
     if (inDir && picture) pictures.push({ name, ...picture });
-    else if (inDir) problems.push(`${name}: в папке ${VISUAL_DIR}/ — только было-<экран>.png и стало-<экран>.png`);
+    else if (inDir) problems.push(`${name}: в папке ${VISUAL_DIR}/ — только было-<экран>.png и стало-<экран>.png; уберите его: kaiten detach ${input.ref} ${name}`);
     // Приложили мимо папки (через --as) — такую картинку никто не увидит как «Было / Стало».
     else if (picture) problems.push(`${name} лежит не в папке ${VISUAL_DIR}/ — приложите заново: kaiten attach ${input.ref} <файл> --as ${VISUAL_DIR}/${name}`);
   }
@@ -102,11 +130,16 @@ export function visualDecision(input: VisualInput): VisualDecision {
   }
   for (const [screen, sides] of screens) {
     for (const side of ['было', 'стало'] as const) {
-      if (sides[side].length > 1) problems.push(`${side}-${screen}: файлов несколько (${sides[side].join(', ')}) — оставьте один, остальные приложите под другими именами`);
+      if (sides[side].length > 1) problems.push(`${side}-${screen}: файлов несколько (${sides[side].join(', ')}) — оставьте один, лишние уберите: kaiten detach ${input.ref} <файл>`);
     }
     if (sides.стало.length === 0) problems.push(`было-${screen} без стало-${screen} — покажите, что стало: kaiten attach ${input.ref} стало-${screen}.png`);
   }
-  if (screens.size > VISUAL_MAX_PAIRS) problems.push(`экранов «Было / Стало» ${screens.size}, больше ${VISUAL_MAX_PAIRS} — покажите главное`);
+  if (screens.size > VISUAL_MAX_PAIRS) {
+    problems.push(
+      `экранов «Было / Стало» ${screens.size}, можно не больше ${VISUAL_MAX_PAIRS} — оставьте главные, остальные уберите: ${visualDetachHint(input.ref)} ` +
+        `(можно несколько экранов за раз). Экраны: ${[...screens.keys()].join(', ')}`,
+    );
+  }
   if (problems.length > 0) return { problems };
   return { visual: 'yes', note: `«Было / Стало»: экранов ${screens.size}` };
 }

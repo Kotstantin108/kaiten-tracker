@@ -84,6 +84,7 @@ function mainHelp(): string {
   kaiten check <задача> <пункт>...   отметить пункты
   kaiten log <задача> "<текст>"      запись в журнал задачи
   kaiten attach <задача> <файл>      приложить файл к задаче
+  kaiten detach <задача> <файл>...   убрать скриншоты «Было / Стало»
   kaiten block <задача> --reason …   задача заблокирована
   kaiten cancel <задача> --reason …  отменить задачу
   kaiten edit <задача>               поправить текст задачи

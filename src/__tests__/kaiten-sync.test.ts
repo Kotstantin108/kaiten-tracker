@@ -324,9 +324,10 @@ describe('файлы карточки: вложения; журнал — ссы
       readFile: (sha) => blobs.get(sha) ?? new Uint8Array(),
       ...more,
     });
+    const detach = (slug: string, name: string) => refs.set(slug, (refs.get(slug) ?? []).filter((r) => r.name !== name));
     const names = (cardId: number) => (w.fake.cards.get(cardId)?.files ?? []).map((f) => f.name).sort();
     const text = (cardId: number, name: string) => new TextDecoder().decode(w.fake.cards.get(cardId)?.files?.find((f) => f.name === name)?.content);
-    return { attach, extra, names, text };
+    return { attach, detach, extra, names, text };
   }
 
   it('новая карточка получает вложения, журнал — ссылкой в описании; files_hash — в задачу; повтор — без записей', async () => {
@@ -397,6 +398,26 @@ describe('файлы карточки: вложения; журнал — ссы
     expect(formatPlan(dry).join('\n')).toContain('убрать прежний журнал-файл: «ЖУРНАЛ.md»');
     await w.sync(f.extra());
     expect(f.names(700)).toEqual(['R.md', 'от заказчика.pdf']);
+  });
+
+  it('картинка «Было / Стало», убранная из задачи, уходит из карточки; файлы людей и прочие вложения остаются', async () => {
+    const [path, text] = task('active/new.md', { status: 'inbox', created_via: 'agent' });
+    const w = world([[path, text]]);
+    const f = withFiles(w);
+    f.attach('new', 'было-стало/было-шапка.png', 'до');
+    f.attach('new', 'было-стало/стало-шапка.png', 'после');
+    f.attach('new', 'было-стало/стало-подвал.png', 'подвал');
+    f.attach('new', 'R.md', 'отчёт');
+    await w.sync(f.extra());
+    const card = [...w.fake.cards.values()][0];
+    card.files = [...(card.files ?? []), { id: '00000000-0000-4000-8000-000000000799', name: 'от заказчика.pdf', content: new Uint8Array([1]) }];
+    expect(f.names(card.id)).toHaveLength(5);
+
+    f.detach('new', 'было-стало/стало-подвал.png');
+    const dry = await runKaitenSync(w.fake.client, { ...w.input(), ...f.extra() }, 'details');
+    expect(formatPlan(dry).join('\n')).toContain('убрать картинок «Было / Стало» 1: «было-стало/стало-подвал.png»');
+    await w.sync(f.extra());
+    expect(f.names(card.id)).toEqual(['R.md', 'было-стало/было-шапка.png', 'было-стало/стало-шапка.png', 'от заказчика.pdf']);
   });
 
   it('карточка без files_hash: фон файлы не шлёт; --resend — открытым, закрытым — только через --only', async () => {

@@ -196,6 +196,7 @@ kaiten new "Починить…" --type bug --slug fix-… --summary "…" --std
 kaiten check PRJ-123 "тест на таймаут"   # отметить пункты
 kaiten log PRJ-123 "что сделано"         # запись в журнал
 kaiten attach PRJ-123 report.md          # приложить файл
+kaiten detach PRJ-123 было-x.png стало-x.png  # убрать скриншоты «Было / Стало» (лишний экран)
 kaiten block PRJ-123 --reason "…"        # заблокирована
 kaiten cancel PRJ-123 --reason "…"       # отменить (только не начатую)
 kaiten edit PRJ-123                      # правка текста; --stdin — для агента

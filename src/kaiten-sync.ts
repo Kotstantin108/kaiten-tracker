@@ -51,6 +51,7 @@ import {
   type TaskFile,
 } from './core/kaiten-sync-plan.js';
 import type { AdoptItem, MirrorItem, Op, SyncedItem } from './core/task-ops.js';
+import { VISUAL_DIR } from './core/visual.js';
 import { refOf, type TaskRecord } from './core/tasks-index.js';
 import { isOutage, KaitenApiError, type Card, type KaitenClient } from './kaiten-client.js';
 
@@ -150,10 +151,16 @@ export interface FilesDiff {
   duplicates: Array<{ name: string; id: string }>;
   /** Файлы, которые синхронизация больше не прикладывает (журнал до 20.10.2026), — убрать. */
   retired: Array<{ name: string; id: string }>;
+  /**
+   * Картинки «Было / Стало», которых в задаче больше нет (`kaiten detach`), —
+   * убрать. Папка `было-стало/` в карточке — только наша: так её называет
+   * лишь доставка, человек в интерфейсе файлу путь в имени не даёт.
+   */
+  detached: Array<{ name: string; id: string }>;
 }
 
 function emptyFiles(diff: FilesDiff): boolean {
-  return diff.upload.length === 0 && diff.replace.length === 0 && diff.duplicates.length === 0 && diff.retired.length === 0;
+  return diff.upload.length === 0 && diff.replace.length === 0 && diff.duplicates.length === 0 && diff.retired.length === 0 && diff.detached.length === 0;
 }
 
 function sameBytes(a: Uint8Array, b: Uint8Array): boolean {
@@ -161,9 +168,14 @@ function sameBytes(a: Uint8Array, b: Uint8Array): boolean {
 }
 
 async function diffFiles(client: KaitenClient, card: Card, wanted: readonly TaskFile[], content: (file: TaskFile) => Uint8Array): Promise<FilesDiff> {
-  const diff: FilesDiff = { upload: [], replace: [], duplicates: [], retired: [] };
-  for (const f of card.files ?? []) if (typeof f.id === 'string' && RETIRED_FILES.includes(f.name)) diff.retired.push({ name: f.name, id: f.id });
-  if ((wanted.length > 0 || diff.retired.length > 0) && !card.uid) throw new KaitenApiError('Kaiten не отдал UUID карточки — файлы не загрузить', 0, '');
+  const diff: FilesDiff = { upload: [], replace: [], duplicates: [], retired: [], detached: [] };
+  const names = new Set(wanted.map((f) => f.name));
+  for (const f of card.files ?? []) {
+    if (typeof f.id !== 'string') continue;
+    if (RETIRED_FILES.includes(f.name)) diff.retired.push({ name: f.name, id: f.id });
+    else if (f.name.toLowerCase().startsWith(`${VISUAL_DIR}/`) && !names.has(f.name)) diff.detached.push({ name: f.name, id: f.id });
+  }
+  if ((wanted.length > 0 || diff.retired.length > 0 || diff.detached.length > 0) && !card.uid) throw new KaitenApiError('Kaiten не отдал UUID карточки — файлы не загрузить', 0, '');
   const uid = card.uid ?? '';
   for (const file of wanted) {
     const ours = (card.files ?? []).filter((f): f is typeof f & { id: string } => typeof f.id === 'string' && f.name === file.name);
@@ -206,6 +218,7 @@ async function applyFiles(client: KaitenClient, card: Card, diff: FilesDiff, con
   }
   for (const { id } of diff.duplicates) await client.deleteCardFile(uid, id);
   for (const { id } of diff.retired) await client.deleteCardFile(uid, id);
+  for (const { id } of diff.detached) await client.deleteCardFile(uid, id);
 }
 
 function describe(action: SyncAction): string {
@@ -266,7 +279,7 @@ export async function runKaitenSync(client: KaitenClient, input: RunInput, mode:
           if (action.files) run.files.set(action.task.fm.id, await diffFiles(client, card, action.files.wanted, content));
         } else if (action.kind === 'create') {
           run.checklists.set(action.task.fm.id, diffChecklists(action.content.checklists, [], true));
-          if (action.files) run.files.set(action.task.fm.id, { upload: action.files.wanted, replace: [], duplicates: [], retired: [] });
+          if (action.files) run.files.set(action.task.fm.id, { upload: action.files.wanted, replace: [], duplicates: [], retired: [], detached: [] });
         }
       } catch (error) {
         run.errors.push({ what: describe(action), message: apiErrorText(error) });
@@ -450,6 +463,7 @@ function filesLine(diff: FilesDiff | undefined): string {
   if (diff.replace.length > 0) parts.push(`заменить ${diff.replace.length}: ${quoted(diff.replace.map((r) => r.file.name))}`);
   if (diff.duplicates.length > 0) parts.push(`убрать повторов ${diff.duplicates.length}: ${quoted(diff.duplicates.map((d) => d.name))}`);
   if (diff.retired.length > 0) parts.push(`убрать прежний журнал-файл: ${quoted(diff.retired.map((d) => d.name))}`);
+  if (diff.detached.length > 0) parts.push(`убрать картинок «Было / Стало» ${diff.detached.length}: ${quoted(diff.detached.map((d) => d.name))}`);
   return parts.length > 0 ? `; файлы: ${parts.join(', ')}` : '; файлы без изменений';
 }
 

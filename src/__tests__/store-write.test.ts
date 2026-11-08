@@ -278,6 +278,24 @@ describe('вложения', { timeout: GIT_TIMEOUT }, () => {
     expect(git(remote, 'ls-tree', '-r', '--name-only', 'main')).toContain('attachments/webhook/data/raw.bin');
   });
 
+  it('detach убирает картинки «Было / Стало» и уходит общим; повтор — менять нечего', () => {
+    const store = join(tmp, 'detach.git');
+    cloneStore(remote, store);
+    for (const name of ['было-стало/было-шапка.png', 'было-стало/стало-шапка.png']) {
+      recordOp(store, { kind: 'attach', id: ID, name, blob: storeBlob(store, Buffer.from(name)) }, 'вложение', DATE);
+    }
+    expect(syncStore(store)).toMatchObject({ failed: [] });
+    const tree = () => git(remote, '-c', 'core.quotepath=false', 'ls-tree', '-r', '--name-only', 'main');
+    expect(tree()).toContain('attachments/webhook/было-стало/было-шапка.png');
+
+    const detach = { kind: 'detach' as const, id: ID, names: ['было-стало/было-шапка.png', 'было-стало/стало-шапка.png'] };
+    expect(recordOp(store, detach, 'вложения', DATE)).toMatchObject({ changed: true });
+    expect(listEntries(store).some((e) => e.path.startsWith('attachments/webhook/было-стало/'))).toBe(false);
+    expect(recordOp(store, detach, 'вложения', DATE)).toMatchObject({ changed: false });
+    expect(syncStore(store)).toMatchObject({ failed: [] });
+    expect(tree()).not.toContain('было-шапка');
+  });
+
   it('объекта нет в хранилище — операция не записывается', () => {
     const store = join(tmp, 'attach.git');
     expect(recordOp(store, { kind: 'attach', id: ID, name: 'x.md', blob: 'b'.repeat(40) }, 'вложение', DATE)).toMatchObject({ error: expect.stringContaining('приложите файл ещё раз') });

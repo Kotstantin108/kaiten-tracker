@@ -14,6 +14,7 @@ import { z } from 'zod';
 
 import { juniorFields, visualFields, loadTasksRepoConfig, projectFromTasksRepo, storeNameOf, TASKS_REPO_CONFIG, type LoadedProject, type People } from './config.js';
 import { CLOSED_STATUSES, type Priority, type TaskStatus } from './core/schema.js';
+import { VISUAL_DIR } from './core/visual.js';
 import { JOURNAL_FILE, taskDate, type QueuedMoves } from './core/task-ops.js';
 import { buildIndex, belongsToProject, resolveTask, type TaskIndex, type TaskRecord } from './core/tasks-index.js';
 import { localCopyDir, loadSettings, PROJECT_FILE, readProjectFile, type KaitenSettings } from './kaiten-context.js';
@@ -269,7 +270,8 @@ export async function foreignCardFiles(ctx: Context, task: TaskRecord, attachmen
   try {
     const card = await kaiten.getCard(cardId);
     const own = new Set([...attachments, JOURNAL_FILE].map((name) => name.toLowerCase()));
-    const files = (card.files ?? []).filter((f) => !own.has(f.name.toLowerCase())).map((f) => ({ name: f.name, size: Number(f.size) }));
+    // Картинки «Было / Стало», убранные из задачи, — не людей: их уберёт сверка.
+    const files = (card.files ?? []).filter((f) => !own.has(f.name.toLowerCase()) && !f.name.toLowerCase().startsWith(`${VISUAL_DIR}/`)).map((f) => ({ name: f.name, size: Number(f.size) }));
     return { files };
   } catch {
     return { unreachable: true };

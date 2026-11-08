@@ -8,7 +8,7 @@ import { visualFields, visualSetting } from '../config.js';
 import { contentHash, parseTaskDocument, serializeTaskDocument } from '../core/document.js';
 import { FrontmatterSchema, type Frontmatter } from '../core/schema.js';
 import { applyOp } from '../core/task-ops.js';
-import { VISUAL_MAX_BYTES, visualAttachName, visualAttachProblem, visualDecision, type VisualInput } from '../core/visual.js';
+import { VISUAL_MAX_BYTES, visualAttachName, visualAttachProblem, visualDecision, visualLimitProblem, type VisualInput } from '../core/visual.js';
 
 const ID = '01K5ZQ3R8F2K9M4N7P0T5V8W3A';
 const CTX = { date: '2026-10-23', stamp: '2026-10-23 10:15:00 +03:00' };
@@ -57,16 +57,59 @@ describe('ответ на review и done', () => {
     const result = decide(['было-стало/было-меню.png', 'было-стало/было-шапка.png', 'было-стало/стало-шапка.png', 'было-стало/стало-шапка.jpg', 'было-подвал.png', 'было-стало/заметки.md']);
     expect('problems' in result && result.problems).toEqual([
       'было-подвал.png лежит не в папке было-стало/ — приложите заново: kaiten attach PRJ-1 <файл> --as было-стало/было-подвал.png',
-      'было-стало/заметки.md: в папке было-стало/ — только было-<экран>.png и стало-<экран>.png',
+      'было-стало/заметки.md: в папке было-стало/ — только было-<экран>.png и стало-<экран>.png; уберите его: kaiten detach PRJ-1 было-стало/заметки.md',
       'было-меню без стало-меню — покажите, что стало: kaiten attach PRJ-1 стало-меню.png',
-      'стало-шапка: файлов несколько (было-стало/стало-шапка.png, было-стало/стало-шапка.jpg) — оставьте один, остальные приложите под другими именами',
+      'стало-шапка: файлов несколько (было-стало/стало-шапка.png, было-стало/стало-шапка.jpg) — оставьте один, лишние уберите: kaiten detach PRJ-1 <файл>',
     ]);
   });
 
-  it('больше 10 экранов — отказ', () => {
+  it('больше 10 экранов — отказ называет команду, которой убрать лишние, и экраны', () => {
     const many = Array.from({ length: 11 }, (_, i) => `было-стало/стало-экран${i}.png`);
     const result = decide(many);
-    expect('problems' in result && result.problems).toEqual(['экранов «Было / Стало» 11, больше 10 — покажите главное']);
+    const problems = 'problems' in result ? result.problems : [];
+    expect(problems).toHaveLength(1);
+    expect(problems[0]).toContain('экранов «Было / Стало» 11, можно не больше 10');
+    expect(problems[0]).toContain('kaiten detach PRJ-1 было-<экран>.png стало-<экран>.png');
+    expect(problems[0]).toContain('Экраны: экран0, экран1');
+  });
+});
+
+describe('предел экранов — до записи, в attach', () => {
+  const ten = Array.from({ length: 10 }, (_, i) => [`было-стало/было-э${i}.png`, `было-стало/стало-э${i}.png`]).flat();
+
+  it('11-й экран — отказ с командой detach; до предела — можно', () => {
+    expect(visualLimitProblem('было-стало/было-новый.png', ten, 'PRJ-1')).toContain('уже 10 экранов');
+    expect(visualLimitProblem('было-стало/было-новый.png', ten, 'PRJ-1')).toContain('kaiten detach PRJ-1');
+    expect(visualLimitProblem('было-стало/было-новый.png', ten.slice(0, 18), 'PRJ-1')).toBeNull();
+  });
+
+  it('переснятый экран и вторая половина пары предел не трогают; прочие вложения не считаются', () => {
+    expect(visualLimitProblem('было-стало/Стало-Э3.jpg', ten, 'PRJ-1')).toBeNull();
+    const half = [...ten.slice(0, 18), 'было-стало/было-э9.png'];
+    expect(visualLimitProblem('было-стало/стало-э9.png', half, 'PRJ-1')).toBeNull();
+    expect(visualLimitProblem('report.md', ten, 'PRJ-1')).toBeNull();
+    expect(visualLimitProblem('было-стало/было-новый.png', [...ten.slice(0, 18), 'report.md', 'было-стало/заметки.md'], 'PRJ-1')).toBeNull();
+  });
+});
+
+describe('detach', () => {
+  const fm = FrontmatterSchema.parse({ id: ID, title: 'Поменять шапку', summary: 'Шапка понятнее.', type: 'story', status: 'in-progress', repo: 'acme-app', created: '2026-10-01', created_by: 'alice', updated: '2026-10-01' });
+  const texts = () => new Map([['active/header.md', serializeTaskDocument(fm, '\n## Критерии готовности\n\n- [x] Шапка\n')]]);
+
+  it('убирает картинки из вложений задачи, задачу не трогает', () => {
+    const result = applyOp({ kind: 'detach', id: ID, names: ['было-стало/было-x.png', 'было-стало/стало-x.png'] }, texts(), CTX);
+    if ('error' in result) throw new Error(result.error);
+    expect(result.changes).toEqual([
+      { path: 'attachments/header/было-стало/было-x.png', text: null },
+      { path: 'attachments/header/было-стало/стало-x.png', text: null },
+    ]);
+    expect(result.summary).toContain('убрано вложений: 2');
+  });
+
+  it('только папка было-стало/: прочие вложения так не убрать', () => {
+    expect(applyOp({ kind: 'detach', id: ID, names: ['report.md'] }, texts(), CTX)).toMatchObject({ error: expect.stringContaining('только картинку «Было / Стало»') });
+    expect(applyOp({ kind: 'detach', id: ID, names: ['было-стало/../report.md'] }, texts(), CTX)).toHaveProperty('error');
+    expect(applyOp({ kind: 'detach', id: ID, names: [] }, texts(), CTX)).toHaveProperty('error');
   });
 });
 

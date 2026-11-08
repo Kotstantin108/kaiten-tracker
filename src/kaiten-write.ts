@@ -1,5 +1,5 @@
 /**
- * Команды записи CLI `kaiten`: `new`, `check`, `log`, `block`, `cancel`,
+ * Команды записи CLI `kaiten`: `new`, `check`, `log`, `attach`, `detach`, `block`, `cancel`,
  * `review`, `done`, `edit` (`start` — в `kaiten-start.ts`). Каждая: проверить задачу → записать операцию локально (журнал +
  * коммит, `store-write.ts`) → обновить копию для чтения → отправить общим в
  * фоне. Агент не ждёт сеть; что не применилось при отправке, скажет
@@ -24,7 +24,7 @@ import { TASK_TYPES, type TaskType, type VisualAnswer } from './core/schema.js';
 import { ATTACHMENT_MAX_BYTES, attachmentNameProblem, BLOCKABLE, CANCELLABLE, hasWorkNote, matchItem, moveProblem, newTaskText, slugify, uniqueSlug, writesLog, type Op } from './core/task-ops.js';
 import { refOf, type TaskRecord } from './core/tasks-index.js';
 import { ulid } from './core/ulid.js';
-import { visualApplies, visualAttachName, visualAttachProblem, visualDecision } from './core/visual.js';
+import { VISUAL_DIR, VISUAL_MAX_PAIRS, visualApplies, visualAttachName, visualAttachProblem, visualDecision, visualLimitProblem } from './core/visual.js';
 import {
   attachmentRefs,
   currentPerson,
@@ -124,7 +124,8 @@ ${TASK_REF_HELP}
 задачи видны человеку файлами в карточке Kaiten — переносить текст
 вложения в постановку не нужно. Читать вложения — kaiten files <задача>.
 Скриншоты «Было / Стало» (было-<экран>.png, стало-<экран>.png; png или jpg,
-до 1 МБ) сами ложатся в папку было-стало/.
+до 1 МБ, не больше ${VISUAL_MAX_PAIRS} экранов на задачу) сами ложатся в папку
+было-стало/. Убрать лишний — kaiten detach.
 ${TASK_REF_HELP}
 
 Флаги:
@@ -139,6 +140,17 @@ ${TASK_REF_HELP}
   kaiten attach PRJ-123 HANDOFF.md --stdin <<'EOF'
   …текст…
   EOF
+`,
+  detach: `kaiten detach <задача> <картинка>... — убрать скриншоты «Было / Стало» из задачи.
+
+Лишние экраны (их не больше ${VISUAL_MAX_PAIRS} на задачу), повторы, не те файлы
+в папке было-стало/. Из карточки Kaiten они уходят вслед за задачей. Можно
+несколько за раз; экран — это пара было-<экран>.png и стало-<экран>.png.
+Какие картинки есть — kaiten files <задача>.
+${TASK_REF_HELP}
+
+Пример:
+  kaiten detach PRJ-123 было-форма-телефон.png стало-форма-телефон.png
 `,
   log: `kaiten log <задача> "<текст>" — запись в журнал задачи.
 
@@ -419,7 +431,11 @@ async function attach(args: string[]): Promise<void> {
     throw new UsageError(`Файл больше ${ATTACHMENT_MAX_BYTES / 1024 / 1024} МБ — такие к задаче не прикладываются: положите его в общее хранилище файлов и дайте ссылку в задаче.`, 1);
   }
   const ctx = begin();
-  const task = findTask(loadTasks(ctx).index, ref);
+  const { index, entries } = loadTasks(ctx);
+  const task = findTask(index, ref);
+  const own = (attachmentRefs(entries).get(task.slug) ?? []).map((a) => a.name);
+  const limitProblem = visualLimitProblem(name, own, refOf(task));
+  if (limitProblem) throw new UsageError(`Вложение «${name}» не приложено: ${limitProblem}.`, 1);
   let blob: string;
   try {
     blob = storeBlob(ctx.store, content);
@@ -428,6 +444,33 @@ async function attach(args: string[]): Promise<void> {
   }
   await commit(ctx, { kind: 'attach', id: task.fm.id, name, blob }, `вложение ${name} задачи ${refOf(task)}`);
   console.log(`Прочитать: kaiten files ${refOf(task)} ${name}`);
+}
+
+async function detach(args: string[]): Promise<void> {
+  const { positionals } = parse('detach', args, {});
+  const ref = taskArg(positionals, 'detach');
+  const given = positionals.slice(1);
+  if (given.length === 0) throw new UsageError('Укажите, что убрать: kaiten detach PRJ-123 было-форма.png стало-форма.png');
+  const ctx = begin();
+  const { index, entries } = loadTasks(ctx);
+  const task = findTask(index, ref);
+  const own = (attachmentRefs(entries).get(task.slug) ?? []).map((a) => a.name);
+  const names: string[] = [];
+  const problems: string[] = [];
+  for (const raw of given) {
+    const asked = raw.replaceAll('\\', '/');
+    const wanted = (asked.includes('/') ? asked : `${VISUAL_DIR}/${asked}`).toLowerCase();
+    const found = own.find((name) => name.toLowerCase() === wanted);
+    if (!wanted.startsWith(`${VISUAL_DIR}/`)) problems.push(`${raw}: убрать можно только картинку «Было / Стало» из папки ${VISUAL_DIR}/`);
+    else if (!found) problems.push(`${raw}: у задачи такой картинки нет`);
+    else if (!names.includes(found)) names.push(found);
+  }
+  if (problems.length > 0) {
+    const list = own.filter((name) => name.toLowerCase().startsWith(`${VISUAL_DIR}/`));
+    const have = list.length > 0 ? `\nКартинки задачи: ${list.map((name) => name.slice(VISUAL_DIR.length + 1)).join(', ')}` : `\nУ задачи нет картинок «Было / Стало».`;
+    throw new UsageError(`Ничего не убрано:${problems.map((p) => `\n  - ${p}`).join('')}${have}`, 1);
+  }
+  await commit(ctx, { kind: 'detach', id: task.fm.id, names }, `${names.length === 1 ? 'вложение' : 'вложения'} задачи ${refOf(task)}`);
 }
 
 async function log(args: string[]): Promise<void> {
@@ -591,6 +634,7 @@ export const WRITE_COMMANDS: Record<string, (args: string[]) => Promise<void>> =
   new: newTask,
   check,
   attach,
+  detach,
   log,
   block: (args) => withReason('block', args),
   cancel: (args) => withReason('cancel', args),
