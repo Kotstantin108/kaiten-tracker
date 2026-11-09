@@ -24,7 +24,7 @@ import { TASK_TYPES, type TaskType, type VisualAnswer } from './core/schema.js';
 import { ATTACHMENT_MAX_BYTES, attachmentNameProblem, BLOCKABLE, CANCELLABLE, hasWorkNote, matchItem, moveProblem, newTaskText, slugify, uniqueSlug, writesLog, type Op } from './core/task-ops.js';
 import { refOf, type TaskRecord } from './core/tasks-index.js';
 import { ulid } from './core/ulid.js';
-import { VISUAL_DIR, VISUAL_MAX_PAIRS, visualApplies, visualAttachName, visualAttachProblem, visualDecision, visualLimitProblem } from './core/visual.js';
+import { detachTarget, isVisualAttachment, VISUAL_MAX_PAIRS, visualApplies, visualAttachName, visualAttachProblem, visualDecision, visualLimitProblem } from './core/visual.js';
 import {
   attachmentRefs,
   currentPerson,
@@ -144,9 +144,12 @@ ${TASK_REF_HELP}
   detach: `kaiten detach <задача> <картинка>... — убрать скриншоты «Было / Стало» из задачи.
 
 Лишние экраны (их не больше ${VISUAL_MAX_PAIRS} на задачу), повторы, не те файлы
-в папке было-стало/. Из карточки Kaiten они уходят вслед за задачей. Можно
-несколько за раз; экран — это пара было-<экран>.png и стало-<экран>.png.
-Какие картинки есть — kaiten files <задача>.
+в папке было-стало/, картинки было-…/стало-…, приложенные мимо папки. Имя —
+как в kaiten files <задача>: было-x.png — сначала файл с этим именем вне папки,
+а если его нет — из было-стало/; было-стало/было-x.png — только из папки.
+Можно несколько за раз; экран — это пара было-<экран>.png и стало-<экран>.png.
+Из карточки Kaiten вслед за задачей уходят картинки папки было-стало/;
+картинка мимо папки там остаётся — её, если мешает, убирают в Kaiten.
 ${TASK_REF_HELP}
 
 Пример:
@@ -457,20 +460,18 @@ async function detach(args: string[]): Promise<void> {
   const own = (attachmentRefs(entries).get(task.slug) ?? []).map((a) => a.name);
   const names: string[] = [];
   const problems: string[] = [];
-  for (const raw of given) {
-    const asked = raw.replaceAll('\\', '/');
-    const wanted = (asked.includes('/') ? asked : `${VISUAL_DIR}/${asked}`).toLowerCase();
-    const found = own.find((name) => name.toLowerCase() === wanted);
-    if (!wanted.startsWith(`${VISUAL_DIR}/`)) problems.push(`${raw}: убрать можно только картинку «Было / Стало» из папки ${VISUAL_DIR}/`);
-    else if (!found) problems.push(`${raw}: у задачи такой картинки нет`);
-    else if (!names.includes(found)) names.push(found);
+  for (const asked of given) {
+    const target = detachTarget(asked, own);
+    if ('problem' in target) problems.push(target.problem);
+    else if (!names.includes(target.name)) names.push(target.name);
   }
   if (problems.length > 0) {
-    const list = own.filter((name) => name.toLowerCase().startsWith(`${VISUAL_DIR}/`));
-    const have = list.length > 0 ? `\nКартинки задачи: ${list.map((name) => name.slice(VISUAL_DIR.length + 1)).join(', ')}` : `\nУ задачи нет картинок «Было / Стало».`;
+    const list = own.filter(isVisualAttachment);
+    const have = list.length > 0 ? `\nКартинки задачи: ${list.join(', ')}` : `\nУ задачи нет картинок «Было / Стало».`;
     throw new UsageError(`Ничего не убрано:${problems.map((p) => `\n  - ${p}`).join('')}${have}`, 1);
   }
   await commit(ctx, { kind: 'detach', id: task.fm.id, names }, `${names.length === 1 ? 'вложение' : 'вложения'} задачи ${refOf(task)}`);
+  if (names.length > 1) for (const name of names) console.log(`  убрано: ${name}`);
 }
 
 async function log(args: string[]): Promise<void> {

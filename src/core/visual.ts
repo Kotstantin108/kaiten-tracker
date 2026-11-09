@@ -44,6 +44,29 @@ export function visualAttachProblem(name: string, size: number): string | null {
   return null;
 }
 
+/**
+ * Вложение — картинка «Было / Стало»: в папке `было-стало/` или с именем
+ * `было-…`/`стало-…` вне её (приложенная мимо папки через `--as`). Такие
+ * убирает `kaiten detach`: на картинку мимо папки отказывает `review`.
+ */
+export function isVisualAttachment(name: string): boolean {
+  return name.toLowerCase().startsWith(`${VISUAL_DIR}/`) || parsePicture(name.split('/').at(-1) ?? '') !== null;
+}
+
+/**
+ * Какое вложение задачи назвали в `kaiten detach`. Имя как есть — первым:
+ * `было-x.png` убирает копию мимо папки, а не её двойника в `было-стало/`
+ * (09.11.2026 он убрал правильную); нет такой — картинку из папки.
+ */
+export function detachTarget(asked: string, attachments: readonly string[]): { name: string } | { problem: string } {
+  const normalized = asked.replaceAll('\\', '/');
+  const byName = (wanted: string) => attachments.find((name) => name.toLowerCase() === wanted.toLowerCase());
+  const found = byName(normalized) ?? (normalized.includes('/') ? undefined : byName(`${VISUAL_DIR}/${normalized}`));
+  if (!found) return { problem: `${asked}: у задачи такого вложения нет` };
+  if (!isVisualAttachment(found)) return { problem: `${asked}: убрать можно только картинку «Было / Стало»` };
+  return { name: found };
+}
+
 /** Экран картинки из папки `было-стало/` (`было-стало/было-x.png` → «x»); `null` — не картинка «Было / Стало». */
 function visualScreen(name: string): string | null {
   if (!name.toLowerCase().startsWith(`${VISUAL_DIR}/`)) return null;
@@ -101,7 +124,14 @@ export function visualDecision(input: VisualInput): VisualDecision {
     if (inDir && picture) pictures.push({ name, ...picture });
     else if (inDir) problems.push(`${name}: в папке ${VISUAL_DIR}/ — только было-<экран>.png и стало-<экран>.png; уберите его: kaiten detach ${input.ref} ${name}`);
     // Приложили мимо папки (через --as) — такую картинку никто не увидит как «Было / Стало».
-    else if (picture) problems.push(`${name} лежит не в папке ${VISUAL_DIR}/ — приложите заново: kaiten attach ${input.ref} <файл> --as ${VISUAL_DIR}/${name}`);
+    else if (picture) {
+      const twin = input.attachments.some((other) => other.toLowerCase() === `${VISUAL_DIR}/${file}`.toLowerCase());
+      problems.push(
+        twin
+          ? `${name} — лишняя копия вне папки ${VISUAL_DIR}/ (в папке такая есть), уберите её: kaiten detach ${input.ref} ${name}`
+          : `${name} лежит не в папке ${VISUAL_DIR}/ — приложите заново: kaiten attach ${input.ref} <файл> --as ${VISUAL_DIR}/${name}, а эту уберите: kaiten detach ${input.ref} ${name}`,
+      );
+    }
   }
 
   if (input.noVisual !== undefined) {

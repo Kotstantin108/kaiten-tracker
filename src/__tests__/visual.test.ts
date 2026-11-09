@@ -8,7 +8,7 @@ import { visualFields, visualSetting } from '../config.js';
 import { contentHash, parseTaskDocument, serializeTaskDocument } from '../core/document.js';
 import { FrontmatterSchema, type Frontmatter } from '../core/schema.js';
 import { applyOp } from '../core/task-ops.js';
-import { VISUAL_MAX_BYTES, visualAttachName, visualAttachProblem, visualDecision, visualLimitProblem, type VisualInput } from '../core/visual.js';
+import { detachTarget, isVisualAttachment, VISUAL_MAX_BYTES, visualAttachName, visualAttachProblem, visualDecision, visualLimitProblem, type VisualInput } from '../core/visual.js';
 
 const ID = '01K5ZQ3R8F2K9M4N7P0T5V8W3A';
 const CTX = { date: '2026-10-23', stamp: '2026-10-23 10:15:00 +03:00' };
@@ -56,11 +56,16 @@ describe('ответ на review и done', () => {
   it('одно «было», два файла одной стороны, картинка мимо папки, лишнее в папке — всё одним списком', () => {
     const result = decide(['было-стало/было-меню.png', 'было-стало/было-шапка.png', 'было-стало/стало-шапка.png', 'было-стало/стало-шапка.jpg', 'было-подвал.png', 'было-стало/заметки.md']);
     expect('problems' in result && result.problems).toEqual([
-      'было-подвал.png лежит не в папке было-стало/ — приложите заново: kaiten attach PRJ-1 <файл> --as было-стало/было-подвал.png',
+      'было-подвал.png лежит не в папке было-стало/ — приложите заново: kaiten attach PRJ-1 <файл> --as было-стало/было-подвал.png, а эту уберите: kaiten detach PRJ-1 было-подвал.png',
       'было-стало/заметки.md: в папке было-стало/ — только было-<экран>.png и стало-<экран>.png; уберите его: kaiten detach PRJ-1 было-стало/заметки.md',
       'было-меню без стало-меню — покажите, что стало: kaiten attach PRJ-1 стало-меню.png',
       'стало-шапка: файлов несколько (было-стало/стало-шапка.png, было-стало/стало-шапка.jpg) — оставьте один, лишние уберите: kaiten detach PRJ-1 <файл>',
     ]);
+  });
+
+  it('копия вне папки при такой же в папке — отказ называет detach этой копии', () => {
+    const result = decide(['было-x.png', 'было-стало/было-x.png', 'было-стало/стало-x.png']);
+    expect('problems' in result && result.problems).toEqual(['было-x.png — лишняя копия вне папки было-стало/ (в папке такая есть), уберите её: kaiten detach PRJ-1 было-x.png']);
   });
 
   it('больше 10 экранов — отказ называет команду, которой убрать лишние, и экраны', () => {
@@ -106,7 +111,21 @@ describe('detach', () => {
     expect(result.summary).toContain('убрано вложений: 2');
   });
 
-  it('только папка было-стало/: прочие вложения так не убрать', () => {
+  it('какой файл убрать: имя как есть — первым, иначе из папки; прочие вложения — отказ', () => {
+    const own = ['было-x.png', 'было-стало/было-x.png', 'было-стало/стало-x.png', 'report.md'];
+    expect(detachTarget('было-x.png', own)).toEqual({ name: 'было-x.png' });
+    expect(detachTarget('было-стало/было-x.png', own)).toEqual({ name: 'было-стало/было-x.png' });
+    expect(detachTarget('Стало-X.png', own)).toEqual({ name: 'было-стало/стало-x.png' });
+    expect(detachTarget('report.md', own)).toEqual({ problem: expect.stringContaining('только картинку') });
+    expect(detachTarget('было-y.png', own)).toEqual({ problem: expect.stringContaining('такого вложения нет') });
+  });
+
+  it('картинку мимо папки убрать можно, прочие вложения — нет', () => {
+    const stray = applyOp({ kind: 'detach', id: ID, names: ['было-x.png', 'shots/Стало-Y.JPG'] }, texts(), CTX);
+    if ('error' in stray) throw new Error(stray.error);
+    expect(stray.changes.map((c) => c.path)).toEqual(['attachments/header/было-x.png', 'attachments/header/shots/Стало-Y.JPG']);
+    expect(isVisualAttachment('было-стало/заметки.md')).toBe(true);
+    expect(isVisualAttachment('report.png')).toBe(false);
     expect(applyOp({ kind: 'detach', id: ID, names: ['report.md'] }, texts(), CTX)).toMatchObject({ error: expect.stringContaining('только картинку «Было / Стало»') });
     expect(applyOp({ kind: 'detach', id: ID, names: ['было-стало/../report.md'] }, texts(), CTX)).toHaveProperty('error');
     expect(applyOp({ kind: 'detach', id: ID, names: [] }, texts(), CTX)).toHaveProperty('error');

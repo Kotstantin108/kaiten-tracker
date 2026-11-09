@@ -25,7 +25,7 @@ import { CLOSED_STATUSES, FrontmatterSchema, JOURNAL_FILE, type AssessVerdict, t
 import { renderSkeleton } from './skeleton.js';
 import { parseSyncVersion, renderSyncVersion, SYNC_VERSION_FILE } from './sync-version.js';
 import { buildIndex, refOf, type TaskRecord } from './tasks-index.js';
-import { VISUAL_DIR } from './visual.js';
+import { isVisualAttachment } from './visual.js';
 
 export type Op =
   | { kind: 'new'; path: string; text: string }
@@ -44,9 +44,10 @@ export type Op =
   | { kind: 'attach'; id: string; name: string; blob: string }
   /**
    * Убрать картинки «Было / Стало» из задачи: лишние экраны сверх предела,
-   * повторы, чужие файлы в папке. Только папка `было-стало/`: её файлы в
-   * карточке сверка убирает вслед за задачей, а файл с другим именем в
-   * карточке не отличить от приложенного человеком.
+   * повторы, чужие файлы в папке, картинки `было-…`/`стало-…` мимо папки (на
+   * них отказывает `review`). Прочие вложения — нет: файлы папки `было-стало/`
+   * сверка убирает и из карточки, а файл с другим именем в карточке не
+   * отличить от приложенного человеком — он там остаётся.
    */
   | { kind: 'detach'; id: string; names: string[] }
   /**
@@ -597,7 +598,7 @@ export function applyOp(op: Op, texts: TaskTexts, ctx: OpContext): OpResult {
       for (const name of op.names) {
         const problem = attachmentNameProblem(name);
         if (problem) return { error: problem };
-        if (!name.toLowerCase().startsWith(`${VISUAL_DIR}/`)) return { error: `${name}: убрать можно только картинку «Было / Стало»` };
+        if (!isVisualAttachment(name)) return { error: `${name}: убрать можно только картинку «Было / Стало»` };
       }
       // Файла уже нет (убрали с другой машины) — git ничего не изменит, и запись выйдет пустой.
       const changes: FileChange[] = op.names.map((name) => ({ path: `attachments/${task.slug}/${name}`, text: null }));
