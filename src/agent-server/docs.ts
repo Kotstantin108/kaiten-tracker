@@ -307,6 +307,7 @@ type FilesArg = Array<{ name: string; content_base64: string }> | undefined;
 interface BlockPrep {
   uploads: Upload[];
   added: number;
+  addedLabels: string[];
 }
 
 /** Блоки новых разделов: проверка по правилам папки до любой записи. */
@@ -314,8 +315,11 @@ function prepareBlocks(sections: PMNode[][], rules: FolderRules, existing: PMNod
   const decoded = decodeFiles(files, problems);
   const resolved = resolveBlocks(sections, { rules: rules.blocks, existing: collectBlocks(existing), files: decoded });
   problems.push(...resolved.problems);
-  return { uploads: resolved.uploads, added: resolved.added };
+  return { uploads: resolved.uploads, added: resolved.added, addedLabels: resolved.addedLabels };
 }
+
+/** Новые блоки в сводке правки — доменом: в разнице «было → станет» ссылки показаны только доменом. */
+const addedNote = (prep: BlockPrep): string => (prep.addedLabels.length ? `; новые блоки: ${prep.addedLabels.join(', ')}` : '');
 
 /** Новый блок при `blocks.level: confirm` — правка с подтверждением, даже если уровень действия «свободно». */
 function withBlocks(level: Level, rules: FolderRules, prep: BlockPrep): Level {
@@ -582,7 +586,7 @@ export function registerDocTools(server: McpServer, deps: DocDeps): void {
         if (page.header) page.header.updated = `${today()}, ${user.name}`;
         addHistory(page, `${today()} — ${user.name}: дописан раздел «${args.section.trim()}» по просьбе «${args.user_request}»`);
         const level = withBlocks(levelFor('append', rules, loaded.page), rules, blocks);
-        return writeOrAsk(deps, level, loaded, { uid: loaded.doc.uid, baseUpdated, content: renderPage(page) }, `в «${loaded.doc.title}» дописан раздел «${args.section.trim()}»${uploadNote(blocks.uploads, level, loaded)}`, user);
+        return writeOrAsk(deps, level, loaded, { uid: loaded.doc.uid, baseUpdated, content: renderPage(page) }, `в «${loaded.doc.title}» дописан раздел «${args.section.trim()}»${addedNote(blocks)}${uploadNote(blocks.uploads, level, loaded)}`, user);
       }),
   );
 
@@ -622,7 +626,7 @@ export function registerDocTools(server: McpServer, deps: DocDeps): void {
           level,
           loaded,
           { uid: loaded.doc.uid, baseUpdated, content: renderPage(page) },
-          `в «${loaded.doc.title}» заменён раздел «${section.title}»${uploadNote(blocks.uploads, level, loaded)}`,
+          `в «${loaded.doc.title}» заменён раздел «${section.title}»${addedNote(blocks)}${uploadNote(blocks.uploads, level, loaded)}`,
           user,
         );
       }),

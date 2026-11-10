@@ -331,6 +331,17 @@ describe('инструменты документов с блоками', () => 
     expect((await tool(f, 'append_to_section', { doc: uid, section: 'Текст', text: 'ещё текст', user_request: 'x' })).text).toMatch(/^Готово/);
   });
 
+  it('другая ссылка на том же домене — в разнице не видна, поэтому названа в сводке подтверждения', async () => {
+    const f = fake();
+    await tool(f, 'create_doc', { folder: STRICT, title: 'Строгая страница', sections: { График: `@[embed](${CHART})` }, user_request: 'x' });
+    const uid = f.docs[f.docs.length - 1].uid;
+    const reply = await tool(f, 'replace_section', { doc: uid, section: 'График', text: '@[embed](https://charts.example.com/other/#key=OTHER-SECRET)', user_request: 'смени график' });
+    expect(reply.text).toMatch(/НУЖНО ПОДТВЕРЖДЕНИЕ ЧЕЛОВЕКА/);
+    const pending = await loadPending(f.store, SECRET, /\/confirm\/([A-Za-z0-9_-]+)/.exec(reply.text)?.[1] ?? '');
+    expect(pending?.summary).toMatch(/новые блоки: встроенный блок с charts\.example\.com/);
+    expect(JSON.stringify([pending?.summary, pending?.before, pending?.after])).not.toMatch(/SECRET/);
+  });
+
   it('картинка в существующую страницу: загрузка, потом запись; прочитанная картинка возвращается тем же узлом', async () => {
     const f = fake();
     const reply = await tool(f, 'append_to_section', { doc: PAGE, section: 'Цифры', text: '![](file:график.png)', files: [{ name: 'график.png', content_base64: b64(PNG) }], user_request: 'x' });

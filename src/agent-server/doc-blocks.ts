@@ -172,6 +172,11 @@ export interface ResolvedBlocks {
   uploads: Upload[];
   /** Сколько блоков новых (не было на странице). */
   added: number;
+  /**
+   * Новые блоки — доменом или именем файла. В подтверждении ссылки видны
+   * только доменом, и смена ссылки на том же домене иначе была бы незаметна.
+   */
+  addedLabels: string[];
 }
 
 function domainAllowed(host: string, domains: readonly string[]): boolean {
@@ -217,6 +222,7 @@ export function resolveBlocks(sections: PMNode[][], ctx: { rules: BlocksRules | 
   const problems: string[] = [];
   const uploads: Upload[] = [];
   const used = new Set<string>();
+  const addedLabels: string[] = [];
   let added = 0;
   for (const nodes of sections) for (let i = 0; i < nodes.length; i++) {
     const node = nodes[i];
@@ -239,6 +245,7 @@ export function resolveBlocks(sections: PMNode[][], ctx: { rules: BlocksRules | 
       if (!ctx.rules?.images) problems.push(`картинка «${ref}»: ${ctx.rules ? 'картинки в этой папке не разрешены' : NO_RULES}`);
       problems.push(...imageFileProblems(file.name, file.bytes));
       uploads.push({ file, node });
+      addedLabels.push(`картинка «${file.name}»`);
       added++;
       continue;
     }
@@ -252,12 +259,13 @@ export function resolveBlocks(sections: PMNode[][], ctx: { rules: BlocksRules | 
     }
     const problem = urlProblem(src, kind, ctx.rules);
     if (problem) problems.push(problem);
+    addedLabels.push(`${kind === 'image' ? 'картинка' : isYouTube(hostOf(src)) ? 'видео' : 'встроенный блок'} с ${hostOf(src) ?? '?'}`);
     added++;
   }
   for (const file of ctx.files) {
     if (!used.has(file.name.toLowerCase())) problems.push(`файл «${file.name}» передан, но на него нет строки ![](file:${file.name})`);
   }
-  return { problems, uploads, added };
+  return { problems, uploads, added, addedLabels };
 }
 
 /** Загрузка файлов картинок в документ — после всех проверок. */
