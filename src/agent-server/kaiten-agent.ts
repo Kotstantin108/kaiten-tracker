@@ -7,7 +7,7 @@
 
 import { z } from 'zod';
 
-import { type Card, type CardType, CardTypeSchema, type CustomProperty, KaitenApiError, KaitenClient, type SelectValue, type Space, type SpaceUser } from '../kaiten-client.js';
+import { type Card, type CardType, CardTypeSchema, type CustomProperty, KaitenApiError, KaitenClient, mimeOf, type SelectValue, type Space, type SpaceUser } from '../kaiten-client.js';
 import { type BoardRules, coverageProblems, normalizeTitle, type ParsedDescription, parseBoardDescription, typeRule } from './board-rules.js';
 import { applicable, demandedProperties, parseRestrictions, type Restriction } from './restrictions.js';
 
@@ -69,6 +69,18 @@ export class AgentKaiten extends KaitenClient {
     return this.request('POST', '/documents', { body, schema: DocumentSchema });
   }
 
+  /**
+   * Файл в документ: `POST /documents/{uid}/files`, поле `file` (живьём 10.11.2026).
+   * `url` ответа — постоянный адрес вида `https://files/…`: его и кладут в `src` картинки.
+   */
+  async uploadDocumentFile(docUid: string, name: string, content: Uint8Array): Promise<DocumentFile> {
+    if (!DOC_UUID.test(docUid)) throw new KaitenApiError(`файлы документа — только по UUID, а не «${docUid}»`, 0, '');
+    const form = new FormData();
+    const type = mimeOf(name);
+    form.append('file', new Blob([new Uint8Array(content)], type ? { type } : {}), name);
+    return this.request('POST', `/documents/${docUid}/files`, { form, schema: DocumentFileSchema });
+  }
+
   /** Дети узла дерева (пространства, папки, документа). */
   async treeChildren(parentUid: string): Promise<TreeNode[]> {
     return this.listAll('/tree-entities', TreeNodeSchema, { parent_entity_uid: parentUid, levels_count: 1 });
@@ -96,6 +108,11 @@ const DocumentSchema = z
   })
   .passthrough();
 export type KaitenDocument = z.infer<typeof DocumentSchema>;
+
+const DOC_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+const DocumentFileSchema = z.object({ id: z.string(), url: z.string() }).passthrough();
+export type DocumentFile = z.infer<typeof DocumentFileSchema>;
 
 const TreeNodeSchema = z
   .object({

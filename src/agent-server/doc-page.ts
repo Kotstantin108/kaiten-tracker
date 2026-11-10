@@ -10,6 +10,7 @@
 import { z } from 'zod';
 
 import { normalizeTitle } from './board-rules.js';
+import { BlocksRulesSchema } from './doc-blocks.js';
 import { heading, inline, type PMNode, plainText } from './prosemirror.js';
 
 export const HISTORY = 'История изменений';
@@ -159,6 +160,8 @@ export const FolderRulesSchema = z
       .object({ append: Level.default('free'), replace: Level.default('confirm'), locked_when_active: z.boolean().default(false) })
       .strict()
       .default({ append: 'free', replace: 'confirm', locked_when_active: false }),
+    /** Встроенные блоки, видео и картинки; нет ключа — нельзя (doc-blocks.ts). */
+    blocks: BlocksRulesSchema.optional(),
   })
   .strict();
 export type FolderRules = z.infer<typeof FolderRulesSchema>;

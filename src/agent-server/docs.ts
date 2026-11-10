@@ -36,7 +36,8 @@ import {
 import type { AgentKaiten, Catalog, KaitenDocument } from './kaiten-agent.js';
 import { openData, sealData } from './key.js';
 import { dropPending as drop, pendingKind, readPending, savePending } from './pending.js';
-import { docOf, markdownToNodes, nodesToMarkdown, parseDocData, type PMNode, plainText } from './prosemirror.js';
+import { allowedKinds, blocksSummary, collectBlocks, decodeFiles, IMAGE_FILE_TYPES, resolveBlocks, type Upload, uploadBlocks } from './doc-blocks.js';
+import { docOf, hasContent, markdownToNodes, nodesToMarkdown, parseDocData, type PMNode } from './prosemirror.js';
 import { Refusal, runTool } from './refusal.js';
 import type { Store } from './store.js';
 import { cardIdOf, cardRef, cardUrl } from './tasks.js';
@@ -178,7 +179,7 @@ interface Snapshot {
 
 async function snapshot(deps: Pick<DocDeps, 'store' | 'secret'>, doc: KaitenDocument, by: string): Promise<void> {
   // Пустую страницу (только что созданную) хранить незачем.
-  if (!plainText(parseDocData(doc.data))) return;
+  if (!hasContent(parseDocData(doc.data))) return;
   const value: Snapshot = { title: doc.title, data: doc.data ?? null, savedAt: new Date().toISOString(), by };
   await deps.store.put(`snap:${doc.uid}:${Date.now().toString().padStart(15, '0')}`, await sealData(value, deps.secret), SNAPSHOT_TTL);
 }
@@ -281,11 +282,12 @@ async function writeOrAsk(deps: DocDeps, level: Level, loaded: Loaded, plan: Wri
     const failed = await commitWrite(deps, plan, me.name);
     return `Готово: ${summary} — ${docUrl(deps.domain, plan.uid)}${failed.length ? `\nНе получилось: ${failed.join(', ')}.` : ''}`;
   }
+  // В ссылке встроенного блока бывает секрет: человеку на странице подтверждения — только домен.
   return askHuman(deps, me.id, {
     docTitle: plan.title ?? loaded.doc.title,
     summary,
-    before: `# ${loaded.doc.title}\n\n${nodesToMarkdown(loaded.nodes).markdown}`,
-    after: `# ${plan.title ?? loaded.doc.title}\n\n${nodesToMarkdown(plan.content).markdown}`,
+    before: `# ${loaded.doc.title}\n\n${nodesToMarkdown(loaded.nodes, { redact: true }).markdown}`,
+    after: `# ${plan.title ?? loaded.doc.title}\n\n${nodesToMarkdown(plan.content, { redact: true }).markdown}`,
     by: me.name,
     plan,
   });
@@ -296,9 +298,59 @@ async function writeOrAsk(deps: DocDeps, level: Level, loaded: Loaded, plan: Wri
 function convertSection(name: string, markdown: string, problems: string[]): PMNode[] {
   const converted = markdownToNodes(markdown);
   for (const p of converted.problems) problems.push(`раздел «${name}»: ${p}`);
-  if (!plainText(converted.nodes)) problems.push(`раздел «${name}» пустой — напишите его или спросите пользователя`);
+  if (!hasContent(converted.nodes)) problems.push(`раздел «${name}» пустой — напишите его или спросите пользователя`);
   return converted.nodes;
 }
+
+type FilesArg = Array<{ name: string; content_base64: string }> | undefined;
+
+interface BlockPrep {
+  uploads: Upload[];
+  added: number;
+}
+
+/** Блоки новых разделов: проверка по правилам папки до любой записи. */
+function prepareBlocks(sections: PMNode[][], rules: FolderRules, existing: PMNode[], files: FilesArg, problems: string[]): BlockPrep {
+  const decoded = decodeFiles(files, problems);
+  const resolved = resolveBlocks(sections, { rules: rules.blocks, existing: collectBlocks(existing), files: decoded });
+  problems.push(...resolved.problems);
+  return { uploads: resolved.uploads, added: resolved.added };
+}
+
+/** Новый блок при `blocks.level: confirm` — правка с подтверждением, даже если уровень действия «свободно». */
+function withBlocks(level: Level, rules: FolderRules, prep: BlockPrep): Level {
+  return prep.added > 0 && rules.blocks?.level === 'confirm' ? 'confirm' : level;
+}
+
+/**
+ * Загрузить картинки в документ. Возвращает `updated`, от которого сверять
+ * запись: загрузка сама может сдвинуть отметку — тогда она принимается, только
+ * если содержимое страницы осталось тем, что прочитал агент.
+ */
+async function uploadInto(deps: DocDeps, loaded: Loaded, uploads: Upload[]): Promise<string | undefined> {
+  if (uploads.length === 0) return loaded.doc.updated;
+  await uploadBlocks(deps.kaiten, loaded.doc.uid, uploads);
+  const fresh = await deps.kaiten.getDocument(loaded.doc.uid);
+  if (fresh.updated === loaded.doc.updated) return loaded.doc.updated;
+  return JSON.stringify(parseDocData(fresh.data)) === JSON.stringify(loaded.nodes) ? fresh.updated : loaded.doc.updated;
+}
+
+/** Для подтверждения: картинки загружаются до него — человек должен знать, что останется при отказе. */
+const uploadNote = (uploads: Upload[], level: Level, loaded: Loaded): string =>
+  uploads.length && (level === 'confirm' || !loaded.page.header)
+    ? ` (картинки уже загружены в документ: ${uploads.map((u) => `«${u.file.name}»`).join(', ')}; если правку отклонить, файлы останутся в документе невидимыми)`
+    : '';
+
+const filesArg = z
+  .array(z.object({ name: z.string().min(1).describe('имя с расширением, например «график.png»'), content_base64: z.string().min(1) }))
+  .max(10)
+  .optional()
+  .describe(`картинки файлом (${IMAGE_FILE_TYPES.join(', ')}); в тексте — строка ![](file:имя)`);
+
+const BLOCKS_HELP =
+  'Блоки — отдельной строкой, если правила папки их разрешают: @[embed](https://…) — встроенная страница (@[embed medium](…) — меньше), ' +
+  '@[video](https://youtube.com/…) — видео YouTube, ![](https://…) — картинка по ссылке, ![](file:имя.png) — картинка из files. ' +
+  'Блок, прочитанный в read_doc, верните той же строкой — он останется как был.';
 
 async function me(deps: DocDeps): Promise<{ id: number; name: string }> {
   const user = await deps.kaiten.currentUser();
@@ -336,6 +388,7 @@ function rulesSummary(r: ResolvedRules): string {
     `связь с карточкой: ${link.length ? `обязательна (${link.join(' или ')})` : 'не обязательна'}`,
     `дописывать — ${rules.levels.append === 'free' ? 'свободно' : 'с подтверждением'}, заменять — ${rules.levels.replace === 'free' ? 'свободно' : 'с подтверждением'}${rules.levels.locked_when_active ? ', после «Действует» — всё с подтверждением' : ''}`,
     'статус, переименование и откат — всегда с подтверждением человека',
+    blocksSummary(rules.blocks),
   ].join('; ');
 }
 
@@ -391,7 +444,7 @@ export function registerDocTools(server: McpServer, deps: DocDeps): void {
     ({ doc }) =>
       run(async () => {
         const loaded = await loadDoc(deps, doc);
-        const rendered = nodesToMarkdown(loaded.nodes);
+        const rendered = nodesToMarkdown(loaded.nodes, { blocks: allowedKinds('problem' in loaded.rules ? undefined : loaded.rules.rules.blocks) });
         const lines = [`# ${loaded.doc.title}`, docUrl(deps.domain, loaded.doc.uid), ''];
         if ('problem' in loaded.rules) lines.push(`Агенту: только чтение — ${loaded.rules.problem}`);
         else if (!loaded.page.header && !HUMAN_PAGES_WRITABLE) lines.push('Агенту: только чтение — страницу написал человек в Kaiten.');
@@ -399,7 +452,7 @@ export function registerDocTools(server: McpServer, deps: DocDeps): void {
           lines.push(`Агенту: ${rulesSummary(loaded.rules)}.`);
           if (!loaded.page.header) lines.push('Страницу написал человек: первая правка агента — только с подтверждением (сервер добавит шапку и историю, остальное не тронет).');
         }
-        if (rendered.lossy) lines.push('На странице есть элементы, которых нет в markdown (чек-листы, картинки…): разделы с ними можно только дописывать.');
+        if (rendered.lossy) lines.push('На странице есть элементы, которых нет в markdown (чек-листы, вкладки, блоки, которые папка не разрешает…): разделы с ними можно только дописывать.');
         lines.push('', rendered.markdown);
         return lines.join('\n');
       }),
@@ -426,12 +479,14 @@ export function registerDocTools(server: McpServer, deps: DocDeps): void {
       title: 'Создать страницу',
       description:
         'Создаёт страницу в папке по её правилам: название по шаблону, все обязательные разделы по порядку и непустые, связь с карточкой, если папка её требует. ' +
-        'Разделы — markdown без заголовков # и ##. Шапку и историю ведёт сервер. Отказ — исправь всё из списка или спроси пользователя.',
+        'Разделы — markdown без заголовков # и ##. Шапку и историю ведёт сервер. Отказ — исправь всё из списка или спроси пользователя. ' +
+        BLOCKS_HELP,
       inputSchema: {
         folder: z.string().min(1).describe('uid папки из list_docs'),
         title: z.string().min(1),
         sections: z.record(z.string(), z.string()).describe('{"Название раздела": "текст markdown"}'),
         links: z.array(cardRef).optional().describe('карточки, с которыми связана страница'),
+        files: filesArg,
         user_request: userRequest,
       },
     },
@@ -464,6 +519,8 @@ export function registerDocTools(server: McpServer, deps: DocDeps): void {
           else sections.push({ title: name, nodes: convertSection(name, text, problems) });
         }
         if (sections.length === 0) problems.push('страница без разделов — напишите хотя бы один');
+        // Новая страница — черновик: уровень blocks.level касается правок существующих страниц.
+        const blocks = prepareBlocks(sections.map((s) => s.nodes), rules, [], args.files, problems);
 
         const links = await cardLinksFor(deps, args.links ?? [], rules, problems);
         if (problems.length > 0) throw new Refusal('Страницу не создать — исправьте', problems);
@@ -475,9 +532,11 @@ export function registerDocTools(server: McpServer, deps: DocDeps): void {
           sections,
         };
         addHistory(page, `${today()} — ${user.name}: создана ИИ-агентом по просьбе «${args.user_request}»`);
-        const content = renderPage(page);
         const created = await deps.kaiten.createDocument({ title, parent_entity_uid: folderUid, sort_order: siblings.length + 1 });
         try {
+          // Картинки грузятся в документ, поэтому — после создания; узлы получают src и fileId до записи текста.
+          await uploadBlocks(deps.kaiten, created.uid, blocks.uploads);
+          const content = renderPage(page);
           const failed = await commitWrite(deps, { uid: created.uid, baseUpdated: undefined, content, cardLinks: links.map((l) => ({ cardId: l.cardId, title })) }, user.name);
           return `Страница создана: «${title}» — ${docUrl(deps.domain, created.uid)}${failed.length ? `\nНе получилось: ${failed.join(', ')}.` : ''}`;
         } catch (error) {
@@ -493,8 +552,9 @@ export function registerDocTools(server: McpServer, deps: DocDeps): void {
     'append_to_section',
     {
       title: 'Дописать в раздел',
-      description: 'Дописывает markdown в конец раздела (нет раздела — создаёт его перед историей). По правилам папки — сразу или с подтверждением человека.',
-      inputSchema: { doc: docRef, section: z.string().min(1), text: z.string().min(1), user_request: userRequest },
+      description:
+        'Дописывает markdown в конец раздела (нет раздела — создаёт его перед историей). По правилам папки — сразу или с подтверждением человека. ' + BLOCKS_HELP,
+      inputSchema: { doc: docRef, section: z.string().min(1), text: z.string().min(1), files: filesArg, user_request: userRequest },
     },
     (args) =>
       run(async () => {
@@ -503,7 +563,9 @@ export function registerDocTools(server: McpServer, deps: DocDeps): void {
         if (normalizeTitle(args.section) === normalizeTitle(HISTORY)) throw new Refusal('«История изменений» ведёт сервер', ['выберите другой раздел']);
         const problems: string[] = [];
         const nodes = convertSection(args.section, args.text, problems);
+        const blocks = prepareBlocks([nodes], rules, loaded.nodes, args.files, problems);
         if (problems.length) throw new Refusal('Не дописать — исправьте', problems);
+        const baseUpdated = await uploadInto(deps, loaded, blocks.uploads);
         const user = await me(deps);
         const page = parsePage(loaded.nodes);
         const section = findSection(page, args.section);
@@ -519,8 +581,8 @@ export function registerDocTools(server: McpServer, deps: DocDeps): void {
         ensureHeader(page, loaded, user);
         if (page.header) page.header.updated = `${today()}, ${user.name}`;
         addHistory(page, `${today()} — ${user.name}: дописан раздел «${args.section.trim()}» по просьбе «${args.user_request}»`);
-        const level = levelFor('append', rules, loaded.page);
-        return writeOrAsk(deps, level, loaded, { uid: loaded.doc.uid, baseUpdated: loaded.doc.updated, content: renderPage(page) }, `в «${loaded.doc.title}» дописан раздел «${args.section.trim()}»`, user);
+        const level = withBlocks(levelFor('append', rules, loaded.page), rules, blocks);
+        return writeOrAsk(deps, level, loaded, { uid: loaded.doc.uid, baseUpdated, content: renderPage(page) }, `в «${loaded.doc.title}» дописан раздел «${args.section.trim()}»${uploadNote(blocks.uploads, level, loaded)}`, user);
       }),
   );
 
@@ -528,8 +590,9 @@ export function registerDocTools(server: McpServer, deps: DocDeps): void {
     'replace_section',
     {
       title: 'Заменить раздел',
-      description: 'Заменяет содержимое раздела целиком. Обычно — с подтверждением человека. Раздел с элементами, которых нет в markdown, заменять нельзя.',
-      inputSchema: { doc: docRef, section: z.string().min(1), text: z.string().min(1), user_request: userRequest },
+      description:
+        'Заменяет содержимое раздела целиком. Обычно — с подтверждением человека. Раздел с элементами, которых нет в markdown, заменять нельзя. ' + BLOCKS_HELP,
+      inputSchema: { doc: docRef, section: z.string().min(1), text: z.string().min(1), files: filesArg, user_request: userRequest },
     },
     (args) =>
       run(async () => {
@@ -539,15 +602,29 @@ export function registerDocTools(server: McpServer, deps: DocDeps): void {
         const section = findSection(page, args.section);
         if (!section) throw new Refusal('Нет такого раздела', [`разделы: ${page.sections.map((s) => s.title).join(', ')}`]);
         if (normalizeTitle(section.title) === normalizeTitle(HISTORY)) throw new Refusal('«История изменений» ведёт сервер', ['её не заменить']);
-        if (nodesToMarkdown(section.nodes).lossy) throw new Refusal('Раздел нельзя заменить целиком', ['в нём есть элементы, которых нет в markdown (чек-листы, картинки…) — их бы потеряли; можно только дописать (append_to_section)']);
+        if (nodesToMarkdown(section.nodes, { blocks: allowedKinds(rules.blocks) }).lossy) {
+          throw new Refusal('Раздел нельзя заменить целиком', [
+            'в нём есть элементы, которых нет в markdown (чек-листы, вкладки, блоки, которые папка не разрешает…) — их бы потеряли; можно только дописать (append_to_section)',
+          ]);
+        }
         const problems: string[] = [];
         section.nodes = convertSection(section.title, args.text, problems);
+        const blocks = prepareBlocks([section.nodes], rules, loaded.nodes, args.files, problems);
         if (problems.length) throw new Refusal('Не заменить — исправьте', problems);
+        const baseUpdated = await uploadInto(deps, loaded, blocks.uploads);
         const user = await me(deps);
         ensureHeader(page, loaded, user);
         if (page.header) page.header.updated = `${today()}, ${user.name}`;
         addHistory(page, `${today()} — ${user.name}: заменён раздел «${section.title}» по просьбе «${args.user_request}»`);
-        return writeOrAsk(deps, levelFor('replace', rules, loaded.page), loaded, { uid: loaded.doc.uid, baseUpdated: loaded.doc.updated, content: renderPage(page) }, `в «${loaded.doc.title}» заменён раздел «${section.title}»`, user);
+        const level = withBlocks(levelFor('replace', rules, loaded.page), rules, blocks);
+        return writeOrAsk(
+          deps,
+          level,
+          loaded,
+          { uid: loaded.doc.uid, baseUpdated, content: renderPage(page) },
+          `в «${loaded.doc.title}» заменён раздел «${section.title}»${uploadNote(blocks.uploads, level, loaded)}`,
+          user,
+        );
       }),
   );
 

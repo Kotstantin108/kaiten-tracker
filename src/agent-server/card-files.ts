@@ -20,7 +20,8 @@ import { MAX_UPLOAD_BYTES } from './gate.js';
 export const MAX_INLINE_BYTES = 4 * 1024 * 1024;
 export { MAX_UPLOAD_BYTES };
 
-type Kind = 'pdf' | 'png' | 'jpg' | 'webp' | 'zip' | 'ole' | 'text';
+/** Вид содержимого; `gif` — только для картинок в документах, в карточку не загружаем. */
+export type Kind = 'pdf' | 'png' | 'jpg' | 'webp' | 'gif' | 'zip' | 'ole' | 'text';
 
 const BY_EXTENSION: Record<string, Kind> = {
   pdf: 'pdf',
@@ -40,7 +41,8 @@ export const ALLOWED_EXTENSIONS = Object.keys(BY_EXTENSION);
 
 const startsWith = (bytes: Uint8Array, prefix: readonly number[], at = 0): boolean => prefix.every((b, i) => bytes[at + i] === b);
 
-function looksLike(kind: Kind, bytes: Uint8Array): boolean {
+/** Похоже ли начало содержимого на этот вид файла. */
+export function looksLike(kind: Kind, bytes: Uint8Array): boolean {
   switch (kind) {
     case 'pdf':
       return startsWith(bytes, [0x25, 0x50, 0x44, 0x46]);
@@ -50,6 +52,8 @@ function looksLike(kind: Kind, bytes: Uint8Array): boolean {
       return startsWith(bytes, [0xff, 0xd8, 0xff]);
     case 'webp':
       return startsWith(bytes, [0x52, 0x49, 0x46, 0x46]) && startsWith(bytes, [0x57, 0x45, 0x42, 0x50], 8);
+    case 'gif':
+      return startsWith(bytes, [0x47, 0x49, 0x46, 0x38]);
     case 'zip':
       return startsWith(bytes, [0x50, 0x4b, 0x03, 0x04]);
     case 'ole':

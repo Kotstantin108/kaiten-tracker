@@ -15,7 +15,8 @@
  *   · `PATCH /cards/{id} {condition: 3}` — удаление через правку;
  *   · файл по числовому id карточки ложится с постоянной публичной ссылкой —
  *     загрузка только по UUID; путь в имени Kaiten отрезает, а переименовать
- *     или удалить файл агент не может — имя без «/» и «\».
+ *     или удалить файл агент не может — имя без «/» и «\»;
+ *   · в документ — только картинка и только по UUID документа.
  */
 
 type Body = Record<string, unknown> | null;
@@ -50,6 +51,16 @@ function oneFile(form: FormData): string | null {
   if (file.size > MAX_UPLOAD_BYTES) return 'файл больше 10 МБ';
   const name = file instanceof File ? file.name : '';
   if (!name.trim() || /[/\\]/.test(name)) return 'имя файла пустое или с «/», «\\»';
+  return null;
+}
+
+/** В документ — только картинка: другие файлы документ не показывает, а видео файлом Kaiten не принимает. */
+function oneImage(form: FormData): string | null {
+  const problem = oneFile(form);
+  if (problem) return problem;
+  const file = form.get('file');
+  const name = file instanceof File ? file.name : '';
+  if (!/\.(png|jpe?g|webp|gif)$/i.test(name)) return 'в документ — только картинка png, jpg, webp или gif';
   return null;
 }
 
@@ -89,6 +100,8 @@ const RULES: readonly Rule[] = [
     },
   },
   { method: 'PATCH', path: re(`/documents/${UID}`), check: forbidKeys(DOCUMENT_FORBIDDEN) },
+  // Картинка в документ — по UUID документа и одним файлом; переименовать или удалить файл агент не может.
+  { method: 'POST', path: re(`/documents/${UUID}/files`), form: oneImage },
 ];
 
 /** Чтение разрешено всё, кроме настроек компании (там секреты интеграций). */

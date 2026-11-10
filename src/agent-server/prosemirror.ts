@@ -4,15 +4,19 @@
  * Агент пишет markdown, сервер переводит его в узлы схемы v1 — той, что
  * принимает API для документов, созданных через API (проверено живьём):
  * абзацы, заголовки, списки, код, цитаты, линия, таблицы; отметки — жирный,
- * курсив, код, ссылка. Обратно в markdown переводится всё, что можно показать;
- * узлы, которых markdown не передаёт (чек-листы, картинки, вкладки…), дают
- * пометку «с потерями» — такой раздел агенту заменять нельзя, только дописывать.
+ * курсив, код, ссылка; блоки — встроенная страница и картинка (doc-blocks.ts).
+ * Обратно в markdown переводится всё, что можно показать; узлы, которых
+ * markdown не передаёт (чек-листы, вкладки…), дают пометку «с потерями» —
+ * такой раздел агенту заменять нельзя, только дописывать. Блоки — «с
+ * потерями», пока правила папки их не разрешают.
  *
  * Правка всегда идёт на уровне узлов: разделы, которые агент не трогал,
  * возвращаются в Kaiten ровно такими, какими пришли.
  */
 
 import { z } from 'zod';
+
+import { blockFromLine, blockKind, type BlockKind, blockMarkdown } from './doc-blocks.js';
 
 export interface PMMark {
   type: string;
@@ -157,6 +161,12 @@ export function markdownToNodes(markdown: string): Converted {
       nodes.push({ type: 'horizontal_rule' });
       continue;
     }
+    const block = blockFromLine(line);
+    if (block) {
+      flush();
+      nodes.push(block);
+      continue;
+    }
     const quote = /^>\s?(.*)$/.exec(line);
     if (quote) {
       flush();
@@ -204,13 +214,31 @@ export function plainText(nodes: PMNode[] | undefined): string {
   return (nodes ?? []).map((n) => (n.type === 'text' ? (n.text ?? '') : plainText(n.content))).join(' ').replace(/\s+/g, ' ').trim();
 }
 
+/** Есть ли в узлах содержимое: текст или блок (раздел из одного графика — не пустой). */
+export function hasContent(nodes: PMNode[] | undefined): boolean {
+  return plainText(nodes) !== '' || (nodes ?? []).some((n) => blockKind(n) !== null || hasContent(n.content));
+}
+
 const SIMPLE = new Set(['paragraph', 'heading', 'heading1', 'heading2', 'heading3', 'bullet_list', 'ordered_list', 'code_block', 'blockquote', 'horizontal_rule', 'table']);
 
-export function nodesToMarkdown(nodes: PMNode[]): Rendered {
+export interface RenderOptions {
+  /** Блоки, которые разрешены правилами папки: только они не «с потерями». */
+  blocks?: ReadonlySet<BlockKind>;
+  /** Ссылки блоков — только доменом: для подтверждений и всего, что видят не агенту. */
+  redact?: boolean;
+}
+
+export function nodesToMarkdown(nodes: PMNode[], options: RenderOptions = {}): Rendered {
   let lossy = false;
   const blocks: string[] = [];
   const cellText = (cell: PMNode): string => (cell.content ?? []).map((p) => inlineMd(p.content)).join(' ').replace(/\|/g, '\\|');
   for (const node of nodes) {
+    const kind = blockKind(node);
+    if (kind) {
+      blocks.push(blockMarkdown(node, options.redact === true) ?? '');
+      if (!options.blocks?.has(kind)) lossy = true;
+      continue;
+    }
     if (!SIMPLE.has(node.type)) lossy = true;
     switch (node.type) {
       case 'paragraph':
