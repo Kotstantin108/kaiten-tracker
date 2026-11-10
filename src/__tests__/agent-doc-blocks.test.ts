@@ -26,6 +26,7 @@ const CHARTS = '00000000-0000-4000-8000-0000000000f2';
 const STRICT = '00000000-0000-4000-8000-0000000000f3';
 const PAGE = '00000000-0000-4000-8000-0000000000d1';
 const PLAIN_PAGE = '00000000-0000-4000-8000-0000000000d2';
+const DOUBLED = '00000000-0000-4000-8000-0000000000d3';
 const COMPANY = '00000000-0000-4000-8000-0000000000c0';
 
 /** Ссылка с секретом в части после # — так выглядят живые графики. */
@@ -79,6 +80,8 @@ function fake() {
       data: doc([code('version: 1\ntitle: "{Название}"\nlevels:\n  append: free\n  replace: free\nblocks:\n  embed: true\n  domains: [charts.example.com]\n  level: confirm')]),
     },
     { uid: PAGE, title: 'Отчёт Acme', parent_entity_uid: CHARTS, updated: 't0', data: doc([...header(), h2('Графики'), p('было'), humanEmbed, h2('Цифры'), p('старые цифры'), h2('История изменений')]) },
+    // Содержимое записано дважды: так оставляет страницу редактор Kaiten, открытый во время записи через API.
+    { uid: DOUBLED, title: 'Отчёт Initech', parent_entity_uid: CHARTS, updated: 't0', data: doc([...header(), h2('Цифры'), p('копия 1'), h2('История изменений'), ...header(), h2('Цифры'), p('копия 2'), h2('История изменений')]) },
     { uid: PLAIN_PAGE, title: 'Отчёт Globex', parent_entity_uid: PLAIN, updated: 't0', data: doc([...header(), h2('Графики'), p('было'), humanEmbed, h2('История изменений')]) },
   ];
   const groups = [
@@ -354,6 +357,22 @@ describe('инструменты документов с блоками', () => 
     await tool(f, 'replace_section', { doc: PAGE, section: 'Цифры', text: 'другие цифры\n\n![](file:00000000-0000-4000-8000-000000000200)', user_request: 'x' });
     expect(sectionOf(f, PAGE, 'Цифры')).toEqual([p('другие цифры'), image]);
     expect(f.writes.filter((w) => w.path.endsWith('/files'))).toHaveLength(1);
+  });
+});
+
+describe('задвоенная страница', () => {
+  it('read_doc предупреждает; правка — отказ, ничего не записано', async () => {
+    const f = fake();
+    expect((await tool(f, 'read_doc', { doc: DOUBLED })).text).toMatch(/Страница задвоена: на странице 2 шапки и 2 «Истории изменений»/);
+    const reply = await tool(f, 'append_to_section', { doc: DOUBLED, section: 'Цифры', text: 'ещё', user_request: 'x' });
+    expect(reply.isError).toBe(true);
+    expect(reply.text).toMatch(/Страница задвоена — запись остановлена.*открытой в редакторе Kaiten/s);
+    expect(f.writes).toEqual([]);
+  });
+
+  it('целую страницу защита не трогает', async () => {
+    const f = fake();
+    expect((await tool(f, 'append_to_section', { doc: PAGE, section: 'Цифры', text: 'ещё', user_request: 'x' })).text).toMatch(/^Готово/);
   });
 });
 

@@ -21,6 +21,7 @@ import { normalizeTitle, titleProblem } from './board-rules.js';
 import {
   addHistory,
   type DocLink,
+  duplicateProblem,
   findSection,
   FolderRulesSchema,
   type FolderRules,
@@ -194,6 +195,19 @@ interface WritePlan {
   cardLinks?: Array<{ cardId: number; title: string }>;
 }
 
+const DUPLICATED_HINT = 'так бывает, если страницу держали открытой в редакторе Kaiten, пока агент писал';
+
+/** Задвоенную страницу не пишем: и правка, и откат переписали бы все копии (docs/kaiten-api.md). */
+function refuseDuplicated(content: PMNode[]): void {
+  const duplicated = duplicateProblem(content);
+  if (!duplicated) return;
+  throw new Refusal('Страница задвоена — запись остановлена', [
+    duplicated,
+    DUPLICATED_HINT,
+    'попросите человека убрать лишние копии в Kaiten (или откатить страницу через rollback_doc к копии без задвоения) и закрыть страницу в редакторе',
+  ]);
+}
+
 /** Запись: перечитать, сверить, снять копию, записать. */
 export async function commitWrite(deps: Pick<DocDeps, 'kaiten' | 'store' | 'secret' | 'domain'>, plan: WritePlan, by: string): Promise<string[]> {
   const fresh = await deps.kaiten.getDocument(plan.uid);
@@ -201,6 +215,7 @@ export async function commitWrite(deps: Pick<DocDeps, 'kaiten' | 'store' | 'secr
   if (plan.baseUpdated !== undefined && fresh.updated !== plan.baseUpdated) {
     throw new Refusal('Страница изменилась после того, как агент её прочитал', ['перечитайте её (read_doc) и повторите правку — иначе пропали бы чужие изменения']);
   }
+  refuseDuplicated(plan.content);
   await snapshot(deps, fresh, by);
   await deps.kaiten.updateDocument(plan.uid, { data: docOf(plan.content), ...(plan.title ? { title: plan.title } : {}) });
   const failed: string[] = [];
@@ -274,6 +289,7 @@ function ensureHeader(page: Page, loaded: Loaded, user: { name: string }): void 
 }
 
 async function writeOrAsk(deps: DocDeps, level: Level, loaded: Loaded, plan: WritePlan, summary: string, me: { id: number; name: string }): Promise<string> {
+  refuseDuplicated(plan.content);
   if (!loaded.page.header) {
     level = 'confirm';
     summary += ' (страницу написал человек: сервер впервые добавит шапку и «Историю изменений», остальное не трогает)';
@@ -456,6 +472,8 @@ export function registerDocTools(server: McpServer, deps: DocDeps): void {
           lines.push(`Агенту: ${rulesSummary(loaded.rules)}.`);
           if (!loaded.page.header) lines.push('Страницу написал человек: первая правка агента — только с подтверждением (сервер добавит шапку и историю, остальное не тронет).');
         }
+        const duplicated = duplicateProblem(loaded.nodes);
+        if (duplicated) lines.push(`Страница задвоена: ${duplicated}. Писать в неё нельзя, пока человек не уберёт лишние копии (${DUPLICATED_HINT}).`);
         if (rendered.lossy) lines.push('На странице есть элементы, которых нет в markdown (чек-листы, вкладки, блоки, которые папка не разрешает…): разделы с ними можно только дописывать.');
         lines.push('', rendered.markdown);
         return lines.join('\n');

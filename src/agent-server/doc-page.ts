@@ -120,6 +120,19 @@ export function renderPage(page: Page): PMNode[] {
   return out;
 }
 
+/**
+ * Страница задвоена: две шапки или две «Истории изменений». Так бывает, если
+ * страница открыта в редакторе Kaiten, пока её пишут через API: редактор
+ * дописывает пришедшую версию после своей (docs/kaiten-api.md, «Документы»).
+ * Писать поверх нельзя — каждая правка и откат множили бы копии.
+ */
+export function duplicateProblem(nodes: readonly PMNode[]): string | null {
+  const histories = nodes.filter((n) => headingLevel(n) === 2 && normalizeTitle(plainText(n.content)) === normalizeTitle(HISTORY)).length;
+  const headers = nodes.filter((n) => headerLabel(n) === 'Владелец').length;
+  if (histories <= 1 && headers <= 1) return null;
+  return `на странице ${headers > 1 ? `${headers} шапки` : ''}${headers > 1 && histories > 1 ? ' и ' : ''}${histories > 1 ? `${histories} «Истории изменений»` : ''} — её содержимое записано несколько раз`;
+}
+
 export const findSection = (page: Page, title: string): Section | undefined =>
   page.sections.find((s) => normalizeTitle(s.title) === normalizeTitle(title));
 
