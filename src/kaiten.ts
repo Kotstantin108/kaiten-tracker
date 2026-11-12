@@ -32,7 +32,7 @@ import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:
 import { tmpdir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
 
-import { juniorSetting } from './config.js';
+import { domainsOf, juniorSetting } from './config.js';
 import { juniorReadiness, type JuniorReadiness } from './core/junior.js';
 import { STATUSES, TASK_TYPES, type TaskStatus, type TaskType } from './core/schema.js';
 import { filterTasks, refOf, resolveTask, SearchQueryError, searchTasks, sortTasks, type TaskFilter, type TaskIndex, type TaskRecord } from './core/tasks-index.js';
@@ -63,6 +63,7 @@ import { bodySections, formatLogTail, formatOutline, formatSearch, formatSection
 import { doctor, DOCTOR_HELP } from './kaiten-doctor.js';
 import { FOUND_COMMANDS, FOUND_HELP, foundWorker } from './kaiten-found.js';
 import { START_COMMANDS, START_HELP } from './kaiten-start.js';
+import { VERIFY_COMMANDS, VERIFY_HELP } from './kaiten-verify.js';
 import { editableText, WRITE_COMMANDS, WRITE_HELP } from './kaiten-write.js';
 import { ensureFresh, outdatedMessage, rerun } from './self-update.js';
 import { hasPending, syncStore, withLock } from './store-write.js';
@@ -94,6 +95,7 @@ function mainHelp(): string {
 
 Работать:
   kaiten start <задача>              взять в работу: «В работе» и ветка задачи в этом репозитории
+  kaiten verify <задача>             прогнать проверки проекта перед ревью
   kaiten review <задача>             работа готова — на ревью
   kaiten done <задача>               сделано (влито в прод)
 
@@ -138,7 +140,8 @@ ${FILTER_HELP}
 Заголовок, «Суть», статус, приоритет, исполнитель и срок, постановка с
 пунктами, журнал; для задачи — её эпик и соседние задачи, для эпика — все его
 задачи. Если проект отмечает задачи для младших — можно ли брать её младшему
-и чего для этого не хватает. Ссылки на другие задачи и вложения показаны
+и чего для этого не хватает; если делит задачи на домены — домен задачи и как
+по нему читают изменения на ревью. Ссылки на другие задачи и вложения показаны
 командами kaiten. В конце — файлы, которые люди приложили прямо в карточку
 Kaiten (их нет среди вложений задачи); открыть их — в карточке.
 ${TASK_REF_HELP}
@@ -207,7 +210,7 @@ ${FILTER_HELP}
 `,
 };
 
-const HELP: Record<string, string> = { ...READ_HELP, ...WRITE_HELP, found: FOUND_HELP, start: START_HELP, doctor: DOCTOR_HELP };
+const HELP: Record<string, string> = { ...READ_HELP, ...WRITE_HELP, found: FOUND_HELP, start: START_HELP, verify: VERIFY_HELP, doctor: DOCTOR_HELP };
 
 // ── чтение ───────────────────────────────────────────────────────────────
 
@@ -297,8 +300,8 @@ function list(args: string[]): void {
     const where = scope ? `${ctx.title} · ${scope}` : `${ctx.title}, весь проект`;
     const which = filter.statuses?.length ? filter.statuses.join(', ') : filter.closed ? 'все' : 'открытые';
     console.log(`${where} · ${which}${values.junior ? ', можно младшему' : ''}: ${tasks.length}\n`);
-    if (tasks.length > 0) console.log(formatTaskLines(index.tasks, tasks, !scope).join('\n'));
-    const waiting = tasks.filter((t) => t.fm.pending_moves).length;
+    if (tasks.length > 0) console.log(formatTaskLines(index.tasks, tasks, !scope, domainsOf(ctx.loaded.project)).join('\n'));
+    const waiting = tasks.filter((t) => t.fm.pending_moves && t.fm.tracker !== undefined).length;
     if (waiting > 0) console.log(`\nСтатусы ещё не в карточках Kaiten: ${waiting}. Обновятся сами, когда он вернётся.`);
   }
   reportProblems(index);
@@ -342,8 +345,9 @@ async function show(args: string[]): Promise<void> {
     // Как читать большую задачу по частям — здесь, а не в скилле: подсказка нужна, только когда задача большая.
     const lines = task.body.split('\n').length;
     if (lines > LONG_TASK_LINES) console.log(`Задача большая (${lines} строк). По частям: kaiten show ${refOf(task)} --outline, --section "<раздел>", --todo.\n`);
-    process.stdout.write(formatShow(index.tasks, task, attachments, junior ?? null));
-    if (task.fm.pending_moves) console.log(`\nСтатус ${task.fm.status} ещё не в карточке Kaiten: она обновится сама, когда он вернётся. Работать по задаче это не мешает.`);
+    process.stdout.write(formatShow(index.tasks, task, attachments, junior ?? null, domainsOf(ctx.loaded.project)));
+    // Очередь у задачи без карточки — карточка ещё создаётся и сразу встанет в нужную колонку: говорить не о чем.
+    if (task.fm.pending_moves && task.fm.tracker !== undefined) console.log(`\nСтатус ${task.fm.status} ещё не в карточке Kaiten: она обновится сама, когда он вернётся. Работать по задаче это не мешает.`);
     const foreign = await foreignCardFiles(ctx, task, attachments);
     if (foreign && 'unreachable' in foreign) console.log('\nФайлы карточки Kaiten не прочитаны: Kaiten не ответил.');
     else if (foreign && foreign.files.length > 0) {
@@ -396,7 +400,7 @@ function search(args: string[]): void {
     );
   } else {
     console.log(`${ctx.title} · «${positionals.join(' ')}» · найдено: ${hits.length}\n`);
-    if (hits.length > 0) console.log(formatSearch(index.tasks, hits, true).join('\n'));
+    if (hits.length > 0) console.log(formatSearch(index.tasks, hits, true, domainsOf(ctx.loaded.project)).join('\n'));
     else {
       console.log(
         'Задача могла быть описана другими словами. Повторите с одним самым редким словом, добавьте варианты через «|» ' +
@@ -575,7 +579,7 @@ function storeOrNull(): string | null {
   }
 }
 
-const COMMANDS: Record<string, (args: string[]) => void | Promise<void>> = { list, show, search, files, pull, doctor, ...WRITE_COMMANDS, ...FOUND_COMMANDS, ...START_COMMANDS };
+const COMMANDS: Record<string, (args: string[]) => void | Promise<void>> = { list, show, search, files, pull, doctor, ...WRITE_COMMANDS, ...FOUND_COMMANDS, ...START_COMMANDS, ...VERIFY_COMMANDS };
 
 async function main(): Promise<void> {
   const [command, ...args] = process.argv.slice(2);

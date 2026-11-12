@@ -124,6 +124,9 @@ export const FIELDS = {
   repo: { owner: 'file', required: false, schema: nonEmpty },
   epic: { owner: 'file', required: false, schema: epicRef },
   related: { owner: 'file', required: false, schema: z.array(nonEmpty) },
+  // Домен задачи (`domains` в kaiten.json): по нему проект решает, как читать изменения на
+  // ревью. Ставят `kaiten new --domain` и `kaiten edit`; список допустимых проверяют команды.
+  domain: { owner: 'file', required: false, schema: z.string().regex(/^[a-z0-9][a-z0-9-]*$/, 'имя домена — латиница, цифры, дефис') },
   priority: { owner: 'kaiten', required: false, schema: z.enum(PRIORITIES) },
   team: { owner: 'kaiten', required: false, schema: nonEmpty },
   created: { owner: 'cli', required: true, schema: date },
@@ -149,6 +152,20 @@ export const FIELDS = {
   assessed: { owner: 'cli', required: false, schema: z.object({ verdict: z.enum(ASSESS_VERDICTS), date }).strict() },
   // «Было / Стало» — ставят `kaiten review` и `kaiten done` по вложениям или по `--no-visual`.
   visual: { owner: 'cli', required: false, schema: z.enum(VISUAL_ANSWERS) },
+  // Свидетельство прогона проверок проекта — пишет только `kaiten verify` (`core/review-gates.ts`):
+  // на каком коммите шли, какие и прошли ли все. `kaiten review` принимает работу, только если
+  // это текущий коммит ветки. Правкой текста задачи поле не поменять: владелец — CLI.
+  checks: {
+    owner: 'cli',
+    required: false,
+    schema: z
+      .object({
+        commit: z.string().regex(/^[0-9a-f]{40,64}$/, 'полный хеш коммита'),
+        passed: z.boolean(),
+        names: z.array(nonEmpty).min(1),
+      })
+      .strict(),
+  },
   // Статус сменили, пока Kaiten был недоступен: `from` — что Kaiten принял последним,
   // `steps` — переходы для карточки по порядку. Пока поле есть, статус ведёт файл, а не
   // карточка; снимает его синхронизация, когда карточка догнала (`core/kaiten-sync-plan.ts`).

@@ -22,6 +22,7 @@
 import { contentHash, foreignFieldChanges, parseTaskDocument, serializeTaskDocument, TaskParseError } from './document.js';
 import { findingPath, isFindingPath, parseFinding, serializeFinding } from './found.js';
 import { lintTask, SLUG_RE } from './lint.js';
+import { allPassed, VERIFY_ENTRY_RE, verifyEntry, type CheckResult } from './review-gates.js';
 import { CLOSED_STATUSES, FrontmatterSchema, JOURNAL_FILE, type AssessVerdict, type Frontmatter, type Priority, type TaskStatus, type TaskType, type VisualAnswer } from './schema.js';
 import { renderSkeleton } from './skeleton.js';
 import { parseSyncVersion, renderSyncVersion, SYNC_VERSION_FILE } from './sync-version.js';
@@ -37,6 +38,11 @@ export type Op =
   /** Статус работы: `kaiten start` (в работу), `review`, `done`. Заметка — в журнал; `visual` — ответ «Было / Стало»; `queued` — Kaiten недоступен, карточка догонит. */
   | { kind: 'move'; id: string; status: WorkStatus; note?: string; assigned?: boolean; branch?: string; visual?: VisualAnswer; queued?: QueuedMoves }
   | { kind: 'edit'; id: string; text: string; baseHash: string }
+  /**
+   * Итог прогона проверок проекта (`kaiten verify`, `core/review-gates.ts`): свидетельство
+   * в шапку задачи и запись в журнал. `commit` — на каком коммите шли.
+   */
+  | { kind: 'verify'; id: string; commit: string; results: CheckResult[] }
   /**
    * Вложение задачи: файл `attachments/<slug>/<name>`. Содержимое уже лежит в
    * хранилище объектом `blob` (его кладёт команда до записи операции) — журнал
@@ -116,6 +122,11 @@ export interface QueuedMoves {
   /** Момент смены статуса, ISO: карточку, сдвинутую позже, двигал уже человек. */
   at: string;
   steps: Array<{ status: TaskStatus; priority?: Priority }>;
+  /**
+   * Kaiten доступен, просто карточки у задачи ещё нет (её только что завели, карточку
+   * создаёт фоновая отправка): в журнал задачи о недоступном Kaiten не пишем.
+   */
+  silent?: boolean;
 }
 
 /** Поле `pending_moves` после операции: новые шаги — в хвост уже ожидающих. */
@@ -126,6 +137,11 @@ function withQueued(task: TaskRecord, queued: QueuedMoves | undefined): Pick<Fro
 }
 
 const QUEUED_NOTE = '; карточка в Kaiten обновится, когда он вернётся';
+
+/** Приписка к записи журнала о статусе, который ждёт Kaiten; карточки просто ещё нет — без неё. */
+function queuedNote(queued: QueuedMoves | undefined): string {
+  return queued && !queued.silent ? QUEUED_NOTE : '';
+}
 
 /** Готовый файл задачи из карточки; путь выбирает применение (занятое имя — следующее свободное). */
 export interface AdoptItem {
@@ -255,7 +271,7 @@ function write(task: TaskRecord, fm: Frontmatter, body: string, ctx: OpContext, 
 
 /** Записи, которые пишут сами команды при смене статуса, — не записи о работе. */
 const ASSIGNED_NOTE = String.raw`(?: \(из «[^»]+», по прямому поручению[^)]*\))?`;
-const AUTO_ENTRY_RE = new RegExp(String.raw`^(?:(?:в работе|на ревью|сделана)${ASSIGNED_NOTE}(?::|$)|(?:заблокирована|отменена):)`);
+const AUTO_ENTRY_RE = new RegExp(String.raw`^(?:(?:в работе|на ревью|сделана)${ASSIGNED_NOTE}(?::|$)|(?:заблокирована|отменена):|${VERIFY_ENTRY_RE})`);
 // Записи до 19.10.2026 — с одной датой: `## [2026-09-28]`.
 const ENTRY_RE = /^## \[\d{4}-\d{2}-\d{2}(?: [^\]]*)?\][ \t]*(.*)$/;
 
@@ -289,7 +305,7 @@ export function appendLog(log: string | null, ctx: Pick<OpContext, 'stamp' | 'by
 
 /** Операции, которые пишут в журнал задачи, — им нужен автор. */
 export function writesLog(op: Op): boolean {
-  return op.kind === 'log' || op.kind === 'cancel' || op.kind === 'move' || op.kind === 'block';
+  return op.kind === 'log' || op.kind === 'cancel' || op.kind === 'move' || op.kind === 'block' || op.kind === 'verify';
 }
 
 /** Журнал у всей команды — в одном поясе, где бы ни стояла машина (владелец 19.10.2026). */
@@ -475,6 +491,8 @@ export interface NewTaskInput {
   epic?: string;
   /** Связанные задачи (slug): например, та, по ходу которой завели эту. */
   related?: string[];
+  /** Домен задачи — из списка проекта; проверяет команда. */
+  domain?: string;
   createdBy: string;
   createdVia: 'agent' | 'human';
   /** Тело; без него — скелет по типу. */
@@ -494,6 +512,7 @@ export function newTaskText(input: NewTaskInput, date: string): string | { error
     repo: input.repo,
     epic: input.epic,
     related: input.related,
+    domain: input.domain,
     created: date,
     created_by: input.createdBy,
     created_via: input.createdVia,
@@ -559,6 +578,21 @@ export function applyOp(op: Op, texts: TaskTexts, ctx: OpContext): OpResult {
       if (!op.text.trim()) return { error: 'пустая запись журнала' };
       return { changes: [{ path: logPath(task.path), text: appendLog(task.log, ctx, op.text) }], summary: `запись в журнал ${ref}`, warnings: [] };
     }
+    case 'verify': {
+      if (op.results.length === 0) return { error: 'прогон без проверок' };
+      if (!/^[0-9a-f]{40,64}$/.test(op.commit)) return { error: 'прогон без коммита' };
+      const checks = { commit: op.commit, passed: allPassed(op.results), names: op.results.map((r) => r.name) };
+      // Как `synced`: свидетельство — не правка задачи, `updated` не трогаем.
+      const text = serializeTaskDocument({ ...task.fm, checks }, task.body);
+      return {
+        changes: [
+          { path: task.path, text },
+          { path: logPath(task.path), text: appendLog(task.log, ctx, verifyEntry(op.results, op.commit)) },
+        ],
+        summary: `проверки ${ref} ${checks.passed ? 'пройдены' : 'не пройдены'}`,
+        warnings: [],
+      };
+    }
     case 'cancel': {
       if (!CANCELLABLE.includes(task.fm.status)) {
         return { error: `задача ${ref} в статусе ${task.fm.status}: отменить можно только из ${CANCELLABLE.join(', ')}` };
@@ -570,7 +604,7 @@ export function applyOp(op: Op, texts: TaskTexts, ctx: OpContext): OpResult {
       // Файл переезжает один раз за жизнь задачи (Q42) — вместе с журналом.
       const changes: FileChange[] = [{ path: task.path, text: null }];
       if (task.log !== null) changes.push({ path: logPath(task.path), text: null });
-      changes.push({ path: archived, text: out.text }, { path: logPath(archived), text: appendLog(task.log, ctx, `отменена: ${op.reason.trim()}${op.queued ? QUEUED_NOTE : ''}`) });
+      changes.push({ path: archived, text: out.text }, { path: logPath(archived), text: appendLog(task.log, ctx, `отменена: ${op.reason.trim()}${queuedNote(op.queued)}`) });
       return { changes, summary: `задача ${ref} отменена`, warnings: [] };
     }
     case 'move': {
@@ -580,7 +614,7 @@ export function applyOp(op: Op, texts: TaskTexts, ctx: OpContext): OpResult {
       const from = op.status === 'in-progress' ? ASSIGNED_FROM[task.fm.status] : undefined;
       const priority = op.status === 'in-progress' ? assignedPriority(task, op.assigned === true) : undefined;
       const assignedNote = from ? ` (из ${from}, по прямому поручению${priority ? `, приоритет ${priority}` : ''})` : '';
-      const entry = `${MOVE_WORDS[op.status]}${assignedNote}${op.note?.trim() ? `: ${op.note.trim()}` : ''}${op.queued ? QUEUED_NOTE : ''}`;
+      const entry = `${MOVE_WORDS[op.status]}${assignedNote}${op.note?.trim() ? `: ${op.note.trim()}` : ''}${queuedNote(op.queued)}`;
       const target = op.status === 'done' ? `archive/${ctx.date.slice(0, 7)}/${task.slug}.md` : task.path;
       const fm: Frontmatter = { ...task.fm, status: op.status, ...(op.branch ? { branch: op.branch } : {}), ...(priority ? { priority } : {}), ...(op.visual ? { visual: op.visual } : {}), ...withQueued(task, op.queued) };
       const out = write(task, fm, task.body, ctx, target);
@@ -602,7 +636,7 @@ export function applyOp(op: Op, texts: TaskTexts, ctx: OpContext): OpResult {
       return {
         changes: [
           { path: task.path, text: out.text },
-          { path: logPath(task.path), text: appendLog(task.log, ctx, `заблокирована: ${op.reason.trim()}${op.queued ? QUEUED_NOTE : ''}`) },
+          { path: logPath(task.path), text: appendLog(task.log, ctx, `заблокирована: ${op.reason.trim()}${queuedNote(op.queued)}`) },
         ],
         summary: `задача ${ref} заблокирована`,
         warnings: [],

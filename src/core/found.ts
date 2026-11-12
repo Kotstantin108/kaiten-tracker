@@ -161,6 +161,16 @@ export function listFindings(files: ReadonlyArray<{ path: string; text: string }
     });
 }
 
+/**
+ * Что исследует проверка находок: только заметки `kaiten found`, которые ещё не
+ * исследованы. Задачи проекта сюда не попадают никогда — и заведённые агентом
+ * тоже: задача из `kaiten new` — работа на разбор человеку (владелец 12.11.2026,
+ * после того как разбор «старых задач агентов» отменил поставленную работу).
+ */
+export function pendingFindings(files: ReadonlyArray<{ path: string; text: string }>): Finding[] {
+  return listFindings(files).filter((f) => f.fm.state === 'pending');
+}
+
 export const FINDING_STATE_WORDS: Record<FindingState, string> = {
   pending: 'не исследована',
   confirmed: 'подтверждена',

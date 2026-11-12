@@ -329,8 +329,9 @@ export interface FieldFlags {
 }
 
 /**
- * Поля, которыми владеет файл: «Суть», «Репозиторий» и, если проект ведёт
- * признаки, «Можно младшему», «Младшему не хватает» и «Было / Стало».
+ * Поля, которыми владеет файл: «Суть», «Репозиторий», «Домен» (если проект делит
+ * задачи на домены) и, если проект ведёт признаки, «Можно младшему», «Младшему
+ * не хватает» и «Было / Стало».
  * «Можно младшему» не применим (эпик, задача взята или закрыта) — поле
  * пустое: `null`. «Было / Стало» пишется, только когда ответ есть в задаче.
  */
@@ -339,6 +340,11 @@ export function fileProperties(task: TaskRecord, mapping: ConfigMapping, flags: 
   if (mapping.summaryProperty) props[key(mapping.summaryProperty.id)] = task.fm.summary;
   const repo = selectValue(mapping.repoProperty?.values, task.fm.repo);
   if (mapping.repoProperty && repo) props[key(mapping.repoProperty.id)] = repo;
+  // «Домен» — только у проекта, где поле заведено, и только когда он есть в задаче: у задачи без
+  // домена поле не трогаем — его могли поставить в Kaiten руками. Домена нет среди вариантов
+  // (список сменили, а `setup` не прогнали) — тоже не трогаем.
+  const domain = selectValue(mapping.domainProperty?.values, task.fm.domain);
+  if (mapping.domainProperty && domain) props[key(mapping.domainProperty.id)] = domain;
   const { junior, visual } = flags;
   if (junior) {
     const readiness = juniorReadiness(task.fm, task.body, junior);
@@ -750,6 +756,11 @@ export function planKaitenSync(input: PlanInput): SyncPlan {
       }
       if (task.closed && !firstLoadOk) {
         report.closedWithoutCard.push(task.slug);
+        // Статус ждал карточку, а её не будет (задачу закрыли раньше, чем она появилась): ждать нечего.
+        if (task.fm.pending_moves) {
+          mirror.push({ id: task.fm.id, settled: 'all' });
+          names[task.fm.id] = task.slug;
+        }
         continue;
       }
       const epic = epicOf(tasks, task);

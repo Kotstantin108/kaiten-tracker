@@ -117,7 +117,7 @@ async function start(args: string[]): Promise<void> {
     if (error instanceof UsageError) throw new UsageError(`${error.message}\nВетка ${result.branch} заведена, задача осталась в прежнем статусе.`, error.code);
     throw error;
   }
-  await commit(ctx, { kind: 'move', id: task.fm.id, status: 'in-progress', branch: result.branch, ...(assigned ? { assigned: true } : {}), ...queuedOf(queue) }, `в работу ${refOf(task)}`);
+  await commit(ctx, { kind: 'move', id: task.fm.id, status: 'in-progress', branch: result.branch, ...(assigned ? { assigned: true } : {}), ...queuedOf(queue, card) }, `в работу ${refOf(task)}`);
   cardNotMovedNote(card);
   // Обязательный ответ спросит kaiten review; здесь — только удобный момент снять «было».
   if (visualFields(ctx.loaded.project) && visualApplies(task.fm.type)) {

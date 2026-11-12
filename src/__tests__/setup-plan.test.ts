@@ -439,3 +439,44 @@ describe('поле «Было / Стало»', () => {
     expect(desiredForProject({ ...base, visual: true }).visual).toEqual(VISUAL_FIELD);
   });
 });
+
+describe('поле «Домен»', () => {
+  const base = { space: 'Acme', board: 'Задачи', repoField: 'Репозиторий', repoLabels: [], teams: [] };
+  const withDomain: DesiredStructure = { ...desired, domain: desiredForProject({ ...base, domains: ['core', 'generic'] }).domain };
+
+  function ready(): CurrentStructure {
+    const current = complete();
+    current.properties.push({ id: 700, uid: 'uid-domain', name: 'Домен', type: 'select' });
+    current.selectValues[700] = [
+      { id: 7000, value: 'core' },
+      { id: 7001, value: 'generic' },
+    ];
+    current.cardTypes = current.cardTypes.map((t) =>
+      ['Story', 'Tech', 'Bug'].includes(t.name) ? { ...t, card_properties: [{ regular_property: null, property_uid: 'uid-domain', sort_order: 9, required: false }] } : t,
+    );
+    return current;
+  }
+
+  it('без доменов в проекте — поля нет ни в плане, ни в маппинге', () => {
+    expect(desiredForProject(base).domain).toBeNull();
+    expect(desiredForProject({ ...base, domains: [] }).domain).toBeNull();
+    expect(planSetup(complete(), desired).actions).toEqual([]);
+    expect(buildMapping(ready(), desired)).not.toHaveProperty('domainProperty');
+  });
+
+  it('с доменами: выбор с вариантом на каждый домен, необязательно в Story, Tech, Bug', () => {
+    expect(planSetup(complete(), withDomain).actions).toEqual([
+      { kind: 'create-property', name: 'Домен', type: 'select' },
+      { kind: 'create-select-value', property: 'Домен', value: 'core' },
+      { kind: 'create-select-value', property: 'Домен', value: 'generic' },
+      ...['Story', 'Tech', 'Bug'].map((typeName) => ({ kind: 'add-type-property', typeName, property: 'Домен', propertyType: 'select' })),
+    ]);
+  });
+
+  it('заведено — пустой план и маппинг по имени домена; новый домен — только его вариант', () => {
+    expect(planSetup(ready(), withDomain).actions).toEqual([]);
+    expect(buildMapping(ready(), withDomain)).toMatchObject({ domainProperty: { id: 700, values: { core: 7000, generic: 7001 } } });
+    const more: DesiredStructure = { ...desired, domain: desiredForProject({ ...base, domains: ['core', 'generic', 'supporting'] }).domain };
+    expect(planSetup(ready(), more).actions).toEqual([{ kind: 'create-select-value', property: 'Домен', value: 'supporting' }]);
+  });
+});

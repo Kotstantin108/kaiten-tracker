@@ -17,8 +17,11 @@ function epicProgress(all: readonly TaskRecord[], epic: TaskRecord): string {
   return ` · закрыто ${children.filter((c) => c.closed).length} из ${children.length}`;
 }
 
-/** Строки списка: ключ, статус, приоритет, тип, [репозиторий], заголовок. */
-export function formatTaskLines(all: readonly TaskRecord[], tasks: readonly TaskRecord[], withRepo: boolean): string[] {
+/** Домены проекта (имя → правило ревью) — для вывода; `null` — проект их не ведёт, и домен нигде не показывается. */
+export type Domains = Readonly<Record<string, string>> | null;
+
+/** Строки списка: ключ, статус, приоритет, тип, [репозиторий], заголовок; в проекте с доменами — домен задачи в хвосте. */
+export function formatTaskLines(all: readonly TaskRecord[], tasks: readonly TaskRecord[], withRepo: boolean, domains: Domains = null): string[] {
   const refWidth = Math.max(0, ...tasks.map((t) => refOf(t).length));
   const repoWidth = Math.max(0, ...tasks.map((t) => (t.fm.repo ?? '—').length));
   return tasks.map((t) => {
@@ -27,15 +30,17 @@ export function formatTaskLines(all: readonly TaskRecord[], tasks: readonly Task
     // У задачи в работе и на ревью — её ветка: работа ещё не в main, но видна отсюда.
     const working = (t.fm.status === 'in-progress' || t.fm.status === 'review') && t.fm.branch ? ` · ветка ${t.fm.branch}` : '';
     const tail = t.fm.type === 'epic' ? epicProgress(all, t) : working;
-    return `${cols.join('  ')}  ${t.fm.title}${tail}`;
+    const domain = domains && t.fm.domain ? ` · домен ${t.fm.domain}` : '';
+    return `${cols.join('  ')}  ${t.fm.title}${domain}${tail}`;
   });
 }
 
-export function formatSearch(all: readonly TaskRecord[], hits: readonly SearchHit[], withRepo: boolean): string[] {
+export function formatSearch(all: readonly TaskRecord[], hits: readonly SearchHit[], withRepo: boolean, domains: Domains = null): string[] {
   const lines = formatTaskLines(
     all,
     hits.map((h) => h.task),
     withRepo,
+    domains,
   );
   const cut = (text: string, max = 140): string => (text.length > max ? `${text.slice(0, max - 3)}…` : text);
   return hits.flatMap((hit, i) => {
@@ -187,8 +192,16 @@ export function juniorLine(readiness: JuniorReadiness): string | null {
   return readiness.ok ? 'Младшему: да.' : `Младшему: нет — не хватает: ${juniorMissingText(readiness.missing)}.`;
 }
 
-/** `junior` — признак задачи, если проект отмечает задачи для младших. */
-export function formatShow(all: readonly TaskRecord[], task: TaskRecord, attachments: readonly string[], junior: JuniorReadiness = null): string {
+/** Домен задачи с правилом ревью — строкой шапки; `null` — проект домены не ведёт. */
+export function domainLine(task: TaskRecord, domains: Domains): string | null {
+  if (!domains) return null;
+  const domain = task.fm.domain;
+  if (domain === undefined) return task.fm.type === 'epic' ? null : 'Домен: не указан';
+  return domains[domain] ? `Домен: ${domain} — ${domains[domain]}` : `Домен: ${domain} (в проекте такого больше нет)`;
+}
+
+/** `junior` — признак задачи, если проект отмечает задачи для младших; `domains` — если делит их на домены. */
+export function formatShow(all: readonly TaskRecord[], task: TaskRecord, attachments: readonly string[], junior: JuniorReadiness = null, domains: Domains = null): string {
   const fm = task.fm;
   const out: string[] = [`# ${fm.title}`, ''];
   const facts = [refOf(task), fm.type, fm.status, fm.priority ? `приоритет ${fm.priority}` : 'без приоритета'];
@@ -217,6 +230,9 @@ export function formatShow(all: readonly TaskRecord[], task: TaskRecord, attachm
   if (progress.length > 0) out.push(`Пункты: ${progress.map((p) => `${p.name} ${p.done}/${p.total}`).join(' · ')}`);
   const juniorText = juniorLine(junior);
   if (juniorText) out.push(juniorText);
+  const domainText = domainLine(task, domains);
+  if (domainText) out.push(domainText);
+  if (fm.checks) out.push(`Проверки проекта: ${fm.checks.passed ? 'пройдены' : 'не пройдены'} на коммите ${fm.checks.commit.slice(0, 10)}`);
   if (attachments.length > 0) out.push(`Вложения (${attachments.length}): kaiten files ${refOf(task)}`);
   out.push('', `Суть: ${fm.summary}`, '', presentBody(all, task.body).trim());
 
@@ -225,10 +241,10 @@ export function formatShow(all: readonly TaskRecord[], task: TaskRecord, attachm
   if (fm.type === 'epic') {
     const children = childrenOf(all, task);
     out.push('', `## Задачи эпика (${children.length})`, '');
-    out.push(...(children.length > 0 ? formatTaskLines(all, children, true) : ['Задач пока нет.']));
+    out.push(...(children.length > 0 ? formatTaskLines(all, children, true, domains) : ['Задач пока нет.']));
   } else if (epic) {
     const siblings = childrenOf(all, epic).filter((t) => t !== task);
-    if (siblings.length > 0) out.push('', `## Другие задачи эпика (${siblings.length})`, '', ...formatTaskLines(all, siblings, true));
+    if (siblings.length > 0) out.push('', `## Другие задачи эпика (${siblings.length})`, '', ...formatTaskLines(all, siblings, true, domains));
   }
   return `${out.join('\n')}\n`;
 }
@@ -246,6 +262,7 @@ export interface TaskJson {
   repo: string | null;
   epic: string | null;
   branch: string | null;
+  domain?: string;
 }
 
 export function taskJson(all: readonly TaskRecord[], task: TaskRecord): TaskJson {
@@ -263,6 +280,8 @@ export function taskJson(all: readonly TaskRecord[], task: TaskRecord): TaskJson
     repo: task.fm.repo ?? null,
     epic: epic ? refOf(epic) : (task.fm.epic ?? null),
     branch: task.fm.branch ?? null,
+    // Только у задачи с доменом: у проекта без доменов вывод прежний.
+    ...(task.fm.domain !== undefined ? { domain: task.fm.domain } : {}),
   };
 }
 

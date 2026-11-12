@@ -44,8 +44,55 @@ export const MappingSchema = z.object({
   assessProperty: SelectMappingSchema.optional(),
   /** Выбор «Было / Стало»: варианты `yes`/`no` (`kaiten.visual`). */
   visualProperty: SelectMappingSchema.optional(),
+  /** Выбор «Домен»: варианты — по имени домена (`domains`). */
+  domainProperty: SelectMappingSchema.optional(),
 });
 export type ConfigMapping = z.infer<typeof MappingSchema>;
+
+/**
+ * Проверка проекта перед сдачей работы (`kaiten verify`, `core/review-gates.ts`):
+ * команда оболочки, которую инструмент запускает в корне репозитория кода.
+ * Имя попадает в журнал задачи и в сообщения.
+ */
+const CheckSchema = z
+  .object({
+    name: z.string().regex(/^[\p{L}\p{N}][\p{L}\p{N} _.-]{0,39}$/u, 'имя проверки — буквы, цифры, пробел, точка, дефис, подчёркивание; до 40 знаков'),
+    run: z.string().trim().min(1, 'пустая команда'),
+    /** Предел времени проверки в минутах; дольше — «не прошла». */
+    timeoutMin: z.number().positive().default(30),
+  })
+  .strict();
+export type ReviewCheck = z.infer<typeof CheckSchema>;
+
+const checkList = z.array(CheckSchema).superRefine((checks, ctx) => {
+  const seen = new Set<string>();
+  for (const [i, check] of checks.entries()) {
+    if (seen.has(check.name)) ctx.addIssue({ code: 'custom', path: [i, 'name'], message: `проверка «${check.name}» названа дважды` });
+    seen.add(check.name);
+  }
+});
+const docGlobs = z.array(z.string().trim().min(1));
+
+/** Гейты сдачи одного репозитория кода: заданный ключ заменяет такой же ключ проекта целиком. */
+const RepoReviewSchema = z.object({ checks: checkList.optional(), docs: docGlobs.optional() }).strict();
+
+/**
+ * Гейты сдачи работы (`docs/review-gates.md`). Нет блока — `kaiten review` и
+ * `kaiten new` ведут себя как без него.
+ */
+const ReviewSchema = z
+  .object({
+    /** Проверки, без успешного прогона которых на текущем коммите `kaiten review` отказывает. */
+    checks: checkList.default([]),
+    /** Пути документации: в изменениях ветки задачи должен быть хотя бы один файл под ними. */
+    docs: docGlobs.default([]),
+    /** Раздел «Как проверить» обязателен в постановке story (`kaiten new`). */
+    testPlan: z.boolean().default(false),
+  })
+  .strict();
+
+/** Имя домена — как значение флага: латиница, цифры, дефис. */
+export const DOMAIN_RE = /^[a-z0-9][a-z0-9-]*$/;
 
 export const RepoSchema = z.object({
   /** Имя репозитория кода на GitHub — оно же поле `repo` задачи. */
@@ -66,6 +113,8 @@ export const RepoSchema = z.object({
    * задачи, а не только у задач с этим `repo`, — например, сценарии n8n.
    */
   shared: z.boolean().default(false),
+  /** Свои проверки и пути документации этого репозитория вместо общих (`review` проекта). */
+  review: RepoReviewSchema.optional(),
 });
 export type RepoConfig = z.infer<typeof RepoSchema>;
 
@@ -120,6 +169,18 @@ const ProjectObject = z.object({
   ignoreCards: z.array(z.number()).default([]),
   /** Поля, которые `setup` отключает и переименовывает (данные на карточках остаются). */
   retireFields: z.array(z.string()).default([]),
+  /** Гейты сдачи работы: проверки, документация, «Как проверить». */
+  review: ReviewSchema.optional(),
+  /**
+   * Домены задач: имя → правило ревью («человек читает изменения целиком»).
+   * Инструмент домен только хранит и показывает; кто что читает — дело проекта.
+   */
+  domains: z
+    .record(z.string(), z.string().trim().min(1, 'пустое правило ревью'))
+    .superRefine((domains, ctx) => {
+      for (const name of Object.keys(domains)) if (!DOMAIN_RE.test(name)) ctx.addIssue({ code: 'custom', path: [name], message: 'имя домена — латиница, цифры, дефис' });
+    })
+    .optional(),
   mapping: MappingSchema.optional(),
 });
 
@@ -210,6 +271,48 @@ export function foundSetting(project: Pick<ProjectConfig, 'kaiten' | 'mapping'>)
   if (!found) return { state: 'off' };
   if (project.mapping?.columns.found === undefined) return { state: 'needs-setup' };
   return { state: 'on', model: found.model };
+}
+
+/** Гейты сдачи для репозитория кода: свои (`repos[].review`) поверх общих (`review`). Пустые списки — гейта нет. */
+export interface ReviewGates {
+  checks: readonly ReviewCheck[];
+  docs: readonly string[];
+  /** Основная ветка репозитория: от общего предка с ней считаются изменения ветки задачи. */
+  mainBranch: string;
+}
+
+export function reviewGates(project: Pick<ProjectConfig, 'review' | 'repos'>, repoName: string): ReviewGates {
+  const repo = project.repos.find((r) => r.name === repoName);
+  return {
+    checks: repo?.review?.checks ?? project.review?.checks ?? [],
+    docs: repo?.review?.docs ?? project.review?.docs ?? [],
+    mainBranch: repo?.branch ?? 'main',
+  };
+}
+
+/** Обязателен ли раздел «Как проверить» в постановке story. */
+export function testPlanRequired(project: Pick<ProjectConfig, 'review'>): boolean {
+  return project.review?.testPlan === true;
+}
+
+/** Домены проекта: имя → правило ревью; `null` — проект домены не ведёт. */
+export function domainsOf(project: Pick<ProjectConfig, 'domains'>): Readonly<Record<string, string>> | null {
+  const domains = project.domains;
+  return domains && Object.keys(domains).length > 0 ? domains : null;
+}
+
+/** Что не так с доменом задачи; `null` — годится (или домена нет). */
+export function domainProblem(project: Pick<ProjectConfig, 'domains'>, domain: string | undefined): string | null {
+  if (domain === undefined) return null;
+  const domains = domainsOf(project);
+  if (!domains) return 'в этом проекте домены задач не ведутся — уберите домен';
+  if (!(domain in domains)) return `нет домена «${domain}». Можно: ${Object.keys(domains).join(', ')}`;
+  return null;
+}
+
+/** Поле «Домен» для синхронизации; `undefined` — доменов нет или поле ещё не заведено (`setup`). */
+export function domainField(project: Pick<ProjectConfig, 'domains' | 'mapping'>): { id: number; values: Record<string, number> } | undefined {
+  return domainsOf(project) ? project.mapping?.domainProperty : undefined;
 }
 
 /** Поле «Было / Стало» для команд и синхронизации; `undefined` — выключено или ждёт setup. */

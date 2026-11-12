@@ -398,12 +398,20 @@ export async function moveCardFirst(
   const current = settings();
   const cardId = task.fm.tracker !== undefined && /^\d+$/.test(task.fm.tracker) ? Number(task.fm.tracker) : null;
   const column = ctx.loaded.project.mapping?.columns[status];
+  const step: MoveStep = { status, ...(priority !== undefined ? { priority } : {}) };
+  // Карточки ещё нет, но она появится сама: задачу только что завели, и фоновая отправка создаёт
+  // карточку по тому статусу, который задача имела в момент её прохода. Шаг — в очередь задачи:
+  // иначе первая же сверка вернула бы задаче колонку свежей карточки («Входящие») — живьём 12.11.
+  if (cardId === null && column !== undefined && awaitsCard(task) && current.sync.kaiten) {
+    queue.push(step);
+    return 'awaits-card';
+  }
   if (cardId === null || column === undefined || ctx.loaded.project.ignoreCards.includes(cardId)) return 'none';
   if (!current.sync.kaiten) return 'off';
   const login = current.kaiten;
   if (!login && !client) throw new UsageError('Не настроен вход в Kaiten: kaiten.domain и kaiten.token в настройках kaiten.', 2);
   const enqueue = (): 'queued' => {
-    queue.push({ status, ...(priority !== undefined ? { priority } : {}) });
+    queue.push(step);
     return 'queued';
   };
   if (task.fm.pending_moves || queue.length > 0 || (!client && kaitenDownNote(ctx.store))) return enqueue();
@@ -425,14 +433,28 @@ export async function moveCardFirst(
   return 'moved';
 }
 
-/** Поле операции для команд статуса: шаги, которые ждут Kaiten. */
-export function queuedOf(queue: readonly MoveStep[]): { queued?: QueuedMoves } {
-  return queue.length > 0 ? { queued: { at: new Date().toISOString(), steps: [...queue] } } : {};
+/**
+ * Задача ждёт свою карточку: заведена командой (такие карточки создаёт сама
+ * синхронизация), а ключа ещё нет. У перенесённых задач без `created_via`
+ * карточку заводит только первая заливка владельца — им ждать нечего.
+ */
+function awaitsCard(task: TaskRecord): boolean {
+  return task.fm.tracker === undefined && task.fm.created_via !== undefined;
+}
+
+/**
+ * Поле операции для команд статуса: шаги, которые карточка получит позже.
+ * `card` — чем кончилась команда: `awaits-card` — карточки ещё нет, и говорить
+ * в журнале о недоступном Kaiten не нужно.
+ */
+export function queuedOf(queue: readonly MoveStep[], card?: CardMove): { queued?: QueuedMoves } {
+  if (queue.length === 0) return {};
+  return { queued: { at: new Date().toISOString(), steps: [...queue], ...(card === 'awaits-card' ? { silent: true } : {}) } };
 }
 
 // ── Kaiten недоступен ───────────────────────────────────────────────────
 
-export type CardMove = 'moved' | 'off' | 'none' | 'queued';
+export type CardMove = 'moved' | 'off' | 'none' | 'queued' | 'awaits-card';
 export type MoveStep = QueuedMoves['steps'][number];
 
 export const KAITEN_DOWN_NOTE = '  Kaiten сейчас недоступен. Статус записан в задачу, карточка обновится сама, когда он вернётся. Продолжайте работу: повторять команду не нужно.';

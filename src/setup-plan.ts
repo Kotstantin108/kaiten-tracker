@@ -77,7 +77,18 @@ export interface DesiredStructure {
   junior: JuniorFields | null;
   /** Поле «Было / Стало» (`kaiten.visual`); `null` — не заводим. */
   visual: VisualField | null;
+  /** Поле «Домен» (`domains`); `null` — не заводим. */
+  domain: DomainField | null;
 }
+
+/** Выбор «Домен» — в типах story, tech, bug, необязательный: вариант на каждый домен проекта, по его имени. */
+export interface DomainField {
+  name: string;
+  values: readonly string[];
+  types: readonly TaskType[];
+}
+
+export const DOMAIN_FIELD_NAME = 'Домен';
 
 /** Выбор «Было / Стало» — в типах story, tech, bug, необязательный: его ставят `kaiten review`/`done`. */
 export interface VisualField {
@@ -228,6 +239,7 @@ export const DESIRED: DesiredStructure = {
   departments: [],
   junior: null,
   visual: null,
+  domain: null,
 };
 
 /** «Находки» — только у проекта с `kaiten.found`: подтверждённые дефекты до разбора человеком. */
@@ -254,6 +266,8 @@ export function desiredForProject(input: {
   visual?: boolean;
   /** Колонка «Находки» (`kaiten.found`) — левее «Входящих». */
   found?: boolean;
+  /** Имена доменов проекта (`domains`); пусто — поле «Домен» не заводим. */
+  domains?: readonly string[];
 }): DesiredStructure {
   const unknown = (input.departments ?? []).filter((key) => !DEPARTMENTS.some((d) => d.key === key));
   if (unknown.length > 0) throw new Error(`Нет шаблона отдела: ${unknown.join(', ')} (есть: ${DEPARTMENTS.map((d) => d.key).join(', ')})`);
@@ -275,6 +289,7 @@ export function desiredForProject(input: {
     departments: DEPARTMENTS.filter((d) => (input.departments ?? []).includes(d.key)),
     junior: input.junior ? JUNIOR_FIELDS : null,
     visual: input.visual ? VISUAL_FIELD : null,
+    domain: input.domains && input.domains.length > 0 ? { name: DOMAIN_FIELD_NAME, values: input.domains, types: ['story', 'tech', 'bug'] } : null,
   };
 }
 
@@ -484,6 +499,7 @@ export function planSetup(current: CurrentStructure, desired: DesiredStructure =
     ...SELECT_ROLES.map((r) => desired.selects[r].name),
     ...(desired.junior ? [desired.junior.select.name, desired.junior.missing.name, desired.junior.assess.name] : []),
     ...(desired.visual ? [desired.visual.name] : []),
+    ...(desired.domain ? [desired.domain.name] : []),
   ];
   for (const name of desired.retire) {
     const old = current.properties.filter(alive).find((p) => same(p.name, name) && !wantedNames.some((w) => same(w, name)));
@@ -529,7 +545,8 @@ export function planSetup(current: CurrentStructure, desired: DesiredStructure =
   }
 
   if (desired.junior) planJunior(current, desired.junior, desired.types, actions, reused);
-  if (desired.visual) planVisual(current, desired.visual, desired.types, actions, reused);
+  if (desired.visual) planVisual(current, { ...desired.visual, values: [desired.visual.yes, desired.visual.no] }, desired.types, actions, reused);
+  if (desired.domain) planVisual(current, desired.domain, desired.types, actions, reused);
 
   for (const department of hiddenFolder ? [] : desired.departments) {
     const found = findDepartment(current, folder, department);
@@ -567,15 +584,15 @@ function planJunior(current: CurrentStructure, junior: JuniorFields, types: Desi
   }
 }
 
-/** Поле «Было / Стало»: завести, варианты, добавить в типы. */
-function planVisual(current: CurrentStructure, visual: VisualField, types: DesiredStructure['types'], actions: SetupAction[], reused: string[]): void {
+/** Поле-выбор признака («Было / Стало», «Домен»): завести, варианты, добавить в типы. */
+function planVisual(current: CurrentStructure, visual: { name: string; values: readonly string[]; types: readonly TaskType[] }, types: DesiredStructure['types'], actions: SetupAction[], reused: string[]): void {
   const found = findSelect(current, visual.name);
   const clash = findClash(current, visual.name, 'select');
   if (clash) actions.push({ kind: 'retire-property', id: clash.id, name: clash.name, newName: `${clash.name} (${clash.type ?? 'другой тип'}, отключено)` });
   if (!found) actions.push({ kind: 'create-property', name: visual.name, type: 'select' });
   else reused.push(`поле «${found.name}» (${found.id})`);
   const have = found ? aliveValues(current, found.id) : [];
-  for (const value of [visual.yes, visual.no]) {
+  for (const value of visual.values) {
     if (!have.some((v) => same(v.value, value))) actions.push({ kind: 'create-select-value', property: visual.name, value });
   }
   for (const type of types.filter((t) => visual.types.includes(t.key))) {
@@ -616,6 +633,8 @@ export interface KaitenMapping {
   assessProperty?: SelectMapping;
   /** «Было / Стало»: варианты `yes`/`no`. */
   visualProperty?: SelectMapping;
+  /** «Домен»: варианты — по имени домена. */
+  domainProperty?: SelectMapping;
 }
 
 /**
@@ -689,6 +708,7 @@ export function buildMapping(current: CurrentStructure, desired: DesiredStructur
     }
   }
   const visualProperty = desired.visual ? selectMapping(desired.visual.name, { yes: desired.visual.yes, no: desired.visual.no }) : undefined;
+  const domainProperty = desired.domain ? selectMapping(desired.domain.name, Object.fromEntries(desired.domain.values.map((v) => [v, v]))) : undefined;
 
   const laneOf = (title: string): number | undefined => {
     const found = board?.lanes.find((l) => same(laneTitle(l), title));
@@ -727,5 +747,6 @@ export function buildMapping(current: CurrentStructure, desired: DesiredStructur
     ...(summaryProperty ? { summaryProperty: { id: summaryProperty.id } } : {}),
     ...junior,
     ...(visualProperty ? { visualProperty } : {}),
+    ...(domainProperty ? { domainProperty } : {}),
   };
 }

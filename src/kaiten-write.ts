@@ -15,11 +15,11 @@ import { existsSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { basename, join, resolve } from 'node:path';
 
-import { juniorSetting, visualFields } from './config.js';
-import { contentHash, serializeTaskDocument } from './core/document.js';
+import { domainProblem, domainsOf, juniorSetting, testPlanRequired, visualFields } from './config.js';
+import { contentHash, parseTaskDocument, serializeTaskDocument } from './core/document.js';
 import { SLUG_RE } from './core/lint.js';
 import { JUNIOR_TYPES, juniorMissingText, juniorReadiness, withJuniorTemplate } from './core/junior.js';
-import { criteriaText, newBodyProblems, newBodyTemplate, SKELETONS, withCriteriaWaiver } from './core/skeleton.js';
+import { criteriaText, newBodyProblems, newBodyTemplate, SKELETONS, testPlanApplies, withCriteriaWaiver, withTestPlanTemplate, withTestPlanWaiver } from './core/skeleton.js';
 import { TASK_TYPES, type TaskType, type VisualAnswer } from './core/schema.js';
 import { ATTACHMENT_MAX_BYTES, attachmentNameProblem, BLOCKABLE, CANCELLABLE, hasWorkNote, matchItem, moveProblem, newTaskText, slugify, uniqueSlug, writesLog, type Op } from './core/task-ops.js';
 import { refOf, type TaskRecord } from './core/tasks-index.js';
@@ -47,6 +47,7 @@ import {
 } from './kaiten-cli.js';
 import { progressLine } from './kaiten-format.js';
 import { git } from './kaiten-start.js';
+import { reviewGateNotes } from './kaiten-verify.js';
 import { recordOp, storeBlob } from './store-write.js';
 import type { StoreEntry } from './task-store.js';
 
@@ -71,6 +72,13 @@ export const WRITE_HELP: Record<string, string> = {
 перед критериями ещё «Продуктовые решения», «Изменения в БД», «Сценарии n8n»
 (шаблон — в отказе команды без --stdin). Они необязательны: «Нет» — только
 проверив по коду; иначе — все пункты; не знаете — оставьте раздел пустым.
+Если проект просит план проверки, у story перед «Шаги» обязателен раздел «Как
+проверить»: какие интеграционные тесты добавить или изменить и как проверить
+результат как чёрный ящик, не читая код. Проверять нечего — --no-test-plan с
+причиной.
+Если проект делит задачи на домены, --domain называет домен задачи: по нему
+на ревью решают, как читать изменения. Список доменов — в отказе команды на
+неизвестное имя.
 
 Флаги:
   --type <тип>        обязательно: ${TASK_TYPES.join(', ')}
@@ -81,6 +89,9 @@ export const WRITE_HELP: Record<string, string> = {
   --epic <задача>     эпик, в который входит задача
   --from <задача>     задача, по ходу которой нашлась эта работа (в «Связано»)
   --no-criteria <почему>  критериев нет — и почему
+  --no-test-plan <почему> проверять нечего — и почему (story, если проект
+                      просит «Как проверить»)
+  --domain <имя>      домен задачи, если проект их ведёт
   --agent             задачу заводит агент
 
 Пример:
@@ -203,10 +214,20 @@ ${TASK_REF_HELP}
                       без этого флага задача с неотмеченными критериями на
                       ревью не уходит
   --no-visual <текст> почему на экране ничего не меняется — вместо скриншотов
+  --no-ingest <текст> почему документация не меняется — вместо её правки
+
+Если проект требует проверок перед ревью, у story, tech, bug нужен их успешный
+прогон на текущем коммите ветки: kaiten verify PRJ-123. Команда сдаётся из
+репозитория задачи, с её ветки, без незакоммиченных изменений; новый коммит
+после прогона — и verify нужно повторить.
+
+Если проект требует документации, в изменениях ветки должна быть её правка
+(страница модуля, который меняли) — или --no-ingest с причиной.
 
 Примеры:
   kaiten review PRJ-123 --note "PR #45"
   kaiten review PRJ-124 --no-visual "только сценарий n8n"
+  kaiten review PRJ-125 --no-ingest "правка опечатки в тексте кнопки"
 `,
   done: `kaiten done <задача> — задача сделана (влито в прод).
 
@@ -223,8 +244,9 @@ kaiten review, если на ревью ответа не дали.
   edit: `kaiten edit <задача> — поправить текст задачи.
 
 Открывает задачу в вашем редакторе; после сохранения задача проверяется и
-записывается. Меняются заголовок, «Суть», постановка, репозиторий, эпик и
-связи; статус, приоритет, исполнитель и сроки меняются в Kaiten.
+записывается. Меняются заголовок, «Суть», постановка, репозиторий, эпик,
+связи и домен (строка domain: в шапке, если проект делит задачи на домены);
+статус, приоритет, исполнитель и сроки меняются в Kaiten.
 
 Флаги:
   --stdin             новый текст задачи целиком — из стандартного ввода
@@ -280,6 +302,8 @@ async function newTask(args: string[]): Promise<void> {
       agent: { type: 'boolean' },
       stdin: { type: 'boolean' },
       'no-criteria': { type: 'string' },
+      'no-test-plan': { type: 'string' },
+      domain: { type: 'string' },
     },
     1,
   );
@@ -293,8 +317,19 @@ async function newTask(args: string[]): Promise<void> {
   const waiver = stringFlag(values, 'no-criteria')?.trim();
   if (waiver !== undefined && !waiver) throw new UsageError('--no-criteria: напишите, почему у задачи нет критериев.');
   if (waiver && !SKELETONS[taskType].criteria) throw new UsageError(`--no-criteria: у задачи типа ${type} нет раздела критериев.`);
+  const planWaiver = stringFlag(values, 'no-test-plan')?.trim();
+  if (planWaiver !== undefined && !planWaiver) throw new UsageError('--no-test-plan: напишите, почему у задачи нечего проверять.');
+  if (planWaiver && !testPlanApplies(taskType)) throw new UsageError(`--no-test-plan: раздел «Как проверить» — только у story, у задачи типа ${type} его нет.`);
 
   const ctx = begin();
+  // Домен — по списку проекта: неизвестный отклоняем до всего остального, со списком допустимых.
+  const domain = stringFlag(values, 'domain')?.trim();
+  if (domain !== undefined) {
+    const problem = domain ? domainProblem(ctx.loaded.project, domain) : 'назовите домен задачи';
+    if (problem) throw new UsageError(`--domain: ${problem}.`);
+  }
+  // «Как проверить» — только в проекте, который просит план проверки, и только у story.
+  const testPlan = testPlanRequired(ctx.loaded.project) && testPlanApplies(taskType);
   // Разделы продукта, БД и n8n — в шаблоне, только если проект ведёт признак «Можно младшему».
   const juniorState = juniorSetting(ctx.loaded.project);
   const junior = juniorState.state !== 'off' && JUNIOR_TYPES.includes(taskType);
@@ -310,7 +345,8 @@ async function newTask(args: string[]): Promise<void> {
   else {
     body = readStdin();
     if (waiver) body = withCriteriaWaiver(taskType, body, waiver);
-    problems.push(...newBodyProblems(taskType, body));
+    if (planWaiver && testPlan) body = withTestPlanWaiver(taskType, body, planWaiver);
+    problems.push(...newBodyProblems(taskType, body, { testPlan }));
   }
   if (problems.length > 0) {
     const quote = (s: string): string => `"${s.replace(/(["\\$`])/g, '\\$1')}"`;
@@ -318,10 +354,11 @@ async function newTask(args: string[]): Promise<void> {
       `--type ${type}`,
       values.agent ? '--agent' : '',
       `--slug ${slugFlag ?? (type === 'bug' ? 'fix-…' : 'add-…')}`,
-      ...(['epic', 'from', 'no-criteria'] as const).map((f) => (stringFlag(values, f) ? `--${f} ${quote(stringFlag(values, f) ?? '')}` : '')),
+      ...(['epic', 'from', 'domain', 'no-criteria', 'no-test-plan'] as const).map((f) => (stringFlag(values, f) ? `--${f} ${quote(stringFlag(values, f) ?? '')}` : '')),
       `--summary ${quote(summary)}`,
     ].filter(Boolean);
-    const filled = junior ? withJuniorTemplate(taskType, newBodyTemplate(taskType)) : newBodyTemplate(taskType);
+    const base = testPlan ? withTestPlanTemplate(taskType, newBodyTemplate(taskType)) : newBodyTemplate(taskType);
+    const filled = junior ? withJuniorTemplate(taskType, base) : base;
     const juniorNote = junior
       ? '\nПродукт, БД, n8n — для младших разработчиков: «Нет» — только проверив по коду; иначе все пункты; не знаете — оставьте раздел пустым.'
       : '';
@@ -362,6 +399,7 @@ async function newTask(args: string[]): Promise<void> {
       repo: type === 'epic' ? undefined : ctx.currentRepo,
       epic,
       related,
+      domain,
       createdBy: currentPerson(ctx.loaded.people),
       createdVia: values.agent ? 'agent' : 'human',
       body,
@@ -506,7 +544,7 @@ async function withReason(command: 'block' | 'cancel', args: string[]): Promise<
   }
   const queue: MoveStep[] = [];
   const card = await moveCardFirst(ctx, task, command === 'block' ? 'blocked' : 'cancelled', undefined, undefined, queue);
-  await commit(ctx, { kind: command, id: task.fm.id, reason, ...queuedOf(queue) }, what);
+  await commit(ctx, { kind: command, id: task.fm.id, reason, ...queuedOf(queue, card) }, what);
   cardNotMovedNote(card);
 }
 
@@ -514,7 +552,7 @@ async function move(command: 'review' | 'done', args: string[]): Promise<void> {
   const { values, positionals } = parse(
     command,
     args,
-    { note: { type: 'string' }, 'no-visual': { type: 'string' }, ...(command === 'review' ? { unchecked: { type: 'string' as const } } : {}) },
+    { note: { type: 'string' }, 'no-visual': { type: 'string' }, ...(command === 'review' ? { unchecked: { type: 'string' as const }, 'no-ingest': { type: 'string' as const } } : {}) },
     1,
   );
   const ref = taskArg(positionals, command);
@@ -542,13 +580,17 @@ async function move(command: 'review' | 'done', args: string[]): Promise<void> {
       1,
     );
   }
+  // Гейты проекта (`core/review-gates.ts`): документация в ветке и прогон проверок на текущем коммите.
+  const gates = command === 'review' && task.fm.status !== 'review' ? reviewGateNotes(ctx, task, stringFlag(values, 'no-ingest')) : [];
   const visual = task.fm.status !== status ? visualFor(ctx, task, entries, command, stringFlag(values, 'no-visual')) : undefined;
   const given = stringFlag(values, 'note')?.trim();
   const work = command === 'review' ? workRef(ctx.workDir, given) : undefined;
-  const note = [given, work, open.length > 0 && why ? `не отмечено пунктов ${open.length}: ${why}` : undefined, visual?.note].filter(Boolean).join('; ') || undefined;
+  // Домен — в запись о сдаче: ревьюер видит, как читать изменения, не открывая постановку.
+  const domain = command === 'review' ? domainNote(ctx, task) : undefined;
+  const note = [given, work, domain, open.length > 0 && why ? `не отмечено пунктов ${open.length}: ${why}` : undefined, ...gates, visual?.note].filter(Boolean).join('; ') || undefined;
   const queue: MoveStep[] = [];
   const card = task.fm.status !== status ? await moveCardFirst(ctx, task, status, undefined, undefined, queue) : 'none';
-  await commit(ctx, { kind: 'move', id: task.fm.id, status, note, ...(visual ? { visual: visual.visual } : {}), ...queuedOf(queue) }, `${command === 'review' ? 'ревью' : 'закрытие'} ${refOf(task)}`);
+  await commit(ctx, { kind: 'move', id: task.fm.id, status, note, ...(visual ? { visual: visual.visual } : {}), ...queuedOf(queue, card) }, `${command === 'review' ? 'ревью' : 'закрытие'} ${refOf(task)}`);
   cardNotMovedNote(card);
 }
 
@@ -563,6 +605,14 @@ function visualFor(ctx: Context, task: TaskRecord, entries: readonly StoreEntry[
   const decision = visualDecision({ attachments, noVisual, current: task.fm.visual, ref: refOf(task), command });
   if ('problems' in decision) throw new UsageError(`Не записано:${decision.problems.map((p) => `\n  - ${p}`).join('')}`, 1);
   return decision;
+}
+
+/** Домен задачи с правилом ревью проекта — для записи о сдаче; проект домены не ведёт или домена нет — ничего. */
+function domainNote(ctx: Context, task: TaskRecord): string | undefined {
+  const domains = domainsOf(ctx.loaded.project);
+  const domain = task.fm.domain;
+  if (!domains || domain === undefined) return undefined;
+  return domains[domain] ? `домен ${domain} — ${domains[domain]}` : `домен ${domain}`;
 }
 
 /** Ветка и последний коммит репозитория кода — для записи «на ревью»: где смотреть работу. */
@@ -588,6 +638,21 @@ export function editableText(task: TaskRecord): string {
   return serializeTaskDocument(task.fm, task.body);
 }
 
+/**
+ * Домен в правке — по списку проекта. Проверяется только новое значение: прежнее
+ * могли поставить до того, как проект поменял список, и правку текста оно не держит.
+ */
+function editedDomainProblem(ctx: Context, task: TaskRecord, text: string): string | null {
+  let domain: unknown;
+  try {
+    domain = (parseTaskDocument(text).data as { domain?: unknown }).domain;
+  } catch {
+    return null; // Нечитаемый текст отклонит сама операция — своими словами.
+  }
+  if (typeof domain !== 'string' || domain === task.fm.domain) return null;
+  return domainProblem(ctx.loaded.project, domain);
+}
+
 function editorCommand(): string {
   return process.env.VISUAL ?? process.env.EDITOR ?? (process.platform === 'win32' ? 'notepad' : 'vi');
 }
@@ -601,7 +666,10 @@ async function edit(args: string[]): Promise<void> {
   const what = `правка ${refOf(task)}`;
 
   if (values.stdin) {
-    await commit(ctx, { kind: 'edit', id: task.fm.id, text: readStdin(), baseHash }, what);
+    const text = readStdin();
+    const domain = editedDomainProblem(ctx, task, text);
+    if (domain) throw new UsageError(`Не записано: domain: ${domain}.`, 1);
+    await commit(ctx, { kind: 'edit', id: task.fm.id, text, baseHash }, what);
     return;
   }
 
@@ -619,7 +687,8 @@ async function edit(args: string[]): Promise<void> {
       return;
     }
     if (text === previous && previous !== original) throw new UsageError(`Правка не записана. Черновик: ${draft}`, 1);
-    const result = recordOp(ctx.store, { kind: 'edit', id: task.fm.id, text, baseHash }, what, today());
+    const domain = editedDomainProblem(ctx, task, text);
+    const result = domain ? { error: `domain: ${domain}` } : recordOp(ctx.store, { kind: 'edit', id: task.fm.id, text, baseHash }, what, today());
     if (!('error' in result)) {
       console.log(`${result.summary.charAt(0).toUpperCase()}${result.summary.slice(1)}.`);
       for (const w of result.warnings) console.log(`  подсказка: ${w}`);

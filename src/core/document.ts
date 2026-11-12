@@ -84,8 +84,14 @@ export function serializeTaskDocument(fm: Frontmatter, body: string): string {
  * по готовому описанию карточки и ловит правку описания в интерфейсе Kaiten,
  * этот — по файлу и ловит правку файла.
  */
+const LATE_FILE_FIELDS: readonly FieldName[] = ['domain'];
+
 export function contentHash(fm: Frontmatter, body: string): string {
-  const owned: Array<[FieldName, unknown]> = fieldsOwnedBy('file').map((name) => [name, fm[name] ?? null]);
+  // Поле, добавленное в формат позже, входит в хеш, только когда оно есть: иначе хеш сменился бы
+  // у всех задач разом, и синхронизация перерисовала бы каждую карточку.
+  const owned: Array<[FieldName, unknown]> = fieldsOwnedBy('file')
+    .filter((name) => !LATE_FILE_FIELDS.includes(name) || fm[name] !== undefined)
+    .map((name) => [name, fm[name] ?? null]);
   const payload = JSON.stringify({ fields: owned, body: body.replace(/\r\n/g, '\n').replace(/\s+$/, '') });
   return `sha256:${createHash('sha256').update(payload).digest('hex')}`;
 }

@@ -359,6 +359,10 @@ export async function runKaitenSync(client: KaitenClient, input: RunInput, mode:
         }
         synced.push({ id: action.task.fm.id, contentHash: action.contentHash, filesHash: action.files?.hash, tracker: String(card.id), team: action.fields.team });
         syncedNames.push(action.task.slug);
+        // Статус сменили до появления карточки (`start` сразу после `new`): новая карточка создана уже
+        // в нём — эти шаги дошли. Найденную после обрыва не трогаем: её колонку сверит следующий проход.
+        const waited = action.task.fm.pending_moves;
+        if (waited && !existing) settled.push({ id: action.task.fm.id, settled: waited.steps.length });
       } else if (action.kind === 'update') {
         if (action.patch.title !== undefined || action.patch.properties !== undefined || action.patch.lane_id !== undefined) await client.updateCard(action.cardId, action.patch);
         // Описание, чек-листы и файлы — только из GET: в списке карточек их нет.

@@ -155,8 +155,67 @@ export function filledText(text: string | null): boolean {
   return text.split('\n').some((line) => line.trim() !== '' && !HEADING_RE.test(line) && !PLACEHOLDER_RE.test(line));
 }
 
+// ── «Как проверить» ──────────────────────────────────────────────────────
+//
+// План проверки в постановке story — только в проекте, который его просит
+// (`review.testPlan` в kaiten.json, `docs/review-gates.md`): как и критерии,
+// требуется у `kaiten new`, а не у линтера, — старые задачи без раздела
+// остаются рабочими.
+
+export const TEST_PLAN_SECTION = 'Как проверить';
+export const TEST_PLAN_TYPES: readonly TaskType[] = ['story'];
+/** Строка в разделе: проверять нечего, и сказано почему (`--no-test-plan`). */
+export const NO_TEST_PLAN_PREFIX = 'Проверять нечего:';
+const TEST_PLAN_HINT = '<какие интеграционные тесты добавить или изменить и как проверить результат как чёрный ящик, не читая код>';
+/** Раздел, перед которым стоит «Как проверить». */
+const TEST_PLAN_BEFORE = 'Шаги';
+
+export function testPlanApplies(type: TaskType): boolean {
+  return TEST_PLAN_TYPES.includes(type);
+}
+
+function headingIndex(lines: readonly string[], name: string): number {
+  let inFence = false;
+  for (let i = 0; i < lines.length; i += 1) {
+    if (FENCE_RE.test(lines[i])) inFence = !inFence;
+    if (inFence) continue;
+    const m = HEADING_RE.exec(lines[i]);
+    if (m !== null && m[2].replace(/[*_`]/g, '').trim() === name) return i;
+  }
+  return -1;
+}
+
+/** Текст с разделом, вставленным перед «Шаги» (их нет — в конец). */
+function withSectionBeforeSteps(body: string, section: string): string {
+  const lines = body.replace(/\s+$/, '').split('\n');
+  const at = headingIndex(lines, TEST_PLAN_BEFORE);
+  if (at === -1) return `${lines.join('\n')}\n\n${section}`;
+  return [...lines.slice(0, at), section, '', ...lines.slice(at)].join('\n');
+}
+
+/** Шаблон постановки с разделом «Как проверить» перед «Шаги» (story); у других типов — как есть. */
+export function withTestPlanTemplate(type: TaskType, template: string): string {
+  if (!testPlanApplies(type)) return template;
+  return withSectionBeforeSteps(template, `## ${TEST_PLAN_SECTION}\n\n${TEST_PLAN_HINT}`);
+}
+
+/** Тело с пометкой «Проверять нечего: <причина>» в разделе «Как проверить» (раздела нет — перед «Шаги»). */
+export function withTestPlanWaiver(type: TaskType, body: string, reason: string): string {
+  if (!testPlanApplies(type)) return body;
+  const line = `${NO_TEST_PLAN_PREFIX} ${reason.trim()}`;
+  const lines = body.replace(/\s+$/, '').split('\n');
+  const at = headingIndex(lines, TEST_PLAN_SECTION);
+  if (at === -1) return `${withSectionBeforeSteps(body, `## ${TEST_PLAN_SECTION}\n\n${line}`)}\n`;
+  return `${[...lines.slice(0, at + 1), '', line, ...lines.slice(at + 1)].join('\n').replace(/\n{3,}/g, '\n\n')}\n`;
+}
+
+export interface NewBodyOptions {
+  /** Проект просит раздел «Как проверить» у story. */
+  testPlan?: boolean;
+}
+
 /** Что не так с телом новой задачи — словами для того, кто её заводит; пусто — можно заводить. */
-export function newBodyProblems(type: TaskType, body: string): string[] {
+export function newBodyProblems(type: TaskType, body: string, options: NewBodyOptions = {}): string[] {
   const problems: string[] = [];
   for (const name of REQUIRED_SECTIONS[type]) {
     const text = sectionText(body, name);
@@ -171,6 +230,12 @@ export function newBodyProblems(type: TaskType, body: string): string[] {
     else if (countChecklistItems(text) === 0 && !hasCriteriaWaiver(text)) {
       problems.push(`в разделе «${criteria}» нет ни одного пункта \`- [ ]\` — напишите, по чему поймём, что сделано, или --no-criteria "<почему критериев нет>"`);
     }
+  }
+  if (options.testPlan && testPlanApplies(type)) {
+    const text = sectionText(body, TEST_PLAN_SECTION);
+    const how = 'какие интеграционные тесты добавить или изменить и как проверить результат как чёрный ящик, не читая код; проверять нечего — --no-test-plan "<почему>"';
+    if (text === null) problems.push(`нет раздела «${TEST_PLAN_SECTION}» — ${how}`);
+    else if (!filledText(text)) problems.push(`раздел «${TEST_PLAN_SECTION}» не заполнен — ${how}`);
   }
   return problems;
 }

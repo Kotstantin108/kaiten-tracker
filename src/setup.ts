@@ -67,6 +67,7 @@ function desiredFor(loaded: LoadedProject): DesiredStructure {
     junior: project.kaiten.junior !== undefined,
     visual: project.kaiten.visual !== undefined,
     found: project.kaiten.found !== undefined,
+    domains: Object.keys(project.domains ?? {}),
   });
 }
 
@@ -100,6 +101,7 @@ async function readCurrent(client: KaitenClient, desired: DesiredStructure): Pro
     ...SELECT_ROLES.map((role) => desired.selects[role].name),
     ...(desired.junior ? [desired.junior.select.name, desired.junior.assess.name] : []),
     ...(desired.visual ? [desired.visual.name] : []),
+    ...(desired.domain ? [desired.domain.name] : []),
   ];
   for (const name of selects) {
     const property = findSelect(current, name);
