@@ -194,6 +194,15 @@ export function fakeKaiten(options: { requiredSummaryKey?: string | null; firstI
       child.parents_ids = [...(child.parents_ids ?? []), Number(m[1])];
       return json(200, {});
     }
+    if (method === 'DELETE' && (m = /^\/cards\/(\d+)\/children\/(\d+)$/.exec(path))) {
+      const child = fake.cards.get(Number(m[2]));
+      const parent = Number(m[1]);
+      if (!child) return json(404, {});
+      // Повтор для уже снятой связи живой Kaiten тоже принимает (docs/kaiten-api.md).
+      const left = (child.parents_ids ?? []).filter((p) => p !== parent);
+      child.parents_ids = left.length > 0 ? left : null;
+      return json(200, { id: child.id });
+    }
     if (method === 'POST' && (m = /^\/cards\/(\d+)\/checklists$/.exec(path))) {
       const list: FakeChecklist = { id: nextId++, name: String(body.name), items: [] };
       fake.cards.get(Number(m[1]))?.checklists.push(list);

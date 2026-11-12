@@ -225,6 +225,7 @@ function describe(action: SyncAction): string {
   const ref = refOf(action.task);
   if (action.kind === 'create') return `создать карточку для ${ref}`;
   if (action.kind === 'link') return `связать ${ref} с эпиком`;
+  if (action.kind === 'unlink') return `отвязать ${ref} от эпика`;
   if (action.kind === 'replay') return `перенести карточку ${ref} в статус задачи`;
   return `обновить карточку ${ref}`;
 }
@@ -387,6 +388,8 @@ export async function runKaitenSync(client: KaitenClient, input: RunInput, mode:
         }
         // Архив — последним: описание и файлы уже доставлены, отметка о доставке записана.
         if (action.archive) await client.updateCard(action.cardId, { condition: 2 });
+      } else if (action.kind === 'unlink') {
+        await client.removeChild(action.parentId, action.childId);
       } else {
         await client.addChild(action.parentId, action.childId);
       }
@@ -478,7 +481,7 @@ export function formatPlan(run: Pick<SyncRun, 'plan' | 'checklists'> & Partial<P
   const count = (kind: SyncAction['kind']): number => plan.actions.filter((a) => a.kind === kind).length;
   const adopt = run.adopt?.candidates ?? [];
   out.push(
-    `Создать карточек: ${count('create')}, обновить: ${count('update')}, связать с эпиком: ${count('link')}, догнать статус: ${count('replay')}; из Kaiten в задачи: ${plan.mirror.length}; новых задач из карточек: ${adopt.length}`,
+    `Создать карточек: ${count('create')}, обновить: ${count('update')}, связать с эпиком: ${count('link')}, отвязать от эпика: ${count('unlink')}, догнать статус: ${count('replay')}; из Kaiten в задачи: ${plan.mirror.length}; новых задач из карточек: ${adopt.length}`,
   );
   const junior = plan.junior;
   if (junior && junior.yes + junior.no + junior.cleared > 0) {
@@ -507,6 +510,7 @@ export function formatPlan(run: Pick<SyncRun, 'plan' | 'checklists'> & Partial<P
         .join(', ');
       out.push(`  ~ ${refOf(a.task)} (${a.task.slug}): ${what}${a.content ? lists : ''}${a.files ? files : ''}${a.firstDelivery && a.content ? ' [первая доставка]' : ''}`);
     } else if (a.kind === 'replay') out.push(`  ⇒ ${refOf(a.task)}: карточка → ${a.steps.map((s) => s.status).join(' → ')}`);
+    else if (a.kind === 'unlink') out.push(`  ✕ ${refOf(a.task)} из эпика ${a.parentId}`);
     else out.push(`  → ${refOf(a.task)} в эпик ${a.parentId}`);
   }
   for (const m of plan.mirror) {

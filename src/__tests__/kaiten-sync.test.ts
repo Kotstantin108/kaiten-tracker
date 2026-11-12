@@ -568,6 +568,56 @@ describe('новые задачи', () => {
   });
 });
 
+describe('связь с эпиком — как в файле', () => {
+  /** Два эпика с карточками 700 и 710 и задача с карточкой 701, привязанной в Kaiten к `parents`. */
+  function linked(childEpic: 'first' | 'second' | 'none' | 'unknown', parents: number[]) {
+    const first = id();
+    const second = id();
+    const epic = childEpic === 'first' ? first : childEpic === 'second' ? second : childEpic === 'unknown' ? '99999999' : undefined;
+    const w = world([
+      task('active/epic-1.md', { id: first, type: 'epic', status: 'in-progress', tracker: '700', repo: undefined }),
+      task('active/epic-2.md', { id: second, type: 'epic', status: 'in-progress', tracker: '710', repo: undefined }),
+      task('active/child.md', { status: 'in-progress', tracker: '701', ...(epic !== undefined ? { epic } : {}) }),
+    ]);
+    for (const epicCard of [700, 710]) seedCard(w.fake, { id: epicCard, title: 'Сделать задачу', board_id: BOARD, type_id: 1, column_id: 104, properties: { id_4: 'Коротко для фаундера.' } });
+    seedCard(w.fake, { id: 900, title: 'Не из задач', board_id: BOARD, column_id: 104 });
+    seedCard(w.fake, { id: 701, title: 'Сделать задачу', board_id: BOARD, column_id: 104, parents_ids: parents, properties: { id_4: 'Коротко для фаундера.', id_2: [21] } });
+    return w;
+  }
+  const links = (w: ReturnType<typeof linked>): string[] => w.fake.writes.filter((x) => x.includes('/children'));
+
+  it('эпик убрали из задачи — связь в Kaiten снята, второй проход её не трогает', async () => {
+    const w = linked('none', [700]);
+    const dry = await runKaitenSync(w.fake.client, w.input(), 'plan');
+    expect(formatPlan(dry).join('\n')).toContain('отвязать от эпика: 1');
+    await w.sync();
+    expect(links(w)).toEqual(['DELETE /cards/700/children/701']);
+    expect(w.fake.cards.get(701)?.parents_ids).toBeNull();
+    const second = await w.sync();
+    expect(second.plan.actions).toEqual([]);
+  });
+
+  it('эпик сменили — прежняя связь снята, новая поставлена', async () => {
+    const w = linked('second', [700]);
+    await w.sync();
+    expect(links(w).sort()).toEqual(['DELETE /cards/700/children/701', 'POST /cards/710/children']);
+    expect(w.fake.cards.get(701)?.parents_ids).toEqual([710]);
+  });
+
+  it('родителя не из задач репозитория не трогаем', async () => {
+    const w = linked('first', [700, 900]);
+    await w.sync();
+    expect(links(w)).toEqual([]);
+    expect(w.fake.cards.get(701)?.parents_ids).toEqual([700, 900]);
+  });
+
+  it('ссылка epic, по которой эпик не нашёлся, — связь не снимаем', async () => {
+    const w = linked('unknown', [700]);
+    await w.sync();
+    expect(links(w)).toEqual([]);
+  });
+});
+
 describe('чего синхронизация не делает', () => {
   it('не трогает карточки из списка владельца и не создаёт заново пропавшие', async () => {
     const [p1, t1] = task('archive/2026-09/v2.md', { tracker: '10000002', status: 'done' });

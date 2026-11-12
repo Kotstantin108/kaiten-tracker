@@ -456,6 +456,11 @@ export class KaitenClient {
     });
   }
 
+  /** Снять связь «эпик → задача»: `DELETE /cards/{card_id}/children/{id ребёнка}` — живьём 12.11. */
+  async removeChild(parentCardId: number, childCardId: number): Promise<unknown> {
+    return this.request('DELETE', `/cards/${parentCardId}/children/${childCardId}`, { schema: z.unknown() });
+  }
+
   /**
    * Чек-лист карточки и его пункты — по документации 23.09.2026:
    * `POST /cards/{card_id}/checklists {name}`, `POST /checklists/{id}/items

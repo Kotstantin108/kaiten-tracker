@@ -515,6 +515,8 @@ export type SyncAction =
       archive: boolean;
     }
   | { kind: 'link'; task: TaskRecord; parentId: number; childId: number }
+  /** Эпик убрали из задачи или сменили: снять связь карточки с прежним эпиком. */
+  | { kind: 'unlink'; task: TaskRecord; parentId: number; childId: number }
   /** Статус сменили без Kaiten (`pending_moves`): довести карточку по шагам, раньше остальных записей. */
   | { kind: 'replay'; task: TaskRecord; cardId: number; from: TaskStatus; steps: ReplayStep[]; total: number };
 
@@ -726,6 +728,8 @@ export function planKaitenSync(input: PlanInput): SyncPlan {
   const { tasks, mapping } = input;
   const cards = new Map(input.cards.map((c) => [c.id, c]));
   const ignore = new Set(input.ignore);
+  /** Карточки эпиков этого репозитория задач: только с ними синхронизация снимает связь. */
+  const epicCards = new Set(tasks.flatMap((t) => (t.fm.type === 'epic' ? [cardIdOf(t.fm.tracker)] : [])).filter((id) => id !== null));
   const report: SyncReport = { missingCards: [], unknownTrackers: [], ignored: [], archivedCards: [], firstLoadCandidates: 0, closedWithoutCard: [], unknownColumns: [], movedByHuman: [], withoutVisual: [] };
   const mirror: MirrorItem[] = [];
   const names: Record<string, string> = {};
@@ -861,6 +865,14 @@ export function planKaitenSync(input: PlanInput): SyncPlan {
 
     const epic = epicOf(tasks, task);
     const parentId = cardIdOf(epic?.fm.tracker);
+    // Эпик задачи — поле файла: связь с эпиком, которого в файле уже нет, снимаем. Только с
+    // эпиками этого репозитория задач — чужого родителя, поставленного в Kaiten, не трогаем.
+    // Ссылка `epic`, по которой эпик не нашёлся, — ошибка в файле, а не решение: ждём правки.
+    if (task.fm.epic === undefined || epic !== null) {
+      for (const stale of card.parents) {
+        if (stale !== parentId && epicCards.has(stale) && !ignore.has(stale)) others.push({ kind: 'unlink', task, parentId: stale, childId: cardId });
+      }
+    }
     // К архивному эпику не привязываем: Kaiten может потерять связь, и попытка повторялась бы каждый раз.
     if (parentId !== null && !ignore.has(parentId) && !card.parents.includes(parentId) && cards.get(parentId)?.archived !== true) {
       others.push({ kind: 'link', task, parentId, childId: cardId });
