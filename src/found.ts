@@ -53,6 +53,7 @@ import { loadOwnerProject } from './owner-project.js';
 import { KAITEN_LOCK, recordOp, syncStore, withLockAsync } from './store-write.js';
 import { listEntries, readBlobs, readStoreTree } from './task-store.js';
 import { readTasksTree } from './tasks-files.js';
+import { endWith } from './exit.js';
 
 function fail(message: string, code = 2): never {
   console.error(message);
@@ -366,5 +367,5 @@ async function main(): Promise<void> {
 
 main().catch((error: unknown) => {
   console.error(error instanceof Error ? error.message : String(error));
-  process.exit(1);
+  endWith(1);
 });

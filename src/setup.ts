@@ -47,6 +47,7 @@ import {
   type DesiredStructure,
   type SetupAction,
 } from './setup-plan.js';
+import { endWith } from './exit.js';
 
 /** Варианты полей берутся из конфига: список репозиториев и команд решает владелец. */
 function desiredFor(loaded: LoadedProject): DesiredStructure {
@@ -334,5 +335,5 @@ main().catch((error: unknown) => {
         '(или выдайте эти права в ролях). Уже созданное сохранится — повторный запуск продолжит с места остановки.',
     );
   }
-  process.exit(6);
+  endWith(6);
 });

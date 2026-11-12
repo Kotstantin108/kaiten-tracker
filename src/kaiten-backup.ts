@@ -23,6 +23,7 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync
 import { dirname, join, relative } from 'node:path';
 
 import { KaitenClient } from './kaiten-client.js';
+import { endWith } from './exit.js';
 
 /** Путь в снимке → содержимое. */
 export type Snapshot = Map<string, unknown>;
@@ -148,6 +149,6 @@ async function main(): Promise<void> {
 if (process.argv[1] && /kaiten-backup\.ts$/.test(process.argv[1])) {
   main().catch((error: unknown) => {
     console.error(error instanceof Error ? error.message : String(error));
-    process.exit(1);
+    endWith(1);
   });
 }

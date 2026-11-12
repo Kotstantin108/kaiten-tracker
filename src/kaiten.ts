@@ -67,6 +67,7 @@ import { editableText, WRITE_COMMANDS, WRITE_HELP } from './kaiten-write.js';
 import { ensureFresh, outdatedMessage, rerun } from './self-update.js';
 import { hasPending, syncStore, withLock } from './store-write.js';
 import { cloneStore, isStore, readBlobs, StoreError, type StoreEntry } from './task-store.js';
+import { endWith } from './exit.js';
 
 // ── справка ──────────────────────────────────────────────────────────────
 
@@ -609,21 +610,25 @@ process.stdout.on('error', (error: NodeJS.ErrnoException) => {
   throw error;
 });
 
-main().catch((error: unknown) => {
+/** Сказать об ошибке словами задачи и вернуть код выхода. */
+function report(error: unknown): number {
   if (error instanceof UsageError) {
     console.error(error.message);
-    process.exit(error.code);
+    return error.code;
   }
   if (error instanceof SettingsError) {
     console.error(`Не читаются ${error.message}`);
-    process.exit(2);
+    return 2;
   }
   if (error instanceof StoreError) {
     console.error(storeMessage(error.kind));
-    process.exit(1);
+    return 1;
   }
   // Трассировка стека называет пути хранилища и исходников — только по запросу.
   if (process.env.KAITEN_DEBUG) console.error(error);
   console.error('kaiten: внутренняя ошибка. Повторите команду; если повторяется — сообщите тому, кто настраивал kaiten.');
-  process.exit(3);
-});
+  return 3;
+}
+
+// Отказ мог прийти от Kaiten, то есть после запроса: код — без `process.exit()` (`exit.ts`).
+main().catch((error: unknown) => endWith(report(error)));

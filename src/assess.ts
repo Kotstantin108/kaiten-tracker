@@ -60,6 +60,7 @@ import { loadOwnerProject } from './owner-project.js';
 import { KAITEN_LOCK, recordOp, syncStore, withLockAsync } from './store-write.js';
 import { listEntries, readStoreTree } from './task-store.js';
 import { readTasksTree } from './tasks-files.js';
+import { endWith } from './exit.js';
 
 const DEFAULT_MODEL = 'claude-opus-5-5';
 /** Один агент дольше — что-то пошло не так: задача в «не справился», а не зависший прогон. */
@@ -330,5 +331,5 @@ async function main(): Promise<void> {
 
 main().catch((error: unknown) => {
   console.error(error instanceof Error ? error.message : String(error));
-  process.exit(1);
+  endWith(1);
 });

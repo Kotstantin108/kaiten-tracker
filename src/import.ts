@@ -64,6 +64,7 @@ import {
   type SourceIssue,
   type TaskFile,
 } from './task-source.js';
+import { endWith } from './exit.js';
 
 const OUT_DIR = 'tmp/import';
 const DEFAULT_CONFIG = 'kaiten.json';
@@ -524,11 +525,11 @@ async function main(): Promise<void> {
 
   if (failure !== null) {
     console.error(`Прогон прерван: ${failure}`);
-    process.exit(6);
+    endWith(6);
   }
 }
 
 main().catch((error: unknown) => {
   console.error(error instanceof Error ? error.message : String(error));
-  process.exit(6);
+  endWith(6);
 });

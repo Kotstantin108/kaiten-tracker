@@ -48,6 +48,7 @@ import { loadOwnerProject } from './owner-project.js';
 import { isOutdated, publishSyncVersion, storedSyncVersion } from './self-update.js';
 import { SYNC_VERSION } from './core/sync-version.js';
 import { listEntries, readStoreTree } from './task-store.js';
+import { endWith } from './exit.js';
 
 function argValue(argv: string[], name: string): string | undefined {
   const i = argv.indexOf(name);
@@ -156,10 +157,10 @@ async function main(): Promise<void> {
   if (run.ops.length > 0) syncStore(store);
   console.log(`\nВыполнено действий: ${run.done} из ${run.plan.actions.length + run.adopt.candidates.length}; ключей и отметок в задачах: ${run.ops.length}.`);
   for (const e of run.errors) console.error(`Ошибка: ${e.what} — ${e.message}`);
-  if (run.errors.length > 0) process.exit(1);
+  if (run.errors.length > 0) endWith(1);
 }
 
 main().catch((error: unknown) => {
   console.error(error instanceof Error ? error.message : String(error));
-  process.exit(1);
+  endWith(1);
 });

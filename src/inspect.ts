@@ -18,6 +18,7 @@ import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 import { KaitenClient } from './kaiten-client.js';
+import { endWith } from './exit.js';
 
 const OUT_DIR = 'tmp/import';
 
@@ -50,5 +51,5 @@ async function main(): Promise<void> {
 
 main().catch((error: unknown) => {
   console.error(error instanceof Error ? error.message : String(error));
-  process.exit(6);
+  endWith(6);
 });

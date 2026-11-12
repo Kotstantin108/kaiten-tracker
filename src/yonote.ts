@@ -61,6 +61,7 @@ import {
   rewriteLinks,
   type CheckboxCount,
 } from './yonote-export.js';
+import { endWith } from './exit.js';
 
 /**
  * Списки документов. Каждый опрашивается отдельно: у Outline черновики,
@@ -472,5 +473,5 @@ function renderIndex(entries: IndexEntry[]): string {
 
 main().catch((error: unknown) => {
   console.error(error instanceof Error ? error.message : String(error));
-  process.exit(6);
+  endWith(6);
 });
