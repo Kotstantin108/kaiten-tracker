@@ -20,6 +20,7 @@
     "kaiten": "tsx src/kaiten.ts",
     "kaiten-sync": "tsx --env-file-if-exists=.env src/kaiten-sync-cli.ts",
     "assess": "tsx --env-file-if-exists=.env src/assess.ts",
+    "found": "tsx --env-file-if-exists=.env src/found.ts",
     "backup": "tsx --env-file-if-exists=.env src/kaiten-backup.ts",
     "connect-repo": "tsx src/connect-repo.ts",
     "normalize": "tsx src/normalize-tasks.ts",

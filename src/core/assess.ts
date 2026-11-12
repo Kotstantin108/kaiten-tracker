@@ -23,7 +23,7 @@ import {
   daysBetween,
   incompleteSections,
   JUNIOR_SECTIONS,
-  JUNIOR_STATUSES,
+  ASSESS_STATUSES,
   JUNIOR_TYPES,
   proposedSectionProblems,
   saysNo,
@@ -71,9 +71,9 @@ export function selectForAssess(tasks: readonly TaskRecord[], opts: SelectOption
     const skip = (why: string): void => {
       out.skipped.push({ task, why });
     };
-    if (!JUNIOR_TYPES.includes(task.fm.type) || !JUNIOR_STATUSES.includes(task.fm.status)) {
+    if (!JUNIOR_TYPES.includes(task.fm.type) || !ASSESS_STATUSES.includes(task.fm.status)) {
       // Остальные задачи не оцениваются вовсе; в отчёте — только названная явно.
-      if (named) skip(`оцениваются только открытые ${JUNIOR_TYPES.join('/')} в ${JUNIOR_STATUSES.join(', ')}`);
+      if (named) skip(`оцениваются только открытые ${JUNIOR_TYPES.join('/')} в ${ASSESS_STATUSES.join(', ')}`);
       continue;
     }
     if (task.fm.tracker === undefined || !/^\d+$/.test(task.fm.tracker)) {
@@ -469,7 +469,7 @@ export interface ApplyStep {
  */
 export function planApply(result: AssessResult, task: TaskRecord | undefined, date: string): ApplyStep | { error: string } {
   if (!task) return { error: 'задачи больше нет' };
-  if (!JUNIOR_TYPES.includes(task.fm.type) || !JUNIOR_STATUSES.includes(task.fm.status)) return { error: `задача уже в статусе ${task.fm.status} — оценка не применяется` };
+  if (!JUNIOR_TYPES.includes(task.fm.type) || !ASSESS_STATUSES.includes(task.fm.status)) return { error: `задача уже в статусе ${task.fm.status} — оценка не применяется` };
   if (String(result.cardId) !== task.fm.tracker) return { error: 'у задачи другая карточка — оцените заново' };
   if (contentHash(task.fm, task.body) !== result.baseHash) return { error: 'задачу изменили после оценки — оцените заново' };
 

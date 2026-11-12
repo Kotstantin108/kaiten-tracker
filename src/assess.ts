@@ -31,13 +31,12 @@
  * Коды выхода: 0 — ок; 1 — были ошибки; 2 — ошибка аргументов.
  */
 
-import { execFileSync, spawn } from 'node:child_process';
+import { execFileSync } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 
-import { z } from 'zod';
-
+import { modelProblem, runClaude } from './claude-agent.js';
 import { assessField, juniorSetting } from './config.js';
 import {
   AgentAnswerSchema,
@@ -98,85 +97,23 @@ function gitOk(folder: string, args: string[]): string | null {
 
 // ── агент ────────────────────────────────────────────────────────────────
 
-/** Что читаем из ответа `claude -p --output-format json`. */
-const ClaudeResultSchema = z
-  .object({
-    is_error: z.boolean().optional(),
-    subtype: z.string().optional(),
-    result: z.string().optional(),
-    structured_output: z.unknown().optional(),
-    total_cost_usd: z.number().optional(),
-    permission_denials: z.array(z.object({ tool_name: z.string(), tool_input: z.object({ command: z.string().optional() }).passthrough().optional() }).passthrough()).optional(),
-  })
-  .passthrough();
-
 /**
  * `claude -p` на задачу: текущая папка — репозиторий задачи, общие — через
  * `--add-dir`. Инструменты — только чтение; git — только log и show (и через
  * `git -C <папка>` по любой из папок). MCP-серверы не подключаются.
  */
 function claudeRunner(model: string, repos: readonly CodeRepo[]): AgentRunner {
-  // Без `$schema`: `claude` не знает адреса draft 2020-12 и отвергает схему (живьём 20.10).
-  const schema = JSON.stringify(Object.fromEntries(Object.entries(z.toJSONSchema(AgentAnswerSchema)).filter(([k]) => k !== '$schema')));
   return ({ prompt, repo }) =>
-    new Promise((done) => {
-      const others = repos.filter((r) => r.name !== repo.name);
+    runClaude({
+      model,
+      cwd: repo.folder,
+      prompt,
+      schema: AgentAnswerSchema,
+      tools: ['Read', 'Grep', 'Glob', 'Bash'],
       // `git -C` — и для папки задачи: агент пишет его и по своей папке, и отказ ослаблял доказательства (живьём 21.10).
-      const allowed = ['Read', 'Grep', 'Glob', 'Bash(git log:*)', 'Bash(git show:*)', ...repos.flatMap((r) => [`Bash(git -C ${r.folder} log:*)`, `Bash(git -C ${r.folder} show:*)`])];
-      const args = [
-        '-p',
-        '--model',
-        model,
-        '--output-format',
-        'json',
-        '--json-schema',
-        schema,
-        '--tools',
-        'Read',
-        'Grep',
-        'Glob',
-        'Bash',
-        '--allowedTools',
-        ...allowed,
-        ...(others.length > 0 ? ['--add-dir', ...others.map((r) => r.folder)] : []),
-        '--strict-mcp-config',
-        '--no-session-persistence',
-        '--permission-prompts',
-        'none',
-      ];
-      const child = spawn('claude', args, { cwd: repo.folder, stdio: ['pipe', 'pipe', 'pipe'] });
-      let out = '';
-      let err = '';
-      const timer = setTimeout(() => child.kill(), AGENT_TIMEOUT_MS);
-      child.stdout.on('data', (d: Buffer) => (out += d.toString('utf8')));
-      child.stderr.on('data', (d: Buffer) => (err += d.toString('utf8')));
-      child.on('error', (e) => {
-        clearTimeout(timer);
-        done({ error: `агент не запустился: ${e.message}` });
-      });
-      child.on('close', (code) => {
-        clearTimeout(timer);
-        let json: unknown;
-        try {
-          json = JSON.parse(out);
-        } catch {
-          done({ error: `агент не ответил (код ${code ?? 'нет'})${err.trim() ? `: ${err.trim().slice(0, 300)}` : ''}` });
-          return;
-        }
-        const parsed = ClaudeResultSchema.safeParse(json);
-        if (!parsed.success) {
-          done({ error: 'ответ агента не разбирается' });
-          return;
-        }
-        const r = parsed.data;
-        if (r.is_error || r.structured_output === undefined) {
-          done({ error: `агент не дал ответа по схеме (${r.subtype ?? 'ошибка'})${r.result ? `: ${r.result.slice(0, 300)}` : ''}` });
-          return;
-        }
-        const denied = (r.permission_denials ?? []).map((d) => d.tool_input?.command ?? d.tool_name);
-        done({ answer: r.structured_output, costUsd: r.total_cost_usd, denied });
-      });
-      child.stdin.end(prompt);
+      allowed: ['Read', 'Grep', 'Glob', 'Bash(git log:*)', 'Bash(git show:*)', ...repos.flatMap((r) => [`Bash(git -C ${r.folder} log:*)`, `Bash(git -C ${r.folder} show:*)`])],
+      addDirs: repos.filter((r) => r.name !== repo.name).map((r) => r.folder),
+      timeoutMs: AGENT_TIMEOUT_MS,
     });
 }
 
@@ -220,7 +157,8 @@ async function assess(argv: string[]): Promise<void> {
   if (!assessField(project)) fail('Поля «Оценка» в Kaiten нет — сначала npm run setup (план → --apply), id полей — в kaiten.json.');
 
   const model = argValue(argv, '--model') ?? DEFAULT_MODEL;
-  if (/haiku/i.test(model)) fail('Haiku для оценки не используем — --model claude-opus-5-5 или claude-sonnet-5-5.');
+  const badModel = modelProblem(model);
+  if (badModel) fail(`--model: ${badModel}.`);
 
   const repos: CodeRepo[] = [];
   for (const spec of argValues(argv, '--code')) {

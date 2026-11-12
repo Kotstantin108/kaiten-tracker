@@ -99,6 +99,12 @@ const ProjectObject = z.object({
      * задачи без ответа, ушедшие на ревью или закрытые с этого дня.
      */
     visual: z.object({ since: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'дата YYYY-MM-DD') }).optional(),
+    /**
+     * «Находки» (`kaiten found`, `core/found.ts`): колонка для дефектов, которые агент
+     * заметил по ходу другой работы и которые подтвердило исследование. `model` — чем
+     * исследовать. Нет блока — нет ни колонки, ни команды.
+     */
+    found: z.object({ model: z.string().min(1).default('claude-opus-5-5') }).optional(),
   }),
   repos: z.array(RepoSchema).min(1),
   /**
@@ -191,6 +197,19 @@ export function visualSetting(project: Pick<ProjectConfig, 'kaiten' | 'mapping'>
   const no = select?.values.no;
   if (!select || yes === undefined || no === undefined) return { state: 'needs-setup' };
   return { state: 'on', since: visual.since, property: { id: select.id, yes, no } };
+}
+
+/**
+ * «Находки» в проекте. Включены, а колонки в маппинге нет — команда отказывает до
+ * `setup`: подтверждённую находку некуда положить.
+ */
+export type FoundSetting = { state: 'off' } | { state: 'needs-setup' } | { state: 'on'; model: string };
+
+export function foundSetting(project: Pick<ProjectConfig, 'kaiten' | 'mapping'>): FoundSetting {
+  const found = project.kaiten.found;
+  if (!found) return { state: 'off' };
+  if (project.mapping?.columns.found === undefined) return { state: 'needs-setup' };
+  return { state: 'on', model: found.model };
 }
 
 /** Поле «Было / Стало» для команд и синхронизации; `undefined` — выключено или ждёт setup. */

@@ -22,6 +22,7 @@ import { refOf, type TaskRecord } from './tasks-index.js';
 export const STARTABLE: readonly TaskStatus[] = ['ready', 'blocked', 'review', 'in-progress'];
 
 const STATUS_WORDS: Record<TaskStatus, string> = {
+  found: '«Находках»',
   inbox: '«Входящих»',
   backlog: '«Бэклоге»',
   ready: '«Готово к работе»',
@@ -48,7 +49,7 @@ export function startProblem(task: TaskRecord, currentRepo: string, assigned = f
       ASSIGNABLE.includes(task.fm.status)
         ?'её переводят туда в Kaiten при разборе. Человек прямо поручил вам именно эту задачу — kaiten start ' + refOf(task) + ' --assigned'
         : 'её переводят туда в Kaiten при разборе';
-    return `задача во ${STATUS_WORDS[task.fm.status]}: в работу берут из «Готово к работе» — ${how}`;
+    return `задача ${task.fm.status === 'inbox' ? 'во' : 'в'} ${STATUS_WORDS[task.fm.status]}: в работу берут из «Готово к работе» — ${how}`;
   }
   if (task.fm.repo !== currentRepo) return `задача для репозитория ${task.fm.repo ?? '(не указан)'}, а вы в ${currentRepo}`;
   return moveProblem(task, 'in-progress', assigned);

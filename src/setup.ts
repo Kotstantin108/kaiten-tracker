@@ -65,6 +65,7 @@ function desiredFor(loaded: LoadedProject): DesiredStructure {
     departments: project.kaiten.departments,
     junior: project.kaiten.junior !== undefined,
     visual: project.kaiten.visual !== undefined,
+    found: project.kaiten.found !== undefined,
   });
 }
 

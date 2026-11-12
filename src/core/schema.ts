@@ -26,7 +26,12 @@ import { z } from 'zod';
 export const TASK_TYPES = ['epic', 'story', 'tech', 'bug', 'spike'] as const;
 export type TaskType = (typeof TASK_TYPES)[number];
 
-export const STATUSES = ['inbox', 'backlog', 'ready', 'in-progress', 'review', 'blocked', 'done', 'cancelled'] as const;
+/**
+ * `found` — «Находки»: дефект, который агент заметил по ходу другой работы и
+ * который подтвердило исследование (`kaiten found`, `core/found.ts`). Это ещё
+ * не задача к работе: из «Находок» её выносит человек.
+ */
+export const STATUSES = ['found', 'inbox', 'backlog', 'ready', 'in-progress', 'review', 'blocked', 'done', 'cancelled'] as const;
 export type TaskStatus = (typeof STATUSES)[number];
 
 /** Закрытая задача лежит в `archive/YYYY-MM/`, остальные — в `active/` (Q42). */

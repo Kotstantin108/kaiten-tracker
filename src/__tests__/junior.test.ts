@@ -95,11 +95,13 @@ describe('juniorReadiness', () => {
     expect(legacy?.missing).toEqual(['постановку не правили больше 90 дней']);
   });
 
-  it('epic, spike и взятые, заблокированные, закрытые задачи — признак не применим', () => {
+  it('epic, spike и неразобранные, взятые, заблокированные, закрытые задачи — признак не применим', () => {
     const full = body(PRODUCT_NO, DB_NO, N8N_NO);
     for (const type of ['epic', 'spike'] as const) expect(check(full, { type })).toBeNull();
     for (const status of ['in-progress', 'review', 'blocked', 'done', 'cancelled'] as const) expect(check(full, { status })).toBeNull();
-    for (const status of ['inbox', 'backlog', 'ready'] as const) expect(check(full, { status, type: 'bug' })?.ok).toBe(true);
+    // До разбора человеком признака нет: «Нет» в разделах мог написать сам агент (владелец 12.11.2026).
+    for (const status of ['found', 'inbox'] as const) expect(check(full, { status, type: 'bug' })).toBeNull();
+    for (const status of ['backlog', 'ready'] as const) expect(check(full, { status, type: 'bug' })?.ok).toBe(true);
   });
 
   it('незаполненный каркас разделов — не заполнен, а не «полный»', () => {

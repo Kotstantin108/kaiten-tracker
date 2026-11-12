@@ -225,7 +225,8 @@ const SEND_LOCK = 'kaiten-send.lock';
 
 // ── коммиты без рабочей копии ────────────────────────────────────────────
 
-const TASK_TEXT_RE = /^(?:active|archive)\/.+\.md$/;
+// Задачи и их журналы; заметки о находках (`core/found.ts`) — операциям `found-…`.
+const TASK_TEXT_RE = /^(?:active|archive|findings)\/.+\.md$/;
 
 function loadTexts(store: string, rev: string | null): Map<string, string> {
   const texts = new Map<string, string>();
@@ -370,7 +371,7 @@ const MAX_ATTEMPTS = 5;
  */
 function keepText(entry: JournalEntry): string | null {
   const op = entry.op;
-  const text = op.kind === 'new' || op.kind === 'edit' || op.kind === 'log' ? op.text : null;
+  const text = op.kind === 'new' || op.kind === 'edit' || op.kind === 'log' || op.kind === 'found-note' ? op.text : null;
   if (text === null) return null;
   const path = join(tmpdir(), `kaiten-${op.kind}-${entry.seq}-${Date.now()}.md`);
   writeFileSync(path, text);

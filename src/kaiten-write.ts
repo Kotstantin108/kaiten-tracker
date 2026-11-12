@@ -54,6 +54,8 @@ export const WRITE_HELP: Record<string, string> = {
   new: `kaiten new "<заголовок>" — завести задачу.
 
 Задача попадает во «Входящие» без приоритета: его ставят при разборе.
+Задачу заводят, когда об этом попросил человек. Дефект, который вы сами
+заметили по ходу другой работы, — не сюда: kaiten found.
 Заголовок — с глагола («Починить…», «Перенести…»). «Суть» — 1–3 предложения
 для фаундера без терминов кода. Постановка — сразу, через --stdin: что
 видели и знаете сейчас, потом не вспомнит никто.
@@ -370,8 +372,9 @@ async function newTask(args: string[]): Promise<void> {
   await commit(ctx, { kind: 'new', path: `active/${slug}.md`, text }, `новая задача ${slug}`);
   console.log(`Открыть: kaiten show ${slug}`);
   if (junior) {
-    const readiness = juniorReadiness({ type: taskType, status: 'inbox', created: today(), revised: today() }, body, { today: today(), maxAgeDays: juniorState.maxAgeDays });
-    if (readiness) console.log(readiness.ok ? 'Младшему: да.' : `Младшему: нет — не хватает: ${juniorMissingText(readiness.missing)}.`);
+    // Во «Входящих» признака нет — его получает разобранная задача; здесь — каким он будет после разбора.
+    const readiness = juniorReadiness({ type: taskType, status: 'backlog', created: today(), revised: today() }, body, { today: today(), maxAgeDays: juniorState.maxAgeDays });
+    if (readiness) console.log(readiness.ok ? 'Младшему после разбора: да.' : `Младшему после разбора: нет — не хватает: ${juniorMissingText(readiness.missing)}.`);
   }
 }
 

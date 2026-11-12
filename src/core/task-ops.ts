@@ -20,6 +20,7 @@
  */
 
 import { contentHash, foreignFieldChanges, parseTaskDocument, serializeTaskDocument, TaskParseError } from './document.js';
+import { findingPath, isFindingPath, parseFinding, serializeFinding } from './found.js';
 import { lintTask, SLUG_RE } from './lint.js';
 import { CLOSED_STATUSES, FrontmatterSchema, JOURNAL_FILE, type AssessVerdict, type Frontmatter, type Priority, type TaskStatus, type TaskType, type VisualAnswer } from './schema.js';
 import { renderSkeleton } from './skeleton.js';
@@ -80,7 +81,15 @@ export type Op =
    * Версия синхронизации (`core/sync-version.ts`) — файлом в корне репозитория
    * задач. Только растёт: поверх более новой операция ничего не меняет.
    */
-  | { kind: 'sync-version'; version: number };
+  | { kind: 'sync-version'; version: number }
+  /** Заметка о находке (`kaiten found`, `core/found.ts`): файл `findings/<id>.md`, ещё не исследована. */
+  | { kind: 'found-note'; id: string; text: string }
+  /**
+   * Вердикт исследования — в заметку. Подтверждена — тем же шагом заводится задача
+   * (`task`: готовый файл в статусе «Находки»); повтор — `task.slug` называет
+   * задачу, где дефект уже записан. Заметка уже с вердиктом — операция ничего не меняет.
+   */
+  | { kind: 'found-verdict'; id: string; state: 'confirmed' | 'rejected' | 'duplicate'; reason: string; task?: { slug: string; text?: string } };
 
 /** Что поменять в файле по карточке; `null` — в карточке поле пустое. */
 export interface MirrorItem {
@@ -158,7 +167,7 @@ export interface FileChange {
 
 export type OpResult = { changes: FileChange[]; summary: string; warnings: string[] } | { error: string };
 
-export const CANCELLABLE: readonly TaskStatus[] = ['inbox', 'backlog', 'ready'];
+export const CANCELLABLE: readonly TaskStatus[] = ['found', 'inbox', 'backlog', 'ready'];
 
 export type WorkStatus = 'in-progress' | 'review' | 'done';
 /** Откуда можно перейти в статус работы — как ограничения доски. */
@@ -172,11 +181,12 @@ const MOVE_WORDS: Record<WorkStatus, string> = { 'in-progress': 'в работе
 /**
  * Откуда задачу берут в работу по прямому поручению человека («сделай
  * задачу N», «заведи и приступай»): поручение и есть разбор. Задача без
- * приоритета получает высший — её взяли сразу (владелец 05.10).
+ * приоритета получает высший — её взяли сразу (владелец 05.10). Находку — тоже:
+ * поручение человека и есть её подтверждение (владелец 12.11).
  */
-export const ASSIGNABLE: readonly TaskStatus[] = ['inbox', 'backlog'];
+export const ASSIGNABLE: readonly TaskStatus[] = ['found', 'inbox', 'backlog'];
 export const ASSIGNED_PRIORITY: Priority = 'p0';
-const ASSIGNED_FROM: Partial<Record<TaskStatus, string>> = { inbox: '«Входящих»', backlog: '«Бэклога»' };
+const ASSIGNED_FROM: Partial<Record<TaskStatus, string>> = { found: '«Находок»', inbox: '«Входящих»', backlog: '«Бэклога»' };
 
 /** Приоритет, который задача получает при взятии в работу; `undefined` — не меняется. */
 export function assignedPriority(task: TaskRecord, assigned: boolean): Priority | undefined {
@@ -199,8 +209,8 @@ function records(texts: TaskTexts): TaskRecord[] {
   const files: Array<{ path: string; text: string }> = [];
   const logs = new Map<string, string>();
   for (const [path, text] of texts) {
-    // Файл версии синхронизации — не задача.
-    if (!path.endsWith('.md')) continue;
+    // Файл версии синхронизации и заметки о находках — не задачи.
+    if (!path.endsWith('.md') || isFindingPath(path)) continue;
     if (path.endsWith('.log.md')) logs.set(path.replace(/\.log\.md$/, '.md'), text);
     else files.push({ path, text });
   }
@@ -449,7 +459,7 @@ export function uniqueSlug(base: string, taken: ReadonlySet<string>): string {
 
 export function takenSlugs(texts: TaskTexts): Set<string> {
   const out = new Set<string>();
-  for (const path of texts.keys()) if (path.endsWith('.md') && !path.endsWith('.log.md')) out.add(path.split('/').at(-1)?.replace(/\.md$/, '') ?? '');
+  for (const path of texts.keys()) if (path.endsWith('.md') && !path.endsWith('.log.md') && !isFindingPath(path)) out.add(path.split('/').at(-1)?.replace(/\.md$/, '') ?? '');
   return out;
 }
 
@@ -469,16 +479,18 @@ export interface NewTaskInput {
   createdVia: 'agent' | 'human';
   /** Тело; без него — скелет по типу. */
   body?: string;
+  /** Подтверждённая находка — сразу в «Находки»; иначе «Входящие». */
+  found?: boolean;
 }
 
-/** Файл новой задачи: во «Входящих», без приоритета — его ставят при разборе. */
+/** Файл новой задачи: во «Входящих» (находка — в «Находках»), без приоритета — его ставят при разборе. */
 export function newTaskText(input: NewTaskInput, date: string): string | { error: string } {
   const parsed = FrontmatterSchema.safeParse({
     id: input.id,
     title: input.title,
     summary: input.summary,
     type: input.type,
-    status: 'inbox',
+    status: input.found ? 'found' : 'inbox',
     repo: input.repo,
     epic: input.epic,
     related: input.related,
@@ -511,6 +523,15 @@ export function applyOp(op: Op, texts: TaskTexts, ctx: OpContext): OpResult {
     const renamed = slug === wanted ? '' : ` (имя ${wanted} было занято)`;
     return { changes: [{ path, text: op.text }], summary: `новая задача ${slug}${renamed}`, warnings: result.warnings };
   }
+
+  if (op.kind === 'found-note') {
+    const path = findingPath(op.id);
+    if (texts.has(path)) return { error: 'такая находка уже записана' };
+    const parsed = parseFinding(op.text);
+    if ('error' in parsed) return { error: parsed.error };
+    return { changes: [{ path, text: op.text }], summary: `находка записана: ${parsed.title}`, warnings: [] };
+  }
+  if (op.kind === 'found-verdict') return applyFoundVerdict(op, texts, ctx);
 
   if (op.kind === 'synced') return applySynced(op.items, texts);
   if (op.kind === 'mirror') return applyMirror(op.items, texts, ctx);
@@ -628,6 +649,43 @@ export function applyOp(op: Op, texts: TaskTexts, ctx: OpContext): OpResult {
       return { changes: [{ path: task.path, text: out.text }], summary: `задача ${ref} изменена`, warnings: out.warnings };
     }
   }
+}
+
+/**
+ * Вердикт исследования — в заметку; подтверждённая находка тем же шагом
+ * становится задачей в «Находках». Имя задачи занято — следующее свободное,
+ * как у `new`: заметка называет то имя, под которым задача записана.
+ */
+function applyFoundVerdict(op: Extract<Op, { kind: 'found-verdict' }>, texts: TaskTexts, ctx: OpContext): OpResult {
+  const path = findingPath(op.id);
+  const text = texts.get(path);
+  if (text === undefined) return { error: 'находки больше нет среди находок проекта' };
+  const finding = parseFinding(text);
+  if ('error' in finding) return { error: `заметка о находке не читается: ${finding.error}` };
+  if (finding.fm.state !== 'pending') return { changes: [], summary: 'находка уже исследована', warnings: [] };
+  if (!op.reason.trim()) return { error: 'вердикт без причины' };
+
+  const changes: FileChange[] = [];
+  let warnings: string[] = [];
+  let task: string | undefined;
+  if (op.state === 'confirmed') {
+    if (!op.task?.text || !SLUG_RE.test(op.task.slug)) return { error: 'подтверждённая находка без задачи' };
+    const slug = uniqueSlug(op.task.slug, takenSlugs(texts));
+    const taskPath = `active/${slug}.md`;
+    const result = checked(op.task.text, taskPath);
+    if ('error' in result) return result;
+    const { id } = parseTaskDocument(op.task.text).data as { id?: string };
+    if (records(texts).some((t) => t.fm.id === id)) return { error: 'задача с таким id уже есть' };
+    changes.push({ path: taskPath, text: op.task.text });
+    warnings = result.warnings;
+    task = slug;
+  } else if (op.state === 'duplicate') {
+    if (!op.task || !records(texts).some((t) => t.slug === op.task?.slug)) return { error: 'задачи, повтором которой названа находка, больше нет' };
+    task = op.task.slug;
+  }
+  changes.push({ path, text: serializeFinding({ ...finding, fm: { ...finding.fm, state: op.state, resolved: ctx.date, ...(task ? { task } : {}) }, reason: op.reason.trim() }) });
+  const what = op.state === 'confirmed' ? `подтверждена — задача ${task}` : op.state === 'duplicate' ? `уже записана в задаче ${task}` : 'не подтверждена';
+  return { changes, summary: `находка ${what}`, warnings };
 }
 
 /**

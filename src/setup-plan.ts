@@ -31,7 +31,7 @@ import { PRIORITIES, type Priority, type TaskType } from './task-source.js';
 import type { Board, CardType, CustomProperty, SelectValue, Space } from './kaiten-client.js';
 
 /** Все статусы единой схемы (Q23), а не только выводимые из старых папок. */
-export const SCHEMA_STATUSES = ['inbox', 'backlog', 'ready', 'in-progress', 'blocked', 'review', 'done', 'cancelled'] as const;
+export const SCHEMA_STATUSES = ['found', 'inbox', 'backlog', 'ready', 'in-progress', 'blocked', 'review', 'done', 'cancelled'] as const;
 export type SchemaStatus = (typeof SCHEMA_STATUSES)[number];
 
 /** Поле-выбор: имя и варианты в порядке показа. */
@@ -230,6 +230,9 @@ export const DESIRED: DesiredStructure = {
   visual: null,
 };
 
+/** «Находки» — только у проекта с `kaiten.found`: подтверждённые дефекты до разбора человеком. */
+export const FOUND_COLUMN: DesiredStructure['columns'][number] = { status: 'found', title: 'Находки', type: 1 };
+
 /**
  * Схема для проекта из конфига: своё пространство и доска, своё поле
  * репозитория с подписями вариантов (`Acme-android`), общие приоритет и
@@ -249,12 +252,15 @@ export function desiredForProject(input: {
   departments?: readonly string[];
   junior?: boolean;
   visual?: boolean;
+  /** Колонка «Находки» (`kaiten.found`) — левее «Входящих». */
+  found?: boolean;
 }): DesiredStructure {
   const unknown = (input.departments ?? []).filter((key) => !DEPARTMENTS.some((d) => d.key === key));
   if (unknown.length > 0) throw new Error(`Нет шаблона отдела: ${unknown.join(', ')} (есть: ${DEPARTMENTS.map((d) => d.key).join(', ')})`);
   if ((input.departments ?? []).length > 0 && !input.folder) throw new Error('Пространства отделов кладутся в папку — задайте kaiten.folder');
   return {
     ...DESIRED,
+    columns: input.found ? [FOUND_COLUMN, ...DESIRED.columns] : DESIRED.columns,
     space: input.space,
     board: input.board,
     selects: {
@@ -435,13 +441,22 @@ export function planSetup(current: CurrentStructure, desired: DesiredStructure =
     actions.push({ kind: 'create-board', title: desired.board, columns: desired.columns.map(({ title, type }) => ({ title, type })) });
   } else {
     reused.push(`доска «${board.title}» (${board.id})`);
-    const maxSort = Math.max(0, ...board.columns.map((c) => c.sort_order ?? 0));
-    let next = maxSort;
-    for (const column of desired.columns) {
+    const sorts = board.columns.map((c) => c.sort_order ?? 0);
+    let next = Math.max(0, ...sorts);
+    desired.columns.forEach((column) => {
       const found = board.columns.find((c) => same(c.title, column.title));
-      if (found) reused.push(`колонка «${found.title}» (${found.id})`);
-      else actions.push({ kind: 'create-column', title: column.title, type: column.type, sortOrder: ++next });
-    }
+      if (found) {
+        reused.push(`колонка «${found.title}» (${found.id})`);
+        return;
+      }
+      // Недостающая колонка — в конец. Кроме «Находок»: они встают левее всех,
+      // иначе неразобранное оказалось бы правее «Отменено».
+      const first = Math.min(...sorts);
+      const leftmost = column.status === 'found' && sorts.length > 0;
+      const sortOrder = leftmost ? (first > 0 ? first / 2 : first - 1) : ++next;
+      if (leftmost) sorts.push(sortOrder);
+      actions.push({ kind: 'create-column', title: column.title, type: column.type, sortOrder });
+    });
     for (const c of board.columns) {
       if (!desired.columns.some((d) => same(d.title, c.title))) extra.push(`колонка «${c.title}» (${c.id})`);
     }

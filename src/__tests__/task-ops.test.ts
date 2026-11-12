@@ -123,7 +123,7 @@ describe('отмена и блокировка', () => {
 
   it('отменить задачу в работе нельзя — как на доске', () => {
     const r = applyOp({ kind: 'cancel', id: ID, reason: 'x' }, new Map([['active/webhook-timeout.md', task({ status: 'in-progress' })]]), CTX);
-    expect('error' in r && r.error).toContain('только из inbox, backlog, ready');
+    expect('error' in r && r.error).toContain('только из found, inbox, backlog, ready');
   });
 
   it('блокировка — статус и причина в журнале; без причины нельзя', () => {

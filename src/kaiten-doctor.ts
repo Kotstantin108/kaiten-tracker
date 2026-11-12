@@ -23,7 +23,9 @@ import { existsSync, readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { juniorSetting, visualSetting, projectFromTasksRepo, storeNameOf, TASKS_REPO_CONFIG, type LoadedProject, type People } from './config.js';
+import { claudeAvailable } from './claude-agent.js';
+import { foundSetting, juniorSetting, visualSetting, projectFromTasksRepo, storeNameOf, TASKS_REPO_CONFIG, type LoadedProject, type People } from './config.js';
+import { isFindingPath, listFindings } from './core/found.js';
 import { rulesState, SKILL_PATH, skillState } from './core/repo-connect.js';
 import { belongsToProject, buildIndex } from './core/tasks-index.js';
 import { invocationDir, parse, peopleByEmail, SETTINGS_PATH, storeMessage } from './kaiten-cli.js';
@@ -186,6 +188,23 @@ function storeChecks(facts: NonNullable<RepoFacts['project']>, settings: KaitenS
   }
   if (visualSetting(loaded.project).state === 'needs-setup') {
     checks.push({ level: 'warn', what: `проект ${project.title} просит «Было / Стало», а поля в Kaiten нет — на ревью его пока не спрашивают`, fix: 'Вопрос к владельцу проекта: поле заводит setup.' });
+  }
+
+  const found = foundSetting(loaded.project);
+  if (found.state === 'needs-setup') {
+    checks.push({ level: 'warn', what: `проект ${project.title} записывает находки, а колонки «Находки» в Kaiten нет — kaiten found отказывает`, fix: 'Вопрос к владельцу проекта: колонку заводит setup.' });
+  }
+  if (found.state === 'on') {
+    // Без модели находка записывается, но не проверяется — и молча: сказать об этом может только doctor.
+    if (claudeAvailable()) checks.push({ level: 'ok', what: 'находки: проверяющий на этой машине запускается' });
+    else checks.push({ level: 'warn', what: 'находки с этой машины останутся непроверенными: команда claude не запускается', fix: 'Установите Claude Code и войдите в него. До тех пор находки записываются, а проверяет их владелец проекта.' });
+    const entries = listEntries(project.store).filter((e) => isFindingPath(e.path) && e.path.endsWith('.md'));
+    const blobs = readBlobs(
+      project.store,
+      entries.map((e) => e.sha),
+    );
+    const waiting = listFindings(entries.map((e) => ({ path: e.path, text: blobs.get(e.sha)?.toString('utf8') ?? '' }))).filter((f) => f.fm.state === 'pending').length;
+    if (waiting > 0) checks.push({ level: 'warn', what: `находок не проверено: ${waiting}`, fix: 'Свежая проверяется прямо сейчас; давние проверяет владелец проекта: npm run found в kaiten-tracker.' });
   }
 
   const tree = readStoreTree(project.store, listEntries(project.store));

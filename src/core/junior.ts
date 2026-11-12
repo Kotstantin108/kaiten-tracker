@@ -51,8 +51,14 @@ export const JUNIOR_SECTIONS: readonly JuniorSection[] = [
 const MUST_BE_NO = 'Открытые вопросы';
 
 export const JUNIOR_TYPES: readonly TaskType[] = ['story', 'tech', 'bug'];
-/** Задачи, которые ещё можно взять; у остальных признака нет. */
-export const JUNIOR_STATUSES: readonly TaskStatus[] = ['inbox', 'backlog', 'ready'];
+/**
+ * Задачи, которые ещё можно взять и которые разобрал человек; у остальных признака нет.
+ * «Находки» и «Входящие» — до разбора: постановку там мог написать агент, и «Нет» в
+ * разделах было бы его же свидетельством о собственной находке (владелец 12.11.2026).
+ */
+export const JUNIOR_STATUSES: readonly TaskStatus[] = ['backlog', 'ready'];
+/** Что оценивает `npm run assess`: и неразобранное — «похоже, сделана» полезно знать до разбора. */
+export const ASSESS_STATUSES: readonly TaskStatus[] = ['inbox', 'backlog', 'ready'];
 
 /** `null` — признак к задаче не применим (тип или статус); иначе — годится ли и чего не хватает. */
 export type JuniorReadiness = { ok: boolean; missing: string[] } | null;

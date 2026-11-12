@@ -1,0 +1,370 @@
+/**
+ * Скрипт владельца: исследование находок (`core/found.ts`), до которых не
+ * дошла фоновая проверка `kaiten found`, и разбор старых задач агентов.
+ *
+ *   npm run found -- --tasks <адрес> --code acme-app=<папка>
+ *   npm run found -- --tasks <адрес> --code acme-app=<папка> --legacy
+ *   npm run found -- --tasks <адрес> --apply <файл результатов>
+ *
+ * Без `--apply` — только исследование и отчёт: ни в задачи, ни в Kaiten ничего
+ * не пишется. `--apply` модель не запускает, а применяет ровно переданный
+ * файл; несогласны с находкой — удалите её запись из файла.
+ *
+ * ДВА РЕЖИМА
+ *   · по умолчанию — заметки «не исследована»: исследование на машине агента
+ *     упало, или там нет модели. Применение пишет вердикт в заметку, а
+ *     подтверждённой заводит задачу в «Находках»;
+ *   · `--legacy` — задачи, которые агенты завели до находок: открытые, во
+ *     «Входящих», без приоритета. Каждая проверяется как находка. Применение
+ *     переносит в «Находки» только подтверждённые дефекты; остальное остаётся
+ *     где лежит и перечислено в отчёте — решает владелец.
+ *
+ * ФЛАГИ
+ *   --tasks <адрес|папка>  репозиторий задач; --apply — только адрес
+ *   --code <репо>=<папка>  рабочая копия репозитория кода: из неё берётся
+ *                          основная ветка, на какой ветке сама папка — неважно
+ *   --legacy               старые задачи агентов вместо заметок
+ *   --only <id|задача>     одна заметка (id) или, с --legacy, одна задача
+ *   --limit N              не больше N исследований
+ *   --model <модель>       по умолчанию — из kaiten.found; Haiku не используем
+ *   --out <папка>          куда положить отчёт и файл результатов
+ *   --apply <файл>         применить файл результатов
+ *
+ * Исследования идут по одному. Коды выхода: 0 — ок; 1 — были ошибки; 2 —
+ * ошибка аргументов.
+ */
+
+import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join, resolve } from 'node:path';
+
+import { z } from 'zod';
+
+import { modelProblem } from './claude-agent.js';
+import { foundSetting } from './config.js';
+import { FINDINGS_DIR, FINDING_STATE_WORDS, findingPath, isFindingPath, listFindings, type Finding, type FindingVerdict } from './core/found.js';
+import { buildIndex, refOf, resolveTask, type TaskRecord } from './core/tasks-index.js';
+import { investigate } from './found-investigate.js';
+import { KaitenClient } from './kaiten-client.js';
+import { SETTINGS_PATH, today } from './kaiten-cli.js';
+import { loadSettings } from './kaiten-context.js';
+import { recordVerdict, snapshotFiles } from './kaiten-found.js';
+import { loadOwnerProject } from './owner-project.js';
+import { KAITEN_LOCK, recordOp, syncStore, withLockAsync } from './store-write.js';
+import { listEntries, readBlobs, readStoreTree } from './task-store.js';
+import { readTasksTree } from './tasks-files.js';
+
+function fail(message: string, code = 2): never {
+  console.error(message);
+  process.exit(code);
+}
+
+function argValue(argv: readonly string[], name: string): string | undefined {
+  const i = argv.indexOf(name);
+  return i !== -1 && argv[i + 1] && !argv[i + 1].startsWith('--') ? argv[i + 1] : undefined;
+}
+
+function argValues(argv: readonly string[], name: string): string[] {
+  return argv.flatMap((a, i) => (a === name && argv[i + 1] && !argv[i + 1].startsWith('--') ? [argv[i + 1]] : []));
+}
+
+// ── файл результатов ─────────────────────────────────────────────────────
+
+const ResultSchema = z
+  .object({
+    /** id заметки или, в режиме `--legacy`, id задачи. */
+    id: z.string(),
+    title: z.string(),
+    state: z.enum(['confirmed', 'rejected', 'duplicate']),
+    reason: z.string(),
+    /** Подтверждённой находке — задача; у `--legacy` не применяется: задача уже есть. */
+    task: z.object({ title: z.string(), slug: z.string(), summary: z.string(), body: z.string() }).strict().optional(),
+    /** Повтор — задача, где дефект уже записан (slug). */
+    of: z.string().optional(),
+  })
+  .strict();
+type Result = z.infer<typeof ResultSchema>;
+
+const ResultsFileSchema = z
+  .object({
+    version: z.literal(1),
+    project: z.string(),
+    created: z.string(),
+    model: z.string(),
+    kind: z.enum(['notes', 'legacy']),
+    results: z.array(ResultSchema),
+  })
+  .strict();
+type ResultsFile = z.infer<typeof ResultsFileSchema>;
+
+function toResult(id: string, title: string, verdict: FindingVerdict): Result {
+  if (verdict.state === 'confirmed') return { id, title, state: 'confirmed', reason: verdict.reason, task: verdict.task };
+  if (verdict.state === 'duplicate') return { id, title, state: 'duplicate', reason: verdict.reason, of: verdict.of.slug };
+  return { id, title, state: 'rejected', reason: verdict.reason };
+}
+
+// ── что исследовать ──────────────────────────────────────────────────────
+
+interface Source {
+  tasks: TaskRecord[];
+  findingFiles: Array<{ path: string; text: string }>;
+}
+
+function readSource(owner: ReturnType<typeof loadOwnerProject>): Source {
+  if (owner.source.kind === 'store') {
+    const store = owner.source.store;
+    const entries = listEntries(store);
+    const tree = readStoreTree(store, entries);
+    const wanted = entries.filter((e) => isFindingPath(e.path) && e.path.endsWith('.md'));
+    const blobs = readBlobs(
+      store,
+      wanted.map((e) => e.sha),
+    );
+    return { tasks: buildIndex(tree.files, tree.logs).tasks, findingFiles: wanted.map((e) => ({ path: e.path, text: blobs.get(e.sha)?.toString('utf8') ?? '' })) };
+  }
+  if (owner.source.kind === 'dir') {
+    const dir = owner.source.dir;
+    const tree = readTasksTree(dir);
+    const folder = join(dir, FINDINGS_DIR);
+    const names = existsSync(folder) ? readdirSync(folder).filter((n) => n.endsWith('.md')) : [];
+    return { tasks: buildIndex(tree.files, tree.logs).tasks, findingFiles: names.map((n) => ({ path: `${FINDINGS_DIR}/${n}`, text: readFileSync(join(folder, n), 'utf8') })) };
+  }
+  return fail('--config без --tasks: укажите, откуда брать задачи');
+}
+
+/** Старая задача агента: заведена до находок и человеком не разобрана. */
+function isLegacy(task: TaskRecord): boolean {
+  return task.fm.created_via === 'agent' && task.fm.status === 'inbox' && task.fm.priority === undefined && task.fm.type !== 'epic' && task.fm.type !== 'spike';
+}
+
+/** Задача агента — как заметка: её текст и есть то, что он видел. */
+function legacyFinding(task: TaskRecord): Finding {
+  return {
+    fm: { id: task.fm.id, state: 'pending', repo: task.fm.repo ?? '', created: task.fm.created, created_by: task.fm.created_by },
+    title: task.fm.title,
+    where: `репозиторий ${task.fm.repo ?? '(не указан)'} — точное место в тексте ниже, если агент его назвал`,
+    seen: `${task.fm.summary}\n\n${task.body.trim()}`,
+    reason: null,
+  };
+}
+
+// ── сухой прогон ─────────────────────────────────────────────────────────
+
+async function dryRun(argv: string[]): Promise<void> {
+  const owner = loadOwnerProject(argv);
+  const { key, project } = owner.loaded;
+  if (foundSetting(project).state === 'off') fail(`У проекта ${project.title} находки не включены (kaiten.found в kaiten.json).`);
+  const model = argValue(argv, '--model') ?? project.kaiten.found?.model ?? fail('Не задана модель: --model');
+  const badModel = modelProblem(model);
+  if (badModel) fail(`--model: ${badModel}.`);
+
+  const code = new Map<string, string>();
+  for (const spec of argValues(argv, '--code')) {
+    const m = /^([^=]+)=(.+)$/.exec(spec);
+    if (!m) fail(`--code ${spec}: нужно <репозиторий>=<папка>`);
+    const [, name, path] = m;
+    if (!project.repos.some((r) => r.name === name)) fail(`--code ${name}: в проекте нет такого репозитория (есть: ${project.repos.map((r) => r.name).join(', ')})`);
+    const dir = resolve(path);
+    if (!existsSync(dir) || !statSync(dir).isDirectory()) fail(`--code ${name}: нет папки ${dir}`);
+    code.set(name, dir);
+  }
+  if (code.size === 0) fail('Укажите папки с кодом: --code <репозиторий>=<папка>');
+
+  const legacy = argv.includes('--legacy');
+  const source = readSource(owner);
+  const only = argValue(argv, '--only');
+  const limitRaw = argValue(argv, '--limit');
+  const limit = limitRaw === undefined ? Number.MAX_SAFE_INTEGER : Number(limitRaw);
+  if (!Number.isInteger(limit) || limit < 1) fail('--limit: целое число больше нуля');
+
+  let targets: Array<{ finding: Finding; name: string; exclude: string }>;
+  if (legacy) {
+    let tasks = source.tasks.filter(isLegacy);
+    if (only) {
+      const found = resolveTask(source.tasks, only);
+      if ('error' in found) fail(found.error);
+      if (!isLegacy(found.task)) fail(`${refOf(found.task)} — не старая задача агента: нужна открытая, во «Входящих», без приоритета, заведённая агентом`);
+      tasks = [found.task];
+    }
+    targets = tasks.map((t) => ({ finding: legacyFinding(t), name: `${refOf(t)} ${t.fm.title}`, exclude: t.path }));
+  } else {
+    let pending = listFindings(source.findingFiles).filter((f) => f.fm.state === 'pending');
+    if (only) {
+      pending = pending.filter((f) => f.fm.id === only);
+      if (pending.length === 0) fail(`Неисследованной находки ${only} нет`);
+    }
+    targets = pending.map((f) => ({ finding: f, name: f.title, exclude: findingPath(f.fm.id) }));
+  }
+  const withCode = targets.filter((t) => code.has(t.finding.fm.repo));
+  const picked = withCode.slice(0, limit);
+  const noCode = [...new Set(targets.filter((t) => !code.has(t.finding.fm.repo)).map((t) => t.finding.fm.repo))];
+
+  console.log(`Проект ${project.title}: ${legacy ? 'старых задач агентов' : 'неисследованных находок'} — ${targets.length}, исследую ${picked.length}. Модель ${model}.`);
+  if (noCode.length > 0) console.log(`Без папки с кодом пропущены репозитории: ${noCode.map((r) => `--code ${r || '<репозиторий>'}=<папка>`).join(' ')}`);
+
+  const results: Result[] = [];
+  const failed: Array<{ name: string; error: string }> = [];
+  let cost = 0;
+  for (const [i, target] of picked.entries()) {
+    const repo = project.repos.find((r) => r.name === target.finding.fm.repo);
+    const files = snapshotFiles(source.tasks, source.findingFiles).filter((f) => f.path !== target.exclude && f.path !== target.exclude.replace(/\.md$/, '.log.md'));
+    const done = await investigate({
+      finding: target.finding,
+      tasks: source.tasks.filter((t) => t.path !== target.exclude),
+      snapshot: { codeDir: code.get(target.finding.fm.repo) ?? '', branch: repo?.branch ?? 'main', files },
+      model,
+    });
+    if ('error' in done) {
+      failed.push({ name: target.name, error: done.error });
+      console.log(`[${i + 1}/${picked.length}] ${target.name} — исследование не состоялось: ${done.error}`);
+      continue;
+    }
+    cost += done.costUsd;
+    results.push(toResult(target.finding.fm.id, target.name, done.verdict));
+    console.log(`[${i + 1}/${picked.length}] ${target.name} — ${FINDING_STATE_WORDS[done.verdict.state]}`);
+  }
+
+  const created = new Date().toISOString();
+  const file: ResultsFile = { version: 1, project: key, created, model, kind: legacy ? 'legacy' : 'notes', results };
+  const out = resolve(argValue(argv, '--out') ?? join(tmpdir(), 'kaiten-found'));
+  mkdirSync(out, { recursive: true });
+  const stamp = created.slice(0, 16).replace(/[-:]/g, '').replace('T', '-');
+  const jsonPath = join(out, `${key}-${stamp}.json`);
+  const mdPath = join(out, `${key}-${stamp}.md`);
+  writeFileSync(jsonPath, `${JSON.stringify(file, null, 2)}\n`, 'utf8');
+  writeFileSync(mdPath, report(project.title, file, failed), 'utf8');
+
+  const count = (s: Result['state']): number => results.filter((r) => r.state === s).length;
+  console.log(`\nИсследовано ${results.length}: подтверждено — ${count('confirmed')}, не подтверждено — ${count('rejected')}, уже записано — ${count('duplicate')}; не состоялось — ${failed.length}. Стоимость ≈ $${cost.toFixed(2)}.`);
+  console.log(`Отчёт: ${mdPath}`);
+  console.log(`Результаты: ${jsonPath}`);
+  console.log('\nСухой прогон: ни в задачи, ни в Kaiten ничего не записано. Применить: --apply <файл результатов>.');
+  if (failed.length > 0) process.exitCode = 1;
+}
+
+function report(project: string, file: ResultsFile, failed: ReadonlyArray<{ name: string; error: string }>): string {
+  const out = [`# Находки: ${project}`, '', `${file.kind === 'legacy' ? 'Старые задачи агентов' : 'Неисследованные находки'} · ${file.created.slice(0, 16).replace('T', ' ')} UTC · модель ${file.model}`, ''];
+  const block = (title: string, state: Result['state'], note: string): void => {
+    const items = file.results.filter((r) => r.state === state);
+    if (items.length === 0) return;
+    out.push(`## ${title} (${items.length})`, '', note, '');
+    for (const r of items) {
+      out.push(`### ${r.title}`, '', r.reason, '');
+      if (r.of) out.push(`Уже записано в задаче: ${r.of}`, '');
+      if (r.task) out.push(`**${r.task.title}** — ${r.task.summary}`, '', r.task.body.trim(), '');
+    }
+  };
+  block('Подтверждено', 'confirmed', file.kind === 'legacy' ? 'Применение перенесёт эти задачи в «Находки».' : 'Применение заведёт эти задачи в «Находках».');
+  block('Не подтверждено', 'rejected', file.kind === 'legacy' ? 'Задачи остаются где лежат: отменить или оставить — решать вам.' : 'Применение запишет вердикт в заметку; карточки не будет.');
+  block('Уже записано', 'duplicate', file.kind === 'legacy' ? 'Задачи остаются где лежат: отменить повтор — решать вам.' : 'Применение запишет в заметку, где дефект уже записан.');
+  if (failed.length > 0) out.push(`## Исследование не состоялось (${failed.length})`, '', ...failed.map((f) => `- ${f.name} — ${f.error}`), '');
+  return `${out.join('\n')}\n`;
+}
+
+// ── применение ───────────────────────────────────────────────────────────
+
+async function apply(argv: string[], path: string): Promise<void> {
+  const owner = loadOwnerProject(argv);
+  const { key, project } = owner.loaded;
+  if (owner.source.kind !== 'store') fail('--apply пишет в задачи — только из хранилища задач: --tasks <адрес репозитория задач>');
+  const store = owner.source.store;
+  if (foundSetting(project).state !== 'on') fail('Колонки «Находки» в Kaiten нет — сначала kaiten.found в kaiten.json и npm run setup (план → --apply).');
+
+  let file: ResultsFile;
+  try {
+    file = ResultsFileSchema.parse(JSON.parse(readFileSync(resolve(path), 'utf8')));
+  } catch (error) {
+    fail(`Файл результатов не читается: ${error instanceof Error ? error.message.slice(0, 300) : String(error)}`);
+  }
+  if (file.project !== key) fail(`Файл результатов — проекта ${file.project}, а задачи — ${key}`);
+
+  const date = today();
+  let applied = 0;
+  let errors = 0;
+  const source = readSource(owner);
+
+  if (file.kind === 'notes') {
+    const findings = listFindings(source.findingFiles);
+    for (const result of file.results) {
+      const finding = findings.find((f) => f.fm.id === result.id);
+      if (!finding || finding.fm.state !== 'pending') {
+        console.log(`${result.title} — уже исследована, пропущено`);
+        continue;
+      }
+      const of = result.of ? source.tasks.find((t) => t.slug === result.of) : undefined;
+      const verdict: FindingVerdict | null =
+        result.state === 'confirmed' && result.task ? { state: 'confirmed', reason: result.reason, task: result.task } : result.state === 'duplicate' && of ? { state: 'duplicate', reason: result.reason, of } : result.state === 'rejected' ? { state: 'rejected', reason: result.reason } : null;
+      const recorded = verdict ? recordVerdict(store, finding, verdict, date) : { error: 'в записи результата не хватает задачи' };
+      if ('error' in recorded) {
+        console.error(`Не применено: ${result.title} — ${recorded.error}`);
+        errors += 1;
+        continue;
+      }
+      applied += 1;
+      console.log(`${result.title} — ${recorded.summary}`);
+    }
+  } else {
+    const confirmed = file.results.filter((r) => r.state === 'confirmed');
+    const column = project.mapping?.columns.found;
+    const settings = loadSettings(SETTINGS_PATH);
+    const domain = process.env.KAITEN_DOMAIN ?? settings.kaiten?.domain;
+    const token = process.env.KAITEN_TOKEN ?? settings.kaiten?.token;
+    // Вход нужен, только если есть что переносить в Kaiten: у задачи без карточки двигать нечего.
+    const withCard = confirmed.some((r) => source.tasks.find((t) => t.fm.id === r.id)?.fm.tracker !== undefined);
+    if (withCard && (!domain || !token)) fail('Нет входа в Kaiten: KAITEN_DOMAIN/KAITEN_TOKEN в .env или kaiten в настройках');
+    const client = domain && token ? new KaitenClient({ domain, token, minIntervalMs: 150 }) : null;
+    // Под замком синхронизации: иначе фон вернул бы задаче статус карточки раньше, чем карточка переедет.
+    await withLockAsync(store, KAITEN_LOCK, async () => {
+      for (const result of confirmed) {
+        const task = source.tasks.find((t) => t.fm.id === result.id);
+        if (!task || !isLegacy(task)) {
+          console.log(`${result.title} — задачу уже разобрали, пропущено`);
+          continue;
+        }
+        const cardId = task.fm.tracker !== undefined && /^\d+$/.test(task.fm.tracker) ? Number(task.fm.tracker) : null;
+        try {
+          // Сначала карточка: статус в файле без неё вернулся бы при ближайшей сверке.
+          if (cardId !== null && client && column !== undefined) await client.updateCard(cardId, { column_id: column });
+        } catch (error) {
+          console.error(`Карточка не перенесена: ${result.title} — ${error instanceof Error ? error.message : String(error)}`);
+          errors += 1;
+          continue;
+        }
+        const moved = recordOp(store, { kind: 'mirror', items: [{ id: task.fm.id, status: 'found', note: `находка агента подтверждена исследованием: ${result.reason}` }] }, `в находки: ${refOf(task)}`, date);
+        if ('error' in moved) {
+          console.error(`Не применено: ${result.title} — ${moved.error}`);
+          errors += 1;
+          continue;
+        }
+        applied += 1;
+        console.log(`${result.title} — в «Находках»`);
+      }
+    });
+    const rest = file.results.filter((r) => r.state !== 'confirmed');
+    if (rest.length > 0) console.log(`\nНе подтверждены и остались где лежат (${rest.length}) — решать вам:\n${rest.map((r) => `  ${r.title} — ${FINDING_STATE_WORDS[r.state]}`).join('\n')}`);
+  }
+
+  if (applied > 0) syncStore(store);
+  console.log(`\nПрименено ${applied}. Карточки обновит ближайшая синхронизация (kaiten pull).`);
+  if (errors > 0) process.exitCode = 1;
+}
+
+async function main(): Promise<void> {
+  const argv = process.argv.slice(2);
+  if (argv.includes('--help') || argv.includes('-h')) {
+    console.log('npm run found -- --tasks <адрес> --code <репо>=<папка> [--legacy] [--only <id|задача>] [--limit N] [--model M] [--out <папка>]');
+    console.log('npm run found -- --tasks <адрес> --apply <файл результатов>');
+    return;
+  }
+  if (argv.includes('--apply')) {
+    const file = argValue(argv, '--apply') ?? fail('--apply <файл результатов>: какой файл применить');
+    await apply(argv, file);
+  } else {
+    await dryRun(argv);
+  }
+}
+
+main().catch((error: unknown) => {
+  console.error(error instanceof Error ? error.message : String(error));
+  process.exit(1);
+});

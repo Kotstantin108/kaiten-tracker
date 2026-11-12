@@ -61,6 +61,7 @@ import {
 import { localCopyDir, SettingsError } from './kaiten-context.js';
 import { bodySections, formatLogTail, formatOutline, formatSearch, formatSection, formatShow, formatTaskLines, formatTodo, presentBody, showJson, taskJson } from './kaiten-format.js';
 import { doctor, DOCTOR_HELP } from './kaiten-doctor.js';
+import { FOUND_COMMANDS, FOUND_HELP, foundWorker } from './kaiten-found.js';
 import { START_COMMANDS, START_HELP } from './kaiten-start.js';
 import { editableText, WRITE_COMMANDS, WRITE_HELP } from './kaiten-write.js';
 import { ensureFresh, outdatedMessage, rerun } from './self-update.js';
@@ -81,6 +82,7 @@ function mainHelp(): string {
 
 Вести:
   kaiten new "<заголовок>" ...       завести задачу
+  kaiten found "<что не так>" ...    записать дефект, замеченный по ходу другой работы
   kaiten check <задача> <пункт>...   отметить пункты
   kaiten log <задача> "<текст>"      запись в журнал задачи
   kaiten attach <задача> <файл>      приложить файл к задаче
@@ -204,7 +206,7 @@ ${FILTER_HELP}
 `,
 };
 
-const HELP: Record<string, string> = { ...READ_HELP, ...WRITE_HELP, start: START_HELP, doctor: DOCTOR_HELP };
+const HELP: Record<string, string> = { ...READ_HELP, ...WRITE_HELP, found: FOUND_HELP, start: START_HELP, doctor: DOCTOR_HELP };
 
 // ── чтение ───────────────────────────────────────────────────────────────
 
@@ -572,7 +574,7 @@ function storeOrNull(): string | null {
   }
 }
 
-const COMMANDS: Record<string, (args: string[]) => void | Promise<void>> = { list, show, search, files, pull, doctor, ...WRITE_COMMANDS, ...START_COMMANDS };
+const COMMANDS: Record<string, (args: string[]) => void | Promise<void>> = { list, show, search, files, pull, doctor, ...WRITE_COMMANDS, ...FOUND_COMMANDS, ...START_COMMANDS };
 
 async function main(): Promise<void> {
   const [command, ...args] = process.argv.slice(2);
@@ -581,6 +583,10 @@ async function main(): Promise<void> {
   if (store) freshOrRerun(store);
   if (command === '__send') {
     await send();
+    return;
+  }
+  if (command === '__found') {
+    await foundWorker();
     return;
   }
   if (!command || command === 'help' || command === '--help' || command === '-h') {
