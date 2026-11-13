@@ -26,6 +26,7 @@ import { fileURLToPath } from 'node:url';
 import { claudeAvailable } from './claude-agent.js';
 import { foundSetting, juniorSetting, visualSetting, projectFromTasksRepo, storeNameOf, TASKS_REPO_CONFIG, type LoadedProject, type People } from './config.js';
 import { isFindingPath, listFindings } from './core/found.js';
+import { unknownHost, type RepoWhere } from './core/hosting.js';
 import { rulesState, SKILL_PATH, skillState } from './core/repo-connect.js';
 import { belongsToProject, buildIndex } from './core/tasks-index.js';
 import { invocationDir, parse, peopleByEmail, SETTINGS_PATH, storeMessage } from './kaiten-cli.js';
@@ -182,6 +183,10 @@ function storeChecks(facts: NonNullable<RepoFacts['project']>, settings: KaitenS
   if (repos.includes(facts.repo)) checks.push({ level: 'ok', what: `проект ${project.title}, продукт ${facts.repo}` });
   else checks.push({ level: 'fail', what: `в .kaiten продукт «${facts.repo}», в проекте ${project.title} такого нет (есть: ${repos.join(', ')})`, fix: OWNER });
   checks.push(personCheck(settings, email, loaded.people));
+  // Свой сервер: без названного хостинга ссылки из карточек на задачи и журнал пропадают молча.
+  const where: RepoWhere = { url: loaded.project.tasksRepo?.url ?? facts.tasksUrl, hosting: loaded.project.tasksRepo?.hosting };
+  const host = unknownHost(where.url, where.hosting);
+  if (host) checks.push({ level: 'fail', what: `задачи проекта лежат на ${host}, а что это за сервер — GitHub или GitLab — в проекте не сказано: карточки Kaiten остаются без ссылок на задачи и журнал`, fix: 'Вопрос к владельцу проекта: хостинг репозитория задач называет он.' });
   if (settings?.sync.kaiten && !loaded.project.mapping) checks.push({ level: 'fail', what: `у проекта ${project.title} не настроена доска Kaiten`, fix: 'Вопрос к владельцу проекта.' });
   if (juniorSetting(loaded.project).state === 'needs-setup') {
     checks.push({ level: 'warn', what: `проект ${project.title} отмечает задачи для младших, а полей «Можно младшему» в Kaiten нет — карточки их не получают`, fix: 'Вопрос к владельцу проекта: поля заводит setup.' });
@@ -215,7 +220,7 @@ function storeChecks(facts: NonNullable<RepoFacts['project']>, settings: KaitenS
 
   const journal = readJournal(project.store);
   if (journal.pending.length > 0) {
-    checks.push({ level: 'warn', what: `ваших изменений ещё не отправлено: ${journal.pending.length}${journal.sendProblem ? `. ${storeMessage(journal.sendProblem.kind)}` : ''}`, fix: 'kaiten pull — отправит.' });
+    checks.push({ level: 'warn', what: `ваших изменений ещё не отправлено: ${journal.pending.length}${journal.sendProblem ? `. ${storeMessage(journal.sendProblem.kind, where)}` : ''}`, fix: 'kaiten pull — отправит.' });
   } else checks.push({ level: 'ok', what: 'все ваши изменения отправлены' });
   if (journal.failed.length > 0) checks.push({ level: 'warn', what: `изменений не применено: ${journal.failed.length}`, fix: 'Любая команда kaiten скажет, какие и почему.' });
   if (journal.kaiten && journal.kaiten.errors.length > 0) checks.push({ level: 'warn', what: `Kaiten не обновлён: ${journal.kaiten.errors.map((e) => `${e.what} — ${e.reason}`).slice(0, 3).join('; ')}` });
@@ -226,7 +231,7 @@ function storeChecks(facts: NonNullable<RepoFacts['project']>, settings: KaitenS
       checks.push({ level: 'ok', what: 'доступ к хранилищу задач есть' });
     } catch (error) {
       if (!(error instanceof StoreError)) throw error;
-      checks.push({ level: error.kind === 'offline' ? 'warn' : 'fail', what: 'хранилище задач недоступно', fix: storeMessage(error.kind) });
+      checks.push({ level: error.kind === 'offline' ? 'warn' : 'fail', what: 'хранилище задач недоступно', fix: storeMessage(error.kind, where) });
     }
   }
   return checks;

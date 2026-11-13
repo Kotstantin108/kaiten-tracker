@@ -33,6 +33,7 @@ import { tmpdir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
 
 import { domainsOf, juniorSetting } from './config.js';
+import type { RepoWhere } from './core/hosting.js';
 import { juniorReadiness, type JuniorReadiness } from './core/junior.js';
 import { STATUSES, TASK_TYPES, type TaskStatus, type TaskType } from './core/schema.js';
 import { filterTasks, refOf, resolveTask, SearchQueryError, searchTasks, sortTasks, type TaskFilter, type TaskIndex, type TaskRecord } from './core/tasks-index.js';
@@ -50,6 +51,7 @@ import {
   resolveContext,
   settings,
   storeMessage,
+  storeWhere,
   syncWithKaiten,
   TASK_REF_HELP,
   today,
@@ -614,6 +616,15 @@ process.stdout.on('error', (error: NodeJS.ErrnoException) => {
   throw error;
 });
 
+/** Где лежат задачи — для текста отказа; репозиторий не подключён — сообщение обойдётся без домена. */
+function whereOrUndefined(): RepoWhere | undefined {
+  try {
+    return storeWhere(resolveContext());
+  } catch {
+    return undefined;
+  }
+}
+
 /** Сказать об ошибке словами задачи и вернуть код выхода. */
 function report(error: unknown): number {
   if (error instanceof UsageError) {
@@ -625,7 +636,7 @@ function report(error: unknown): number {
     return 2;
   }
   if (error instanceof StoreError) {
-    console.error(storeMessage(error.kind));
+    console.error(storeMessage(error.kind, whereOrUndefined()));
     return 1;
   }
   // Трассировка стека называет пути хранилища и исходников — только по запросу.

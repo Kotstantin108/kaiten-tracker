@@ -13,6 +13,8 @@
  *     поручении словами к задачам не идёт (испытание 30.09.2026).
  */
 
+import { HOSTINGS, type Hosting } from './hosting.js';
+
 export const PROJECT_FILE_PATH = '.kaiten';
 export const SKILL_PATH = '.claude/skills/kaiten/SKILL.md';
 
@@ -23,20 +25,28 @@ export const RULES_END = '<!-- kaiten:end -->';
 export const PUSH_POLICIES = ['none', 'branch', 'pr'] as const;
 export type PushPolicy = (typeof PUSH_POLICIES)[number];
 
+/** Правило для репозитория на GitHub. Текст не менять без нужды: по нему `doctor` узнаёт свежий блок в подключённых репозиториях. */
 const PUSH_RULE: Record<PushPolicy, string> = {
   none: 'Работа по задаче — коммитами в её ветке. Ветку не пушьте и PR не открывайте: это делает человек после ревью.',
   branch: 'Работа по задаче — коммитами в её ветке. Перед `kaiten review` отправьте ветку: `git push -u origin <ветка>`. PR не открывайте — его открывает человек.',
   pr: 'Работа по задаче — коммитами в её ветке. Перед `kaiten review` отправьте ветку и откройте PR в основную ветку (`gh pr create`), ссылку на него — в `kaiten review --note`. Сливает PR человек.',
 };
 
-export function rulesBlock(push: PushPolicy): string {
+/** То же для репозитория на GitLab: там не PR, а merge request, и открывает его `glab`. */
+const PUSH_RULE_GITLAB: Record<PushPolicy, string> = {
+  none: 'Работа по задаче — коммитами в её ветке. Ветку не пушьте и merge request не открывайте: это делает человек после ревью.',
+  branch: 'Работа по задаче — коммитами в её ветке. Перед `kaiten review` отправьте ветку: `git push -u origin <ветка>`. Merge request не открывайте — его открывает человек.',
+  pr: 'Работа по задаче — коммитами в её ветке. Перед `kaiten review` отправьте ветку и откройте merge request в основную ветку (`glab mr create`), ссылку на него — в `kaiten review --note`. Сливает merge request человек.',
+};
+
+export function rulesBlock(push: PushPolicy, hosting: Hosting = 'github'): string {
   return [
     RULES_START,
     '## Задачи проекта',
     '',
     '- Задачи проекта — через команду `kaiten` (скилл kaiten); папки `tasks/` в репозитории нет.',
     '- Перед любой правкой кода — скилл kaiten: найдите задачу или спросите, заводить ли её.',
-    `- ${PUSH_RULE[push]}`,
+    `- ${(hosting === 'gitlab' ? PUSH_RULE_GITLAB : PUSH_RULE)[push]}`,
     RULES_END,
   ].join('\n');
 }
@@ -71,7 +81,7 @@ export function rulesState(text: string | null): RulesState {
   const end = current.indexOf(RULES_END);
   if (start === -1 || end < start) return 'missing';
   const block = current.slice(start, end + RULES_END.length);
-  return PUSH_POLICIES.some((p) => rulesBlock(p) === block) ? 'fresh' : 'stale';
+  return PUSH_POLICIES.some((p) => HOSTINGS.some((h) => rulesBlock(p, h) === block)) ? 'fresh' : 'stale';
 }
 
 export interface ConnectInput {
@@ -79,6 +89,8 @@ export interface ConnectInput {
   tasks: string;
   repo: string;
   push: PushPolicy;
+  /** Хостинг репозитория кода: от него зависят слова правила про ветку (PR или merge request). */
+  hosting: Hosting;
   /** Скилл инструмента — то, что должно лежать в репозитории. */
   toolSkill: string;
   /** Имя файла правил и что в репозитории сейчас (`null` — файла нет). */
@@ -102,7 +114,7 @@ export function planConnect(input: ConnectInput): ConnectChange[] {
   }
   const skill = skillState(input.toolSkill, input.current.skill);
   if (skill !== 'fresh') changes.push({ path: SKILL_PATH, text: lf(input.toolSkill), what: skill === 'missing' ? 'скилл — новый' : 'скилл — устарел, обновляется' });
-  const rules = withRulesBlock(input.current.rules, rulesBlock(input.push));
+  const rules = withRulesBlock(input.current.rules, rulesBlock(input.push, input.hosting));
   if (rules !== lf(input.current.rules ?? '')) {
     const state = rulesState(input.current.rules);
     changes.push({

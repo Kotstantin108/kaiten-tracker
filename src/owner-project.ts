@@ -17,6 +17,7 @@ import { existsSync, statSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 
 import { loadTasksRepoConfig, projectFromTasksRepo, storeNameOf, TASKS_REPO_CONFIG, type LoadedProject, type People } from './config.js';
+import { hostingProblem } from './core/hosting.js';
 import { syncStore } from './store-write.js';
 import { defaultStorePath, isStore, listEntries, readBlobs } from './task-store.js';
 
@@ -34,8 +35,23 @@ function argValue(argv: readonly string[], name: string): string | undefined {
 
 const isDir = (path: string): boolean => existsSync(path) && statSync(path).isDirectory();
 
+/**
+ * Репозиторий задач на своём сервере без названного хостинга — отказ: иначе
+ * ссылки из карточек на задачи и журнал пропали бы молча, а заметили бы это
+ * уже в Kaiten.
+ */
+function withKnownHosting(owner: OwnerProject): OwnerProject {
+  const problem = hostingProblem(owner.loaded.project.tasksRepo);
+  if (problem) throw new Error(problem);
+  return owner;
+}
+
 /** Проект из `--tasks`/`--config`; ошибка — словами, что передать. */
 export function loadOwnerProject(argv: readonly string[]): OwnerProject {
+  return withKnownHosting(readOwnerProject(argv));
+}
+
+function readOwnerProject(argv: readonly string[]): OwnerProject {
   const config = argValue(argv, '--config');
   const tasks = argValue(argv, '--tasks');
   if (config && !tasks) return { loaded: loadTasksRepoConfig(resolve(config)), source: { kind: 'file', configPath: resolve(config) } };

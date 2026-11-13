@@ -1,7 +1,7 @@
 /**
  * Конфиг синхронизатора: таблица проектов.
  *
- * Проект = отдельный репозиторий задач = доска Kaiten = команда на GitHub
+ * Проект = отдельный репозиторий задач = доска Kaiten = команда на GitHub или GitLab
  * (решение 25.09.2026: задачи Acme и globex в разных репозиториях, чтобы
  * разделять разработчиков — git не умеет прав на папку). Подпродукты проекта
  * (app, landing, android…) — не папки, а варианты поля «Репозиторий <Проект>»
@@ -15,6 +15,7 @@ import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 
 import { z } from 'zod';
 
+import { HOSTINGS } from './core/hosting.js';
 import type { AssessVerdict } from './core/schema.js';
 
 const SelectMappingSchema = z.object({ id: z.number(), values: z.record(z.string(), z.number()) });
@@ -161,7 +162,14 @@ const ProjectObject = z.object({
    * (`task-store.ts`), `url` нужен `kaiten pull` для первой загрузки; пока
    * репозиториев задач нет, его нет и в конфиге.
    */
-  tasksRepo: z.object({ name: z.string().min(1), url: z.string().min(1).optional() }).optional(),
+  tasksRepo: z
+    .object({
+      name: z.string().min(1),
+      url: z.string().min(1).optional(),
+      /** Хостинг репозитория задач на своём сервере (`core/hosting.ts`); github.com и gitlab.com узнаются по адресу. */
+      hosting: z.enum(HOSTINGS).optional(),
+    })
+    .optional(),
   /**
    * Карточки, которые синхронизация не трогает никогда: например, карточка без
    * задачи, которую не надо переносить, или задача, закрытая в Kaiten руками.
@@ -404,7 +412,7 @@ export function projectFromTasksRepo(text: string, url?: string): LoadedProject 
   if (!parsed.success) throw new Error(`${TASKS_REPO_CONFIG}: ${parsed.error.issues.map((i) => `${i.path.join('.') || '(корень)'}: ${i.message}`).join('; ')}`);
   const { project: key, teams, defaultTeam, people, ...rest } = parsed.data;
   const tasksUrl = rest.tasksRepo?.url ?? url;
-  const project = ProjectSchema.parse({ ...rest, tasksRepo: { name: rest.tasksRepo?.name ?? storeNameOf(tasksUrl ?? `${key}-tasks`), ...(tasksUrl ? { url: tasksUrl } : {}) } });
+  const project = ProjectSchema.parse({ ...rest, tasksRepo: { ...rest.tasksRepo, name: rest.tasksRepo?.name ?? storeNameOf(tasksUrl ?? `${key}-tasks`), ...(tasksUrl ? { url: tasksUrl } : {}) } });
   const config = ConfigSchema.parse({ teams, defaultTeam, projects: { [key]: project } });
   return { key, project, config, people };
 }

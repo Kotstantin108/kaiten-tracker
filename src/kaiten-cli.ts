@@ -13,6 +13,7 @@ import { parseArgs, type ParseArgsConfig } from 'node:util';
 import { z } from 'zod';
 
 import { juniorFields, visualFields, loadTasksRepoConfig, projectFromTasksRepo, storeNameOf, TASKS_REPO_CONFIG, type LoadedProject, type People } from './config.js';
+import { noAccessMessage, noLoginMessage, type Hosting, type RepoWhere } from './core/hosting.js';
 import { CLOSED_STATUSES, type Priority, type TaskStatus } from './core/schema.js';
 import { VISUAL_DIR } from './core/visual.js';
 import { JOURNAL_FILE, taskDate, type QueuedMoves } from './core/task-ops.js';
@@ -333,7 +334,7 @@ export async function syncWithKaiten(ctx: Context, client?: KaitenClient, onLock
           junior: juniorFields(ctx.loaded.project),
           visual: visualFields(ctx.loaded.project),
           ignore: ctx.loaded.project.ignoreCards,
-          repoWebBase: repoWebBase(ctx.loaded.project.tasksRepo?.url),
+          repoWebBase: repoWebBase(ctx.loaded.project.tasksRepo?.url, ctx.loaded.project.tasksRepo?.hosting),
           defaultTeam: ctx.loaded.config.defaultTeam,
           boardId: mapping.boardId,
           people: peopleByEmail(ctx.loaded.people),
@@ -578,14 +579,27 @@ export async function startSend(ctx: Context): Promise<void> {
   child.unref();
 }
 
-export function storeMessage(kind: StoreError['kind']): string {
+/**
+ * Где лежат задачи — для сообщений об отказе в доступе: адрес из `.kaiten`, а
+ * хостинг своего сервера — из проекта, если задачи уже загружены (до первого
+ * `kaiten pull` его взять неоткуда — сообщение назовёт только домен).
+ */
+export function storeWhere(ctx: Context): RepoWhere {
+  let hosting: Hosting | undefined;
+  try {
+    hosting = ctx.loaded.project.tasksRepo?.hosting;
+  } catch {
+    hosting = undefined;
+  }
+  return { url: ctx.tasksUrl, hosting };
+}
+
+export function storeMessage(kind: StoreError['kind'], where?: RepoWhere): string {
   switch (kind) {
     case 'no-access':
-      return 'Нет доступа к задачам проекта. Попросите владельца проекта добавить вас в команду проекта на GitHub.';
+      return noAccessMessage(where);
     case 'no-login':
-      return 'Git на этой машине не может войти в GitHub: для адреса задач нет логина или ключа. Это настройка машины, а не доступ к проекту. '
-        + 'Войдите в GitHub для HTTPS (например, gh auth login) или, если у вас настроен SSH-ключ, перенаправьте HTTPS на SSH: '
-        + 'git config --global url."git@github.com:".insteadOf "https://github.com/". Затем повторите команду.';
+      return noLoginMessage(where);
     case 'offline':
       return 'Нет связи с хранилищем задач: запрос повторён трижды, ответа нет. Это сеть, а не доступ. Проверьте интернет и повторите.';
     case 'not-found':
@@ -618,7 +632,7 @@ export function printNotices(ctx: Context): void {
   // Задачи при этом записаны и отправлены — не дошло только до Kaiten.
   for (const k of notices.kaiten) console.error(`Kaiten не обновлён: ${k.what} — ${k.reason}.`);
   if (notices.pending > 0 && notices.problem) {
-    console.error(`Изменения ещё не отправлены (${notices.pending}). ${storeMessage(notices.problem)}`);
+    console.error(`Изменения ещё не отправлены (${notices.pending}). ${storeMessage(notices.problem, storeWhere(ctx))}`);
   }
   if (notices.failed.length > 0 || notices.kaiten.length > 0 || (notices.pending > 0 && notices.problem)) console.error('');
 }

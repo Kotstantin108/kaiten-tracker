@@ -17,6 +17,7 @@ import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 
 import { loadTasksRepoConfig, TASKS_REPO_CONFIG } from './config.js';
+import { hostingProblem } from './core/hosting.js';
 import { lintRepository } from './core/lint.js';
 import { readTasksTree } from './tasks-files.js';
 
@@ -40,7 +41,10 @@ function main(): void {
   let repos: string[] | undefined;
   if (existsSync(configPath)) {
     try {
-      repos = loadTasksRepoConfig(configPath).project.repos.map((r) => r.name);
+      const { project } = loadTasksRepoConfig(configPath);
+      const problem = hostingProblem(project.tasksRepo);
+      if (problem) throw new Error(problem);
+      repos = project.repos.map((r) => r.name);
     } catch (error) {
       console.log(`ошибка  ${TASKS_REPO_CONFIG}: ${(error as Error).message}`);
       process.exit(1);

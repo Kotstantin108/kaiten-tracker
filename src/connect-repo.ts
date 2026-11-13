@@ -9,11 +9,13 @@
  *
  * БЕЗ `--apply` — только план.
  *
- *   npm run connect-repo -- <папка репозитория> --tasks <репозиторий задач> --repo <имя> [--push none|branch|pr] [--rules <файл>] [--apply]
+ *   npm run connect-repo -- <папка репозитория> --tasks <репозиторий задач> --repo <имя> [--push none|branch|pr] [--hosting github|gitlab] [--rules <файл>] [--apply]
  *
  *   --tasks     рабочая копия репозитория задач (с kaiten.json) или его адрес (хранилище на этой машине)
  *   --repo      репозиторий кода проекта (поле `repo` задач)
  *   --push      что делать с веткой перед ревью (по умолчанию branch: отправить ветку, PR — человек)
+ *   --hosting   где лежит репозиторий кода: от этого зависят слова правила (PR и `gh` или merge request и `glab`).
+ *               github.com и gitlab.com узнаются по `origin`; свой сервер — только этим флагом
  *   --rules     файл правил агента (по умолчанию тот, где блок kaiten уже есть; иначе CLAUDE.md, если есть; иначе AGENTS.md; иначе новый CLAUDE.md)
  *
  * Коды выхода: 0 — ок; 2 — ошибка аргументов.
@@ -27,6 +29,7 @@ import { parseArgs } from 'node:util';
 
 import { loadOwnerProject } from './owner-project.js';
 import { gitText } from './task-store.js';
+import { HOSTING_TITLE, HOSTINGS, hostingOf, parseRepoAddress, type Hosting } from './core/hosting.js';
 import { planConnect, PROJECT_FILE_PATH, PUSH_POLICIES, rulesState, SKILL_PATH, type PushPolicy } from './core/repo-connect.js';
 
 const RULES_FILES = ['CLAUDE.md', 'AGENTS.md'];
@@ -41,10 +44,25 @@ function read(path: string): string | null {
   return existsSync(path) ? readFileSync(path, 'utf8') : null;
 }
 
+/**
+ * Хостинг репозитория кода: флаг, иначе — по `origin`. Свой сервер по адресу
+ * не узнать — отказ, а не правило наугад: агент исполнит `gh pr create` и на
+ * GitLab. Без `origin` (репозиторий ещё никуда не отправлен) — GitHub, как было.
+ */
+function codeHosting(flag: string | undefined, origin: string | undefined): Hosting {
+  if (flag !== undefined) {
+    const named = HOSTINGS.find((h) => h === flag);
+    return named ?? fail(`--hosting: ${HOSTINGS.join(', ')}`);
+  }
+  const address = parseRepoAddress(origin);
+  if (!address) return 'github';
+  return hostingOf(address) ?? fail(`Репозиторий кода лежит на ${address.host} — по адресу не понять, GitHub это или GitLab. Укажите --hosting ${HOSTINGS.join('|')}`);
+}
+
 function main(): void {
   const { values, positionals } = parseArgs({
     args: process.argv.slice(2),
-    options: { tasks: { type: 'string' }, repo: { type: 'string' }, push: { type: 'string' }, rules: { type: 'string' }, apply: { type: 'boolean' } },
+    options: { tasks: { type: 'string' }, repo: { type: 'string' }, push: { type: 'string' }, hosting: { type: 'string' }, rules: { type: 'string' }, apply: { type: 'boolean' } },
     allowPositionals: true,
   });
   const dir = positionals[0] ? resolve(process.env.INIT_CWD ?? process.cwd(), positionals[0]) : fail('Укажите папку репозитория кода: npm run connect-repo -- <папка> --tasks <репозиторий задач> --repo <имя>');
@@ -74,6 +92,7 @@ function main(): void {
   if (!repos.includes(repo)) fail(`В проекте ${project.title} нет репозитория «${repo}» (есть: ${repos.join(', ')})`);
   const push = (values.push ?? 'branch') as PushPolicy;
   if (!PUSH_POLICIES.includes(push)) fail(`--push: ${PUSH_POLICIES.join(', ')}`);
+  const hosting = codeHosting(values.hosting, remote(dir));
 
   // Блок правил уже где-то есть — обновляем его там, а не дописываем второй в CLAUDE.md.
   const withBlock = RULES_FILES.find((name) => rulesState(read(join(dir, name))) !== 'missing');
@@ -82,12 +101,13 @@ function main(): void {
     tasks: tasksUrl,
     repo,
     push,
+    hosting,
     toolSkill: readFileSync(TOOL_SKILL, 'utf8'),
     rulesFile,
     current: { projectFile: read(join(dir, PROJECT_FILE_PATH)), skill: read(join(dir, SKILL_PATH)), rules: read(join(dir, rulesFile)) },
   });
 
-  console.log(`Репозиторий ${dir} → проект ${project.title}, продукт ${repo}, задачи ${tasksUrl}, правило про ветку: ${push}`);
+  console.log(`Репозиторий ${dir} → проект ${project.title}, продукт ${repo}, задачи ${tasksUrl}, правило про ветку: ${push}, код — на ${HOSTING_TITLE[hosting]}`);
   console.log(values.apply ? 'APPLY — записываю' : 'DRY-RUN — ничего не записано, только план');
   if (changes.length === 0) {
     console.log('Всё на месте: файл проекта, скилл и блок правил актуальны.');

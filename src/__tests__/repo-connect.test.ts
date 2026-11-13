@@ -7,7 +7,7 @@ import { planConnect, RULES_END, RULES_START, rulesBlock, rulesState, skillState
 import { formatChecks } from '../kaiten-doctor.js';
 
 const SKILL = '---\nname: kaiten\n---\n\n# Задачи проекта\n';
-const base = { tasks: 'https://example.com/acme/acme-tasks.git', repo: 'acme-app', push: 'branch' as const, toolSkill: SKILL, rulesFile: 'CLAUDE.md' };
+const base = { tasks: 'https://example.com/acme/acme-tasks.git', repo: 'acme-app', push: 'branch' as const, hosting: 'github' as const, toolSkill: SKILL, rulesFile: 'CLAUDE.md' };
 
 describe('подключение репозитория', () => {
   it('пустой репозиторий: файл проекта, скилл и файл правил с блоком', () => {

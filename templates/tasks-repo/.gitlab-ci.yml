@@ -1,0 +1,49 @@
+# Проверка формата задач в репозитории задач проекта на GitLab. Копируется в
+# корень репозитория задач как .gitlab-ci.yml; проект (репозитории для поля
+# repo) линтер берёт из kaiten.json в корне. Для репозитория задач на GitHub —
+# .github/workflows/tasks-lint.yml из этой же папки.
+#
+# НЕБЛОКИРУЮЩАЯ (решение 16): запускается на push в основную ветку — уже после
+# записи. Запись CLI — прямой push, защита ветки — только от force-push и
+# удаления, так что упавшая проверка ничего не останавливает: GitLab присылает
+# письмо о упавшем пайплайне тому, кто отправил изменения (уведомления по
+# умолчанию), а ошибка видна в Build → Pipelines. Барьер от ручного обхода CLI,
+# не замок.
+#
+# Нужно в настройках репозитория задач (Settings → CI/CD → Variables):
+#   KAITEN_TRACKER_REPO  — адрес kaiten-tracker для git clone, например
+#                          https://github.com/owner/kaiten-tracker.git
+#   KAITEN_TRACKER_TOKEN — только если kaiten-tracker приватный: токен на чтение
+#                          репозитория (отметьте Masked); токенов Kaiten здесь нет
+#
+# Раннеру нужен выход в интернет: kaiten-tracker скачивается оттуда, где он
+# лежит (обычно GitHub), зависимости — из npm.
+
+stages: [lint]
+
+tasks-lint:
+  stage: lint
+  image: node:22-bookworm
+  timeout: 10 minutes
+  interruptible: true
+  rules:
+    # Пока не задан адрес kaiten-tracker — не запускаться, а не падать на каждой записи.
+    - if: '$KAITEN_TRACKER_REPO == null || $KAITEN_TRACKER_REPO == ""'
+      when: never
+    - if: '$CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
+    - if: '$CI_PIPELINE_SOURCE == "web"'
+  cache:
+    key: kaiten-tracker-npm
+    paths: [.npm/]
+  script:
+    # Токен — заголовком, а не в адресе: адрес git печатает в журнал.
+    - |
+      if [ -n "${KAITEN_TRACKER_TOKEN:-}" ]; then
+        auth="$(printf 'x-access-token:%s' "$KAITEN_TRACKER_TOKEN" | base64 | tr -d '\n')"
+        git -c "http.extraHeader=Authorization: Basic $auth" clone --quiet --depth 1 "$KAITEN_TRACKER_REPO" /tmp/kaiten-tracker
+      else
+        git clone --quiet --depth 1 "$KAITEN_TRACKER_REPO" /tmp/kaiten-tracker
+      fi
+    - cd /tmp/kaiten-tracker
+    - npm ci --no-audit --no-fund --cache "$CI_PROJECT_DIR/.npm"
+    - npm run --silent tasks:lint -- "$CI_PROJECT_DIR"

@@ -57,8 +57,11 @@ export function classify(stderr: string): StoreErrorKind {
   if (/Please tell me who you are|empty ident|unable to auto-detect email/i.test(stderr)) return 'no-identity';
   // Git на машине не смог войти: для HTTPS нет логина (или он устарел), для SSH нет ключа. Это
   // настройка машины, а не отказ владельца — с ключом без доступа GitHub отвечает «not found».
-  if (/could not read Username|terminal prompts disabled|Authentication failed|Permission denied \(publickey/i.test(stderr)) return 'no-login';
-  if (/Permission denied|returned error: 403|access denied/i.test(stderr)) return 'no-access';
+  // GitLab на неверный пароль или токен отвечает «HTTP Basic: Access denied» — это тоже вход, а не доступ.
+  if (/could not read Username|terminal prompts disabled|Authentication failed|HTTP Basic: Access denied|Permission denied \(publickey/i.test(stderr)) return 'no-login';
+  // GitLab тому, кто вошёл, но в проект не добавлен: «could not be found or you don't have permission to view it»
+  // (адрес записал владелец — значит, дело в доступе); без права отправки — «You are not allowed to push code».
+  if (/Permission denied|returned error: 403|access denied|you don't have permission to view it|You are not allowed to (?:push|download) code/i.test(stderr)) return 'no-access';
   if (/Repository not found|does not appear to be a git repository|not found/i.test(stderr)) return 'not-found';
   if (/Could not resolve host|unable to access|timed out|Failed to connect|Connection refused|network/i.test(stderr)) return 'offline';
   return 'other';

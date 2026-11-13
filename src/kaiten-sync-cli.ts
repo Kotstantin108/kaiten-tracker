@@ -114,7 +114,7 @@ async function main(): Promise<void> {
     junior: juniorFields(project),
     visual: visualFields(project),
     ignore: project.ignoreCards,
-    repoWebBase: repoWebBase(project.tasksRepo?.url),
+    repoWebBase: repoWebBase(project.tasksRepo?.url, project.tasksRepo?.hosting),
     defaultTeam: config.defaultTeam,
     boardId: mapping.boardId,
     firstLoad,

@@ -667,6 +667,21 @@ describe('ссылки в описании', () => {
     expect(linkify(body, tasks, null)).toBe('См. старое и отчёт.');
   });
 
+  it('репозиторий задач на GitLab: соседняя задача, вложение, журнал и полный текст — по /-/blob/', async () => {
+    const base = repoWebBase('git@gitlab.example.com:group/acme-tasks.git', 'gitlab');
+    expect(linkify('См. [старое](/active/old.md) и [отчёт](/attachments/old/R.md).', tasks, base)).toBe(
+      'См. [старое](https://gitlab.example.com/group/acme-tasks/-/blob/main/archive/2026-09/old.md) и [отчёт](https://gitlab.example.com/group/acme-tasks/-/blob/main/attachments/old/R.md).',
+    );
+    const long = Array.from({ length: 800 }, (_, i) => `Абзац ${i}: ${'текст '.repeat(10)}`).join('\n\n');
+    const [newPath, newText] = task('active/new.md', { status: 'inbox', created_via: 'agent' }, `${long}\n`);
+    const w = world([[newPath, newText], ['active/new.log.md', '## [2026-09-28] Начал\n\nЧерновик готов.\n']]);
+    const run = await w.sync({ repoWebBase: base });
+    expect(run.errors).toEqual([]);
+    const card = [...w.fake.cards.values()][0];
+    expect(card.description).toContain('Журнал работы — [в репозитории задач](https://gitlab.example.com/group/acme-tasks/-/blob/main/active/new.log.md).');
+    expect(card.description).toContain('Полностью — [в репозитории задач](https://gitlab.example.com/group/acme-tasks/-/blob/main/active/new.md)');
+  });
+
   it('адрес репозитория задач — из git-адреса', () => {
     expect(repoWebBase('git@github.com:org/acme-tasks.git')).toBe('https://github.com/org/acme-tasks');
     expect(repoWebBase('https://github.com/org/acme-tasks')).toBe('https://github.com/org/acme-tasks');

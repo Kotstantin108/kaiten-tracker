@@ -33,7 +33,7 @@
  * ФАЙЛЫ КАРТОЧКИ (`taskFiles`). Вложения задачи лежат в карточке файлами —
  * человек открывает их без командной строки. Владелец файла с тем же
  * именем — репозиторий; файлы с другими именами — людей. Журнал — не файлом,
- * а ссылкой на GitHub в описании (`journalUrl`, владелец 20.10.2026): файл
+ * а ссылкой на сайт репозитория в описании (`journalUrl`, владелец 20.10.2026): файл
  * перезаливался на каждую запись. Прежний файл журнала (`RETIRED_FILES`)
  * доставка убирает. Что карточка уже получила — `files_hash`, отдельно от
  * `content_hash`. Задаче без `files_hash` (появилась до файлов) файлы
@@ -91,21 +91,12 @@ export interface RenderedContent {
   checklists: Checklist[];
 }
 
-/**
- * `git@github.com:org/repo.git` / `https://github.com/org/repo(.git)` →
- * `https://github.com/org/repo`; остальное (локальный путь) — `null`.
- */
-export function repoWebBase(url: string | undefined): string | null {
-  if (!url) return null;
-  const ssh = /^git@github\.com:([^/]+)\/(.+?)(?:\.git)?$/.exec(url);
-  if (ssh) return `https://github.com/${ssh[1]}/${ssh[2]}`;
-  const https = /^https:\/\/github\.com\/([^/]+)\/(.+?)(?:\.git)?\/?$/.exec(url);
-  return https ? `https://github.com/${https[1]}/${https[2]}` : null;
-}
+/** База ссылок на файлы репозитория задач (`base` ниже): у GitHub и GitLab она разная — `core/hosting.ts`. */
+export { repoWebBase } from './hosting.js';
 
 /**
  * Ссылки на задачи (`/active/…`, `/archive/…`) и вложения (`/attachments/…`)
- * ведут в репозиторий задач. В карточке — постоянные ссылки на GitHub (путь
+ * ведут в репозиторий задач. В карточке — постоянные ссылки на его сайт (путь
  * задачи — текущий: она могла уехать в архив); без адреса репозитория —
  * просто текст ссылки, а не битая относительная ссылка.
  */
@@ -139,7 +130,7 @@ function fitDescription(text: string, task: TaskRecord, base: string | null): st
 }
 
 /**
- * Журнал задачи в карточке — ссылкой на GitHub, а не файлом: файл
+ * Журнал задачи в карточке — ссылкой на сайт репозитория, а не файлом: файл
  * перезаливался на каждую запись и копил в карточке мусор (владелец
  * 20.10.2026). Без журнала или без адреса репозитория задач — ссылки нет.
  */
