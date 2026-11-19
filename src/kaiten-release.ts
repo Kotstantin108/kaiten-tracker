@@ -499,7 +499,9 @@ export async function releaseCommand(ctx: Context, values: Values, deps: Release
     const tasks = tasksOf(ctx);
     const mainBranches = new Set([setting.repo.branch, ctx.loaded.project.repos.find((r) => r.name === ctx.currentRepo)?.branch ?? 'main', 'main', 'master']);
     const detected = detectTasks(ctx.workDir, tasks, chosen.from, chosen.point.commit, mainBranches);
-    pick = `${chosen.pick}${flagsText(values)}`;
+    const givenTitle = stringFlag(values, 'title')?.trim();
+    // Название, данное флагом, — и в подсказку повтора: без него повтор отказал бы или записал другое название.
+    pick = `${chosen.pick}${flagsText(values)}${givenTitle ? ` --title "${givenTitle.replaceAll('"', '\\"')}"` : ''}`;
 
     say(`${amended ? 'Правка записи' : 'Выкатка'}: ${setting.repo.surface} ${version} — коммит ${short(chosen.point.commit)}, время записи ${time.approx ? '≈' : ''}${time.at}.`);
     say(title ? `Название: ${title}` : 'Названия у выкатки нет — добавьте --title "<коротко, что вышло>".');
