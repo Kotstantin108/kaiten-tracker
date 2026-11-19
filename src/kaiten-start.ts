@@ -21,6 +21,7 @@ import { ASSIGNABLE, assignedPriority } from './core/task-ops.js';
 import { refOf, type TaskRecord } from './core/tasks-index.js';
 import { visualApplies } from './core/visual.js';
 import { cardNotMovedNote, currentPerson, findTask, loadTasks, moveCardFirst, parse, printNotices, queuedOf, resolveContext, TASK_REF_HELP, UsageError, type MoveStep } from './kaiten-cli.js';
+import { releaseGateProblem } from './kaiten-release.js';
 import { commit } from './kaiten-write.js';
 
 export const START_HELP = `kaiten start <задача> — взять задачу в работу.
@@ -93,6 +94,9 @@ async function start(args: string[]): Promise<void> {
   const task = findTask(loadTasks(ctx).index, positionals[0]);
   const problem = startProblem(task, ctx.currentRepo, assigned);
   if (problem) throw new UsageError(`Задачу ${refOf(task)} не взять в работу: ${problem}.`, 1);
+  // Выкатка в обход журнала выкаток: первый, кто пришёл работать, дозаписывает её — иначе она потеряется.
+  const unrecorded = releaseGateProblem(ctx);
+  if (unrecorded) throw new UsageError(`Задачу ${refOf(task)} не взять в работу: ${unrecorded}. Потом повторите: kaiten start ${refOf(task)}${assigned ? ' --assigned' : ''}`, 1);
   const result = switchToTaskBranch(ctx.workDir, task);
   if ('error' in result) throw new UsageError(`Задачу ${refOf(task)} не взять в работу: ${result.error}.`, 1);
 

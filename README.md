@@ -180,6 +180,11 @@ kaiten doctor --offline  # без проверок, которым нужна с
    `domains` (там же) — домены задач, имя → правило ревью: `kaiten new
    --domain`, строка в `kaiten show` и `kaiten list`, запись о сдаче, поле
    «Домен» в карточке (его заводит `setup`).
+   `releases` (там же) и `repos[].release` — журнал выкаток в прод
+   (`docs/releases.md`): страница Kaiten с таблицей «что вышло и когда»,
+   словари зон и типов, у репозитория — поверхность и откуда берётся версия.
+   Пишет `kaiten release`; выкатка без записи останавливает `kaiten start`.
+   Страницу создаёт владелец, `setup` её не заводит.
 
    ```json
    "review": {
@@ -277,6 +282,7 @@ kaiten start PRJ-123                     # «В работе» и ветка fea
 kaiten verify PRJ-123                    # прогнать проверки проекта на текущем коммите ветки — если проект их требует (docs/review-gates.md)
 kaiten review PRJ-123 [--note "PR #45"]  # на ревью: нужны отмеченные критерии и запись о работе в журнале; если проект просит — «Было / Стало» (или --no-visual "почему"), успешный verify на текущем коммите, правка документации в ветке (или --no-ingest "почему")
 kaiten done PRJ-123 [--note "…"]         # влито — «Сделано», задача в архив
+kaiten release [--stdin] [--apply]       # записать выкатку в прод в журнал выкаток — если проект его ведёт (docs/releases.md); [--missed | --now] [--version v1.2.3 | --commit abc123] [--rollback v1.2.3 --reason "…"] [--rebuild]
 ```
 
 Настройки — `kaiten.settings.json` в папке инструмента (образец —
@@ -374,6 +380,7 @@ kaiten done PRJ-123 [--note "…"]         # влито — «Сделано», 
 | `src/claude-agent.ts` | Запуск `claude -p` только на чтение с ответом по схеме — для оценки и находок |
 | `src/core/visual.ts` | «Было / Стало»: картинки во вложениях, ответ для `review`/`done` (`docs/visual-review.md`) |
 | `src/core/review-gates.ts`, `src/kaiten-verify.ts` | Гейты сдачи: проверки проекта (`kaiten verify`) и документация перед `kaiten review` (`docs/review-gates.md`) |
+| `src/core/release.ts`, `src/kaiten-release.ts` | Журнал выкаток: таблица на странице Kaiten, копия записи в теге, восстановление, сверка ветки прода с записями (`docs/releases.md`) |
 | `src/core/reopen.ts`, `src/reopen.ts` | Отменённые задачи по записи журнала и возврат во «Входящие» — скрипт владельца |
 | `src/core/tasks-index.ts` | Задачи в памяти: поиск по ключу, эпики, фильтры, поиск по словам |
 | `src/core/task-ops.ts` | Операции записи (чистая часть): new, check, log, block, cancel, edit, move, отметки синхронизации и оценки |

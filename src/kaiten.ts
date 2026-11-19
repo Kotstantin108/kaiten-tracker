@@ -64,6 +64,7 @@ import { localCopyDir, SettingsError } from './kaiten-context.js';
 import { bodySections, formatLogTail, formatOutline, formatSearch, formatSection, formatShow, formatTaskLines, formatTodo, presentBody, showJson, taskJson } from './kaiten-format.js';
 import { doctor, DOCTOR_HELP } from './kaiten-doctor.js';
 import { FOUND_COMMANDS, FOUND_HELP, foundWorker } from './kaiten-found.js';
+import { RELEASE_COMMANDS, RELEASE_HELP } from './kaiten-release.js';
 import { START_COMMANDS, START_HELP } from './kaiten-start.js';
 import { VERIFY_COMMANDS, VERIFY_HELP } from './kaiten-verify.js';
 import { editableText, WRITE_COMMANDS, WRITE_HELP } from './kaiten-write.js';
@@ -100,6 +101,7 @@ function mainHelp(): string {
   kaiten verify <задача>             прогнать проверки проекта перед ревью
   kaiten review <задача>             работа готова — на ревью
   kaiten done <задача>               сделано (влито в прод)
+  kaiten release                     записать выкатку в прод в журнал выкаток
 
 Проверить установку:
   kaiten doctor                      всё ли готово на машине и в этом репозитории
@@ -212,7 +214,7 @@ ${FILTER_HELP}
 `,
 };
 
-const HELP: Record<string, string> = { ...READ_HELP, ...WRITE_HELP, found: FOUND_HELP, start: START_HELP, verify: VERIFY_HELP, doctor: DOCTOR_HELP };
+const HELP: Record<string, string> = { ...READ_HELP, ...WRITE_HELP, found: FOUND_HELP, start: START_HELP, verify: VERIFY_HELP, release: RELEASE_HELP, doctor: DOCTOR_HELP };
 
 // ── чтение ───────────────────────────────────────────────────────────────
 
@@ -581,7 +583,7 @@ function storeOrNull(): string | null {
   }
 }
 
-const COMMANDS: Record<string, (args: string[]) => void | Promise<void>> = { list, show, search, files, pull, doctor, ...WRITE_COMMANDS, ...FOUND_COMMANDS, ...START_COMMANDS, ...VERIFY_COMMANDS };
+const COMMANDS: Record<string, (args: string[]) => void | Promise<void>> = { list, show, search, files, pull, doctor, ...WRITE_COMMANDS, ...FOUND_COMMANDS, ...START_COMMANDS, ...VERIFY_COMMANDS, ...RELEASE_COMMANDS };
 
 async function main(): Promise<void> {
   const [command, ...args] = process.argv.slice(2);

@@ -92,6 +92,47 @@ const ReviewSchema = z
   })
   .strict();
 
+/**
+ * Выкатки этого репозитория кода в журнале выкаток (`docs/releases.md`).
+ * `versions`: `tags` — у выкаток уже есть теги версий (`v1.2.3`), выкатка — тег,
+ * достижимый из ветки прода; `calendar` — версий нет, выкатка — коммит ветки
+ * прода, версию `2026.11.19.1` выдаёт запись.
+ */
+const RepoReleaseSchema = z
+  .object({
+    /** Как поверхность называется в журнале: «продукт», «лендинг». */
+    surface: z.string().trim().min(1, 'пустое название поверхности').regex(/^[^|\n]+$/, 'в названии поверхности нельзя «|»'),
+    /** Ветка, из которой собирается прод. */
+    branch: z.string().trim().min(1).default('production'),
+    versions: z.enum(['tags', 'calendar']),
+    /** Начало тегов версий при `versions: tags`: `v` — теги `v1.2.3`. */
+    tagPrefix: z.string().default('v'),
+  })
+  .strict();
+export type RepoRelease = z.infer<typeof RepoReleaseSchema>;
+
+const dictionary = (what: string): z.ZodType<string[]> =>
+  z
+    .array(z.string().trim().min(1).regex(/^[^|\n]+$/, 'в слове словаря нельзя «|»'))
+    .min(1, `пустой словарь: ${what}`)
+    .superRefine((words, ctx) => {
+      const seen = new Set<string>();
+      for (const [i, word] of words.entries()) {
+        if (seen.has(word.toLowerCase())) ctx.addIssue({ code: 'custom', path: [i], message: `«${word}» названо дважды` });
+        seen.add(word.toLowerCase());
+      }
+    });
+
+/** Журнал выкаток проекта: страница Kaiten и словари колонок «Зона» и «Тип». */
+const ReleasesSchema = z
+  .object({
+    /** Документ Kaiten с журналом: uid из его адреса. */
+    page: z.string().trim().min(1, 'пустой uid страницы'),
+    zones: dictionary('zones'),
+    types: dictionary('types'),
+  })
+  .strict();
+
 /** Имя домена — как значение флага: латиница, цифры, дефис. */
 export const DOMAIN_RE = /^[a-z0-9][a-z0-9-]*$/;
 
@@ -116,6 +157,8 @@ export const RepoSchema = z.object({
   shared: z.boolean().default(false),
   /** Свои проверки и пути документации этого репозитория вместо общих (`review` проекта). */
   review: RepoReviewSchema.optional(),
+  /** Выкатки этого репозитория попадают в журнал выкаток проекта (`releases`). */
+  release: RepoReleaseSchema.optional(),
 });
 export type RepoConfig = z.infer<typeof RepoSchema>;
 
@@ -189,6 +232,8 @@ const ProjectObject = z.object({
       for (const name of Object.keys(domains)) if (!DOMAIN_RE.test(name)) ctx.addIssue({ code: 'custom', path: [name], message: 'имя домена — латиница, цифры, дефис' });
     })
     .optional(),
+  /** Журнал выкаток в прод (`kaiten release`, `docs/releases.md`). Нет блока — нет ни команды, ни сверки. */
+  releases: ReleasesSchema.optional(),
   mapping: MappingSchema.optional(),
 });
 
@@ -204,7 +249,25 @@ function archiveConflict(project: { kaiten: { archiveInKaiten: boolean; archiveL
   if (project.mapping?.archiveLaneId !== undefined) ctx.addIssue({ code: 'custom', path: ['mapping', 'archiveLaneId'], message: 'вместе с archiveInKaiten уберите и mapping.archiveLaneId' });
 }
 
-export const ProjectSchema = ProjectObject.superRefine(archiveConflict);
+/** Выкатки репозитория — только при журнале проекта; одна поверхность — один репозиторий. */
+function releaseConflict(project: { releases?: unknown; repos: Array<{ name: string; release?: { surface: string } }> }, ctx: z.RefinementCtx): void {
+  const seen = new Map<string, string>();
+  for (const [i, repo] of project.repos.entries()) {
+    if (!repo.release) continue;
+    if (!project.releases) ctx.addIssue({ code: 'custom', path: ['repos', i, 'release'], message: 'выкатки репозитория заданы, а журнала выкаток у проекта нет — добавьте releases' });
+    const surface = repo.release.surface.toLowerCase();
+    const other = seen.get(surface);
+    if (other) ctx.addIssue({ code: 'custom', path: ['repos', i, 'release', 'surface'], message: `поверхность «${repo.release.surface}» уже у репозитория ${other}` });
+    seen.set(surface, repo.name);
+  }
+}
+
+function projectConflicts(project: Parameters<typeof archiveConflict>[0] & Parameters<typeof releaseConflict>[0], ctx: z.RefinementCtx): void {
+  archiveConflict(project, ctx);
+  releaseConflict(project, ctx);
+}
+
+export const ProjectSchema = ProjectObject.superRefine(projectConflicts);
 export type ProjectConfig = z.infer<typeof ProjectSchema>;
 
 /**
@@ -296,6 +359,23 @@ export function reviewGates(project: Pick<ProjectConfig, 'review' | 'repos'>, re
     docs: repo?.review?.docs ?? project.review?.docs ?? [],
     mainBranch: repo?.branch ?? 'main',
   };
+}
+
+/**
+ * Журнал выкаток для репозитория кода. `off` — проект журнал не ведёт;
+ * `other-repo` — ведёт, но выкатки этого репозитория в него не попадают.
+ */
+export type ReleaseSetting =
+  | { state: 'off' }
+  | { state: 'other-repo'; surfaces: string[] }
+  | { state: 'on'; page: string; zones: readonly string[]; types: readonly string[]; repo: RepoRelease };
+
+export function releaseSetting(project: Pick<ProjectConfig, 'releases' | 'repos'>, repoName: string): ReleaseSetting {
+  const releases = project.releases;
+  if (!releases) return { state: 'off' };
+  const repo = project.repos.find((r) => r.name === repoName)?.release;
+  if (!repo) return { state: 'other-repo', surfaces: project.repos.flatMap((r) => (r.release ? [`${r.release.surface} — ${r.name}`] : [])) };
+  return { state: 'on', page: releases.page, zones: releases.zones, types: releases.types, repo };
 }
 
 /** Обязателен ли раздел «Как проверить» в постановке story. */
@@ -397,7 +477,7 @@ export const TasksRepoConfigSchema = ProjectObject.extend({
   people: PeopleSchema.default({ people: {}, emails: {} }),
 })
   .passthrough()
-  .superRefine(archiveConflict);
+  .superRefine(projectConflicts);
 export type TasksRepoConfig = z.infer<typeof TasksRepoConfigSchema>;
 
 /** Конфиг из `kaiten.json` → проект; `url` — адрес репозитория задач, если его знает вызывающий (`.kaiten`). */
