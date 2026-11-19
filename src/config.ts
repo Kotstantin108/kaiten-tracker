@@ -112,8 +112,8 @@ const RepoReleaseSchema = z
      * из раздела версии берутся название выкатки и пункты по разделам.
      */
     changelog: z.string().trim().min(1).optional(),
-  })
-  .strict();
+  });
+// Без `.strict()`: ключ, который появится позже, прежние копии `kaiten` должны пропустить, а не отказать в чтении проекта.
 export type RepoRelease = z.infer<typeof RepoReleaseSchema>;
 
 const dictionary = (what: string): z.ZodType<string[]> =>
@@ -140,8 +140,7 @@ const ReleasesSchema = z
      * поверхность и версию каждой задаче выкатки. Нет — карточки не трогаются.
      */
     cardProperty: z.number().int().positive().optional(),
-  })
-  .strict();
+  });
 
 /** Имя домена — как значение флага: латиница, цифры, дефис. */
 export const DOMAIN_RE = /^[a-z0-9][a-z0-9-]*$/;
