@@ -589,7 +589,7 @@ export async function releaseCommand(ctx: Context, values: Values, deps: Release
   const recorded = withRecord(facts.recorded, tag, record);
   // При правке задача могла уйти из записи: её карточке поле пересчитывается тоже.
   const touched = [...new Set([...record.changes, ...(amended?.record?.changes ?? [])].flatMap((c) => (c.task ? [c.task] : [])))];
-  await markCards(kaiten.client, setting.cardProperty, cardMarks(setting, recorded, { changes: touched.map((task) => ({ task, zone: '', type: '', section: null, text: '' })) }), ctx.loaded.project.ignoreCards, say);
+  await markCards(kaiten.client, setting.cardProperty, setting.repo.surface, cardMarks(setting, recorded, { changes: touched.map((task) => ({ task, zone: '', type: '', section: null, text: '' })) }), ctx.loaded.project.ignoreCards, say);
 }
 
 // ── название ─────────────────────────────────────────────────────────────
@@ -640,15 +640,31 @@ function cardMarks(setting: On, recorded: readonly RecordedTag[], record: Pick<R
   });
 }
 
+/**
+ * Значение поля с учётом других поверхностей: задача могла выйти и в продукте, и
+ * на лендинге, а каждый репозиторий знает только свои записи. Чужие части
+ * («лендинг 2026.11.02.1») остаются, своя заменяется.
+ */
+export function mergedMark(existing: string, surface: string, value: string): string {
+  const others = existing
+    .split(';')
+    .map((part) => part.trim())
+    .filter((part) => part && !part.startsWith(`${surface} `));
+  return [...others, ...(value ? [value] : [])].sort((a, b) => a.localeCompare(b, 'ru')).join('; ');
+}
+
 /** Записать поле карточкам. Отказ карточки запись выкатки не отменяет: о нём говорится, а `--rebuild` доставит. */
-async function markCards(client: KaitenClient, property: number | undefined, marks: readonly CardMark[], ignore: readonly number[], say: (line: string) => void): Promise<void> {
+async function markCards(client: KaitenClient, property: number | undefined, surface: string, marks: readonly CardMark[], ignore: readonly number[], say: (line: string) => void): Promise<void> {
   if (property === undefined) return;
   const failed: string[] = [];
   let done = 0;
   for (const mark of marks) {
     if (ignore.includes(mark.cardId)) continue;
     try {
-      await client.updateCard(mark.cardId, { properties: { [`id_${property}`]: mark.value || null } });
+      const current = (await client.getCard(mark.cardId)).properties?.[`id_${property}`];
+      const existing = typeof current === 'string' ? current : '';
+      const wanted = mergedMark(existing, surface, mark.value);
+      if (wanted !== existing) await client.updateCard(mark.cardId, { properties: { [`id_${property}`]: wanted || null } });
       done++;
     } catch {
       failed.push(mark.ref);
@@ -701,7 +717,7 @@ async function rebuild(setting: On, facts: RepoFacts, kaiten: { client: KaitenCl
     await writePage(kaiten.client, setting.page, rows, fromTags);
     say(`Страница журнала записана: строк ${rows.length}.`);
   }
-  await markCards(kaiten.client, setting.cardProperty, marks, ignore, say);
+  await markCards(kaiten.client, setting.cardProperty, setting.repo.surface, marks, ignore, say);
 }
 
 async function release(args: string[]): Promise<void> {

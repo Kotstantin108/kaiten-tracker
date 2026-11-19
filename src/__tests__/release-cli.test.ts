@@ -76,6 +76,7 @@ const fetchImpl: typeof fetch = async (input, init) => {
   const method = init?.method ?? 'GET';
   const json = (body: unknown, status = 200): Response => new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
   const card = /^\/cards\/(\d+)$/.exec(path);
+  if (card && method === 'GET') return json({ id: Number(card[1]), properties: { id_77: cardMarks.get(Number(card[1])) ?? null } });
   if (card && method === 'PATCH') {
     const properties = (JSON.parse(String(init?.body)) as { properties: Record<string, unknown> }).properties;
     cardMarks.set(Number(card[1]), properties.id_77 as string | null);
@@ -511,7 +512,11 @@ describe('правка сделанной записи', { timeout: 120_000 }, (
     expect(cardMarks.get(101)).toBe('продукт v1.1.0');
   });
 
-  it('--rebuild проставляет поле «Релиз» карточкам всех записей', async () => {
+  it('--rebuild проставляет поле «Релиз» карточкам всех записей; версии другого репозитория в поле остаются', async () => {
+    cardMarks.clear();
+    cardMarks.set(202, 'продукт v9.0.0; лендинг 2020.01.01.1');
+    await release(landing, '2026-11-20T10:04:00+03:00', { rebuild: true, apply: true });
+    expect(cardMarks.get(202)).toBe('лендинг 2026.11.19.1; продукт v9.0.0');
     cardMarks.clear();
     const run = await release(landing, '2026-11-20T10:05:00+03:00', { rebuild: true, apply: true });
     expect(run.said).toContain('Страница в порядке, восстанавливать нечего.');
