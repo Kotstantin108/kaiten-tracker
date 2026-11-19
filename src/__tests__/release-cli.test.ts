@@ -47,10 +47,10 @@ const CONFIG = {
   title: 'Acme',
   kaiten: { space: 'Acme', board: 'Задачи', repoField: 'Репозиторий Acme' },
   repos: [
-    { name: 'acme-app', label: 'Acme-app', release: { surface: 'продукт', versions: 'tags' } },
+    { name: 'acme-app', label: 'Acme-app', release: { surface: 'продукт', versions: 'tags', changelog: 'docs/CHANGELOG.md' } },
     { name: 'acme-landing', label: 'Acme-landing', release: { surface: 'лендинг', versions: 'calendar' } },
   ],
-  releases: { page: PAGE, zones: ['пейволл', 'главная', 'прочее'], types: ['новое', 'исправление', 'техническое'] },
+  releases: { page: PAGE, zones: ['пейволл', 'главная', 'прочее'], types: ['новое', 'исправление', 'техническое'], cardProperty: 77 },
   people: { people: { alice: { name: 'Алиса' } }, emails: {} },
 };
 
@@ -67,14 +67,22 @@ function task(slug: string, fm: Partial<Frontmatter>): [string, string] {
 
 const doc = { uid: PAGE, title: 'Журнал выкаток', data: JSON.stringify({ type: 'doc', content: [] }) };
 const writes: string[] = [];
+/** Поле «Релиз» (id 77) на карточках: что записано последним. */
+const cardMarks = new Map<number, string | null>();
 /** Kaiten перестал принимать запись: чтение работает, `PATCH` — 503. */
 let kaitenDown = false;
 const fetchImpl: typeof fetch = async (input, init) => {
   const path = new URL(String(input)).pathname.replace('/api/latest', '');
   const method = init?.method ?? 'GET';
   const json = (body: unknown, status = 200): Response => new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
+  const card = /^\/cards\/(\d+)$/.exec(path);
+  if (card && method === 'PATCH') {
+    const properties = (JSON.parse(String(init?.body)) as { properties: Record<string, unknown> }).properties;
+    cardMarks.set(Number(card[1]), properties.id_77 as string | null);
+    return json({ id: Number(card[1]) });
+  }
   if (path !== `/documents/${PAGE}`) return json({ message: 'нет' }, 404);
-  if (method === 'PATCH' && kaitenDown) return json({ message: 'сбой' }, 503);
+  if (method === 'PATCH' && kaitenDown && !card) return json({ message: 'сбой' }, 503);
   if (method === 'PATCH') {
     doc.data = JSON.stringify((JSON.parse(String(init?.body)) as { data: unknown }).data);
     writes.push(`PATCH ${path}`);
@@ -101,7 +109,10 @@ interface Run {
 }
 
 /** `kaiten release` из папки репозитория; `at` — «сейчас» и для команды, и для тега записи. */
-async function release(dir: string, at: string, flags: Record<string, string | boolean>, input?: string): Promise<Run> {
+async function release(dir: string, at: string, given: Record<string, string | boolean>, input?: string): Promise<Run> {
+  const named = dir === landing && input !== undefined && given.title === undefined;
+  const { untitled: _untitled, ...rest } = given;
+  const flags: Record<string, string | boolean> = named && !given.untitled ? { ...rest, title: 'Правки лендинга' } : rest;
   const { releaseCommand } = await import('../kaiten-release.js');
   const { resolveContext } = await import('../kaiten-cli.js');
   process.chdir(dir);
@@ -182,6 +193,14 @@ beforeAll(() => {
 
   // Продукт: версии тегами, ветка прода догоняет main.
   initRepo(app, 'acme-app', D0);
+  mkdirSync(join(app, 'docs'));
+  writeFileSync(
+    join(app, 'docs', 'CHANGELOG.md'),
+    ['# Changelog', '', '## v1.2.0 — 2026-11-19 — Вход по ссылке', '- Вход по ссылке из письма работает', '', '## v1.1.0 — 2026-11-19 — Оплата в окне', '', '### Тарифы', '- **Цена годового тарифа видна до оплаты.** Раньше её', '  показывали на последнем шаге.', '', '## v1.0.0 — 2026-10-01 — Первая версия', '- Первая версия', ''].join('\n'),
+  );
+  git(app, D0, 'add', '-A');
+  git(app, D0, 'commit', '-q', '-m', 'docs: список изменений');
+  git(app, null, 'push', '-q', 'origin', 'main');
   git(app, D0, 'tag', '-a', 'v1.0.0', '-m', 'Release v1.0.0');
   git(app, D0, 'tag', 'vendor-backup');
   mergeFeature(app, T1150, 'feature/101-pay');
@@ -209,7 +228,7 @@ afterAll(() => {
   rmSync(tmp, { recursive: true, force: true });
 });
 
-const LINES_110 = '101 | пейволл | новое | Цена годового тарифа видна до оплаты\n- | прочее | техническое | Обновление зависимостей\n';
+const LINES_110 = '101 | пейволл | новое | Тарифы | Цена годового тарифа видна до оплаты\n- | прочее | техническое | - | Обновление зависимостей\n';
 
 describe('продукт: выкатка — тег версии', { timeout: 120_000 }, () => {
   it('несколько версий без записи — команда просит назвать версию', async () => {
@@ -229,6 +248,9 @@ describe('продукт: выкатка — тег версии', { timeout: 12
     expect(run.said).toContain('101  story  Сделать pay');
     expect(run.said).toContain('Влитые ветки без задачи: feature/no-task.');
     expect(run.said).toContain("kaiten release --version v1.1.0 --stdin <<'EOF'");
+    expect(run.said).toContain('Название: Оплата в окне');
+    expect(run.said).toContain('- | <зона> | <тип> | Тарифы | **Цена годового тарифа видна до оплаты.** Раньше её показывали на последнем шаге.');
+    expect(run.said).toContain('101 | <зона> | <тип> | - | <что изменилось для пользователя — если задачи нет в пунктах выше>');
     expect(run.said).toContain('Зоны: пейволл, главная, прочее.');
     expect(run.said).toContain('Ничего не записано.');
     expect(writes).toEqual([]);
@@ -236,11 +258,11 @@ describe('продукт: выкатка — тег версии', { timeout: 12
   });
 
   it('слово не из словаря и задача без строки — отказ до записи', async () => {
-    const wrong = await release(app, NOON, { version: 'v1.1.0', apply: true }, '101 | оплата | новое | Текст\n');
+    const wrong = await release(app, NOON, { version: 'v1.1.0', apply: true }, '101 | оплата | новое | - | Текст\n');
     expect(wrong.refusal).toContain('нет зоны «оплата». Можно: пейволл, главная, прочее');
-    const uncovered = await release(app, NOON, { version: 'v1.1.0', apply: true }, '- | прочее | техническое | Обновление зависимостей\n');
+    const uncovered = await release(app, NOON, { version: 'v1.1.0', apply: true }, '- | прочее | техническое | - | Обновление зависимостей\n');
     expect(uncovered.refusal).toContain('задача 101 вошла в выкатку, а строки о ней нет');
-    const foreign = await release(app, NOON, { version: 'v1.1.0', apply: true }, `${LINES_110}999 | прочее | новое | Текст\n`);
+    const foreign = await release(app, NOON, { version: 'v1.1.0', apply: true }, `${LINES_110}999 | прочее | новое | - | Текст\n`);
     expect(foreign.refusal).toContain('строка 3:');
     expect(writes).toEqual([]);
     expect(originTags(app)).toEqual([]);
@@ -249,8 +271,10 @@ describe('продукт: выкатка — тег версии', { timeout: 12
   it('со строками, но без --apply — показывает строки и ничего не пишет', async () => {
     const run = await release(app, NOON, { version: 'v1.1.0' }, LINES_110);
     expect(run.refusal).toBe('');
-    expect(run.said).toContain('| 2026-11-19T12:00+03:00 | продукт | v1.1.0 | релиз | пейволл | новое | 101 | Цена годового тарифа видна до оплаты |');
+    expect(run.said).toContain('| 2026-11-19T12:00+03:00 | продукт | v1.1.0 | Оплата в окне | релиз | пейволл | Тарифы | новое | 101 | Цена годового тарифа видна до оплаты |');
+    expect(run.said).toContain('Карточкам задач будет записано поле «Релиз»: 101 — продукт v1.1.0.');
     expect(run.said).toContain('Ничего не записано. Записать: kaiten release --version v1.1.0 --stdin --apply');
+    expect(cardMarks.size).toBe(0);
     expect(writes).toEqual([]);
     expect(originTags(app)).toEqual([]);
   });
@@ -260,12 +284,14 @@ describe('продукт: выкатка — тег версии', { timeout: 12
     expect(run.refusal).toBe('');
     expect(run.said).toContain('Записано: релиз продукт v1.1.0, строк 2. Копия записи — в теге released/v1.1.0.');
     expect(pageRows()).toEqual([
-      { at: '2026-11-19T12:00+03:00', surface: 'продукт', version: 'v1.1.0', event: 'релиз', zone: 'пейволл', type: 'новое', task: '101', text: 'Цена годового тарифа видна до оплаты' },
-      { at: '2026-11-19T12:00+03:00', surface: 'продукт', version: 'v1.1.0', event: 'релиз', zone: 'прочее', type: 'техническое', task: '—', text: 'Обновление зависимостей' },
+      { at: '2026-11-19T12:00+03:00', surface: 'продукт', version: 'v1.1.0', title: 'Оплата в окне', event: 'релиз', zone: 'пейволл', section: 'Тарифы', type: 'новое', task: '101', text: 'Цена годового тарифа видна до оплаты' },
+      { at: '2026-11-19T12:00+03:00', surface: 'продукт', version: 'v1.1.0', title: 'Оплата в окне', event: 'релиз', zone: 'прочее', section: '—', type: 'техническое', task: '—', text: 'Обновление зависимостей' },
     ]);
     expect(originTags(app)).toEqual(['released/v1.1.0']);
     expect(git(app, null, 'rev-parse', 'released/v1.1.0^{commit}')).toBe(git(app, null, 'rev-parse', 'v1.1.0^{commit}'));
-    expect(git(app, null, 'tag', '-l', '--format=%(contents)', 'released/v1.1.0')).toContain('kaiten-release: {"v":1,"surface":"продукт","version":"v1.1.0"');
+    expect(run.said).toContain('Поле «Релиз» записано карточкам: 1.');
+    expect(cardMarks.get(101)).toBe('продукт v1.1.0');
+    expect(git(app, null, 'tag', '-l', '--format=%(contents)', 'released/v1.1.0')).toContain('kaiten-release: {"v":2,"surface":"продукт","version":"v1.1.0","title":"Оплата в окне"');
   });
 
   it('записанную версию второй раз не записать; в истории остаётся v1.0.0', async () => {
@@ -276,7 +302,7 @@ describe('продукт: выкатка — тег версии', { timeout: 12
   });
 
   it('давняя выкатка: без выбора — отказ; --missed берёт время из тега и помечает его', async () => {
-    const lines = '- | прочее | новое | Первая версия\n';
+    const lines = '- | прочее | новое | - | Первая версия\n';
     expect((await release(app, NOON, { version: 'v1.0.0', apply: true }, lines)).refusal).toContain('добавьте --missed');
     const run = await release(app, NOON, { version: 'v1.0.0', missed: true, apply: true }, lines);
     expect(run.refusal).toBe('');
@@ -297,17 +323,27 @@ describe('продукт: выкатка — тег версии', { timeout: 12
     expect(held).toContain('v1.2.0 — 2026-11-19T12:30+03:00');
     expect(held).toContain('kaiten release --missed');
 
-    const lines = '102 | прочее | исправление | Вход по ссылке из письма работает\n';
+    const lines = '102 | прочее | исправление | - | Вход по ссылке из письма работает\n';
     expect((await release(app, '2026-11-19T15:00:00+03:00', { apply: true }, lines)).refusal).toContain('добавьте --now');
     const run = await release(app, '2026-11-19T15:00:00+03:00', { now: true, apply: true }, lines);
     expect(run.refusal).toBe('');
-    expect(pageRows()[0]).toMatchObject({ at: '2026-11-19T15:00+03:00', version: 'v1.2.0', task: '102' });
+    expect(pageRows()[0]).toMatchObject({ at: '2026-11-19T15:00+03:00', version: 'v1.2.0', title: 'Вход по ссылке', task: '102' });
+    expect(cardMarks.get(102)).toBe('продукт v1.2.0');
     expect(await gate(app, '2026-11-19T15:00:00+03:00')).toBeNull();
     expect(await doctorChecks(app, '2026-11-19T15:00:00+03:00')).toEqual([{ level: 'ok', what: 'выкатки записаны в журнал: последняя запись — v1.2.0' }]);
   });
 });
 
 describe('лендинг: версию выдаёт запись', { timeout: 120_000 }, () => {
+  it('без названия выкатка не записывается: списка изменений у репозитория нет', async () => {
+    const dry = await release(landing, NOON, {});
+    expect(dry.said).toContain('Названия у выкатки нет — добавьте --title');
+    expect(dry.said).toContain('kaiten release --title "<название>" --stdin');
+    const run = await release(landing, NOON, { untitled: true, apply: true }, '202 | главная | новое | - | Новый первый экран\n');
+    expect(run.refusal).toContain('у выкатки нет названия — добавьте --title');
+    expect(originTags(landing)).toEqual([]);
+  });
+
   it('--version здесь отклоняется', async () => {
     expect((await release(landing, NOON, { version: '1.0' })).refusal).toContain('версию этого репозитория выдаёт запись');
   });
@@ -317,9 +353,11 @@ describe('лендинг: версию выдаёт запись', { timeout: 12
     expect(dry.said).toContain('Выкатка: лендинг 2026.11.19.1');
     expect(dry.said).toContain('202  story  Сделать hero');
     expect(dry.said).not.toContain('Влитые ветки без задачи');
-    const run = await release(landing, NOON, { apply: true }, '202 | главная | новое | Новый первый экран\n');
+    const run = await release(landing, NOON, { apply: true }, '202 | главная | новое | - | Новый первый экран\n');
     expect(run.refusal).toBe('');
     expect(originTags(landing)).toEqual(['released/2026.11.19.1']);
+    expect(pageRows().find((r) => r.surface === 'лендинг')).toMatchObject({ title: 'Правки лендинга', section: '—' });
+    expect(cardMarks.get(202)).toBe('лендинг 2026.11.19.1');
     expect(git(landing, null, 'rev-parse', 'released/2026.11.19.1^{commit}')).toBe(git(landing, null, 'rev-parse', 'origin/production'));
     // 12:00 лендинга — между записями продукта 15:00 и 12:00: строки идут по времени.
     expect(pageRows().map((r) => `${r.surface} ${r.version}`)).toEqual(['продукт v1.2.0', 'продукт v1.1.0', 'продукт v1.1.0', 'лендинг 2026.11.19.1', 'продукт v1.0.0']);
@@ -339,7 +377,7 @@ describe('лендинг: версию выдаёт запись', { timeout: 12
     expect(dry.said).toContain('Выкатка: лендинг 2026.11.19.2');
     expect(dry.said).toContain('С прошлой записи в ветке прода выкаток: 2');
     expect(dry.said).toContain('Изменения — с 2026.11.19.1.');
-    const run = await release(landing, at, { apply: true }, '- | главная | исправление | Правки текста\n');
+    const run = await release(landing, at, { apply: true }, '- | главная | исправление | - | Правки текста\n');
     expect(run.refusal).toBe('');
     expect(originTags(landing)).toEqual(['released/2026.11.19.1', 'released/2026.11.19.2']);
   });
@@ -355,7 +393,7 @@ describe('страница повреждена или запись оборва
     git(landing, null, 'switch', '-q', 'main');
     git(landing, null, 'push', '-q', 'origin', 'main', 'production');
     const written = writes.length;
-    const refused = await release(landing, '2026-11-19T13:05:00+03:00', { apply: true }, '- | главная | исправление | Ещё правка\n');
+    const refused = await release(landing, '2026-11-19T13:05:00+03:00', { apply: true }, '- | главная | исправление | - | Ещё правка\n');
     expect(refused.refusal).toContain('страница журнала выкаток повреждена — на странице 2 таблицы вместо одной');
     expect(refused.refusal).toContain('kaiten release --rebuild');
     expect(writes.length).toBe(written);
@@ -368,7 +406,7 @@ describe('страница повреждена или запись оборва
     const run = await release(landing, '2026-11-19T13:05:00+03:00', { rebuild: true, apply: true });
     expect(run.refusal).toBe('');
     expect(pageRows()).toEqual(before);
-    expect((await release(landing, '2026-11-19T13:05:00+03:00', { apply: true }, '- | главная | исправление | Ещё правка\n')).refusal).toBe('');
+    expect((await release(landing, '2026-11-19T13:05:00+03:00', { apply: true }, '- | главная | исправление | - | Ещё правка\n')).refusal).toBe('');
   });
 
   it('очищенная страница восстанавливается из тегов каждого репозитория', async () => {
@@ -435,8 +473,49 @@ describe('откат', { timeout: 120_000 }, () => {
     expect((await release(app, at, { rollback: 'v9.9.9', reason: 'x', apply: true })).refusal).toContain('нет среди записанных выкаток');
     const run = await release(app, at, { rollback: 'v1.2.0', reason: 'Не проходит вход по ссылке', apply: true });
     expect(run.refusal).toBe('');
-    expect(pageRows()[0]).toEqual({ at: '2026-11-19T16:00+03:00', surface: 'продукт', version: 'v1.2.0', event: 'откат', zone: '—', type: '—', task: '—', text: 'Не проходит вход по ссылке' });
+    expect(pageRows()[0]).toEqual({ at: '2026-11-19T16:00+03:00', surface: 'продукт', version: 'v1.2.0', title: 'Вход по ссылке', event: 'откат', zone: '—', section: '—', type: '—', task: '—', text: 'Не проходит вход по ссылке' });
     expect(originTags(app)).toContain('released/v1.2.0-rollback');
     expect(await gate(app, at)).toBeNull();
+  });
+});
+
+describe('правка сделанной записи', { timeout: 120_000 }, () => {
+  const taggedAt = (): number => Date.parse(git(app, null, "for-each-ref", "--format=%(taggerdate:iso-strict)", "refs/tags/released/v1.1.0"));
+
+  it('--amend заменяет строки и название, а время, коммит и дата записи остаются', async () => {
+    const before = pageRows();
+    const tags = originTags(app);
+    const recordedAt = taggedAt();
+    const at = '2026-11-20T10:00:00+03:00';
+    expect((await release(app, at, { amend: true }, LINES_110)).refusal).toContain('kaiten release --amend --version <версия> --stdin');
+    expect((await release(app, at, { amend: true, version: 'v7.0.0' }, LINES_110)).refusal).toContain('править нечего');
+
+    const lines = '101 | пейволл | исправление | Тарифы | Цена годового тарифа видна сразу\n';
+    const dry = await release(app, at, { amend: true, version: 'v1.1.0', title: 'Оплата в окне, уточнение' }, lines);
+    expect(dry.said).toContain('Правка записи: продукт v1.1.0');
+    expect(dry.said).toContain('время записи 2026-11-19T12:00+03:00');
+    expect(pageRows()).toEqual(before);
+
+    const run = await release(app, at, { amend: true, version: 'v1.1.0', title: 'Оплата в окне, уточнение', apply: true }, lines);
+    expect(run.refusal).toBe('');
+    expect(run.said).toContain('Запись исправлена: релиз продукт v1.1.0, строк 1.');
+    expect(pageRows().filter((r) => r.version === 'v1.1.0' && r.event === 'релиз')).toEqual([
+      { at: '2026-11-19T12:00+03:00', surface: 'продукт', version: 'v1.1.0', title: 'Оплата в окне, уточнение', event: 'релиз', zone: 'пейволл', section: 'Тарифы', type: 'исправление', task: '101', text: 'Цена годового тарифа видна сразу' },
+    ]);
+    // Остальные записи на месте: исчезла одна строка прежней записи.
+    expect(pageRows()).toHaveLength(before.length - 1);
+    expect(originTags(app)).toEqual(tags);
+    expect(taggedAt()).toBe(recordedAt);
+    expect(git(app, null, 'ls-remote', '--tags', 'origin', 'refs/tags/released/v1.1.0').split('\t')[0]).toBe(git(app, null, 'rev-parse', 'refs/tags/released/v1.1.0'));
+    expect(git(app, null, 'tag', '-l', '--format=%(contents)', 'released/v1.1.0')).toContain('"title":"Оплата в окне, уточнение"');
+    expect(cardMarks.get(101)).toBe('продукт v1.1.0');
+  });
+
+  it('--rebuild проставляет поле «Релиз» карточкам всех записей', async () => {
+    cardMarks.clear();
+    const run = await release(landing, '2026-11-20T10:05:00+03:00', { rebuild: true, apply: true });
+    expect(run.said).toContain('Страница в порядке, восстанавливать нечего.');
+    expect(run.said).toContain('Поле «Релиз» записано карточкам: 1.');
+    expect(cardMarks.get(202)).toBe('лендинг 2026.11.19.1');
   });
 });

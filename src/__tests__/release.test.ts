@@ -16,6 +16,7 @@ import {
   NONE,
   overdue,
   pageNodes,
+  parseChangelog,
   parseChanges,
   parseRecordMessage,
   readPage,
@@ -23,6 +24,7 @@ import {
   recordTagName,
   releaseTime,
   rowsOf,
+  titleProblem,
   uncoveredTasks,
   versionProblem,
   type DeployFacts,
@@ -35,13 +37,14 @@ const known = (ref: string): { ref: string } | { error: string } => (ref === 'PR
 const RELEASE: ReleaseRecord = {
   surface: 'продукт',
   version: 'v1.1.0',
+  title: 'Оплата в окне',
   event: 'релиз',
   at: '2026-11-19T12:00+03:00',
   approx: false,
   commit: 'a'.repeat(40),
   changes: [
-    { task: 'PRJ-1', zone: 'пейволл', type: 'новое', text: 'Цена *годового* тарифа видна до оплаты [см. макет](x)' },
-    { task: null, zone: 'прочее', type: 'техническое', text: 'Обновление зависимостей' },
+    { task: 'PRJ-1', zone: 'пейволл', type: 'новое', section: 'Тарифы', text: 'Цена *годового* тарифа видна до оплаты [см. макет](x)' },
+    { task: null, zone: 'прочее', type: 'техническое', section: null, text: 'Обновление зависимостей' },
   ],
 };
 
@@ -54,22 +57,22 @@ describe('время записи', () => {
 
 describe('строки изменений', () => {
   it('разбираются: задача по любому её имени, словари без учёта регистра, пустые строки и # пропущены', () => {
-    const parsed = parseChanges('# что вышло\n\npay-flow | Пейволл | НОВОЕ | Цена видна до оплаты\n- | прочее | техническое | Обновление зависимостей\r\n', DICT, known);
+    const parsed = parseChanges('# что вышло\n\npay-flow | Пейволл | НОВОЕ | Тарифы | Цена видна до оплаты\n- | прочее | техническое | - | Обновление зависимостей\r\n', DICT, known);
     expect(parsed.problems).toEqual([]);
     expect(parsed.changes).toEqual([
-      { task: 'PRJ-1', zone: 'пейволл', type: 'новое', text: 'Цена видна до оплаты' },
-      { task: null, zone: 'прочее', type: 'техническое', text: 'Обновление зависимостей' },
+      { task: 'PRJ-1', zone: 'пейволл', type: 'новое', section: 'Тарифы', text: 'Цена видна до оплаты' },
+      { task: null, zone: 'прочее', type: 'техническое', section: null, text: 'Обновление зависимостей' },
     ]);
   });
 
   it('все замечания — разом, с номером строки и словарём', () => {
-    const parsed = parseChanges('PRJ-9 | оплата | фича | Текст\nбез частей\n- | прочее | новое |\n', DICT, known);
+    const parsed = parseChanges('PRJ-9 | оплата | фича | - | Текст\nбез частей\n- | прочее | новое | - |\n', DICT, known);
     expect(parsed.changes).toEqual([]);
     expect(parsed.problems).toEqual([
       'строка 1: нет задачи PRJ-9',
       'строка 1: нет зоны «оплата». Можно: пейволл, онбординг, прочее',
       'строка 1: нет типа «фича». Можно: новое, исправление, техническое',
-      'строка 2: нужно четыре части через «|» — задача | зона | тип | что изменилось (в тексте «|» нельзя)',
+      'строка 2: нужно пять частей через «|» — задача | зона | тип | раздел | что изменилось (в тексте «|» нельзя; нет задачи или раздела — «-»)',
       'строка 3: не сказано, что изменилось',
     ]);
   });
@@ -86,14 +89,14 @@ describe('строки изменений', () => {
 describe('страница журнала', () => {
   it('строки записи: поля выкатки — в каждой, изменение без задачи — с прочерком', () => {
     expect(rowsOf(RELEASE)).toEqual([
-      { at: '2026-11-19T12:00+03:00', surface: 'продукт', version: 'v1.1.0', event: 'релиз', zone: 'пейволл', type: 'новое', task: 'PRJ-1', text: RELEASE.changes[0].text },
-      { at: '2026-11-19T12:00+03:00', surface: 'продукт', version: 'v1.1.0', event: 'релиз', zone: 'прочее', type: 'техническое', task: NONE, text: 'Обновление зависимостей' },
+      { at: '2026-11-19T12:00+03:00', surface: 'продукт', version: 'v1.1.0', title: 'Оплата в окне', event: 'релиз', zone: 'пейволл', section: 'Тарифы', type: 'новое', task: 'PRJ-1', text: RELEASE.changes[0].text },
+      { at: '2026-11-19T12:00+03:00', surface: 'продукт', version: 'v1.1.0', title: 'Оплата в окне', event: 'релиз', zone: 'прочее', section: NONE, type: 'техническое', task: NONE, text: 'Обновление зависимостей' },
     ]);
   });
 
   it('откат — одна строка с причиной, приблизительное время — с пометкой', () => {
     expect(rowsOf({ ...RELEASE, event: 'откат', approx: true, changes: [], reason: 'Не проходит оплата' })).toEqual([
-      { at: `${APPROX}2026-11-19T12:00+03:00`, surface: 'продукт', version: 'v1.1.0', event: 'откат', zone: NONE, type: NONE, task: NONE, text: 'Не проходит оплата' },
+      { at: `${APPROX}2026-11-19T12:00+03:00`, surface: 'продукт', version: 'v1.1.0', title: 'Оплата в окне', event: 'откат', zone: NONE, section: NONE, type: NONE, task: NONE, text: 'Не проходит оплата' },
     ]);
   });
 
@@ -101,7 +104,7 @@ describe('страница журнала', () => {
     const rows = rowsOf(RELEASE);
     const nodes = pageNodes(rows);
     expect(nodes[1].content?.[0].content?.map((c) => c.content?.[0].content?.[0].text)).toEqual([...COLUMNS]);
-    expect(nodes[1].content?.[1].content?.[7].content?.[0].content).toEqual([{ type: 'text', text: RELEASE.changes[0].text }]);
+    expect(nodes[1].content?.[1].content?.[9].content?.[0].content).toEqual([{ type: 'text', text: RELEASE.changes[0].text }]);
     expect(readPage(nodes)).toEqual({ state: 'ok', rows });
   });
 
@@ -150,7 +153,7 @@ describe('страница журнала', () => {
 describe('копия записи в теге', () => {
   it('запись читается из аннотации дословно', () => {
     const message = recordMessage(RELEASE);
-    expect(message.split('\n')[0]).toBe('Релиз v1.1.0 — продукт');
+    expect(message.split('\n')[0]).toBe('Релиз v1.1.0 — продукт: Оплата в окне');
     expect(parseRecordMessage(message)).toEqual(RELEASE);
   });
 
@@ -164,6 +167,65 @@ describe('копия записи в теге', () => {
     expect(recordTagName(RELEASE, new Set())).toBe('released/v1.1.0');
     expect(recordTagName({ ...RELEASE, event: 'откат' }, new Set())).toBe('released/v1.1.0-rollback');
     expect(recordTagName({ ...RELEASE, event: 'откат' }, new Set(['released/v1.1.0-rollback', 'released/v1.1.0-rollback-2']))).toBe('released/v1.1.0-rollback-3');
+  });
+});
+
+describe('прежний вид журнала', () => {
+  it('запись без названия и разделов читается: название пустое, раздела нет', () => {
+    const old = 'Релиз v1.0.0 — продукт\n\nkaiten-release: {"v":1,"surface":"продукт","version":"v1.0.0","event":"релиз","at":"2026-10-01T10:00+03:00","approx":true,"commit":"abc","changes":[{"task":null,"zone":"прочее","type":"новое","text":"Первая версия"}]}';
+    expect(parseRecordMessage(old)).toEqual({ surface: 'продукт', version: 'v1.0.0', title: '', event: 'релиз', at: '2026-10-01T10:00+03:00', approx: true, commit: 'abc', changes: [{ task: null, zone: 'прочее', type: 'новое', section: null, text: 'Первая версия' }] });
+  });
+
+  it('страница из восьми колонок читается теми же строками, что даёт её запись', () => {
+    const cell = (type: string, value: string): { type: string; content: Array<{ type: string; content: Array<{ type: string; text: string }> }> } => ({ type, content: [{ type: 'paragraph', content: [{ type: 'text', text: value }] }] });
+    const header = ['Время (МСК)', 'Поверхность', 'Версия', 'Событие', 'Зона', 'Тип', 'Задача', 'Что изменилось'];
+    const row = ['≈2026-10-01T10:00+03:00', 'продукт', 'v1.0.0', 'релиз', 'прочее', 'новое', '—', 'Первая версия'];
+    const page = readPage([{ type: 'table', content: [{ type: 'table_row', content: header.map((h) => cell('table_header', h)) }, { type: 'table_row', content: row.map((v) => cell('table_cell', v)) }] }]);
+    expect(page).toEqual({ state: 'ok', rows: rowsOf({ surface: 'продукт', version: 'v1.0.0', title: '', event: 'релиз', at: '2026-10-01T10:00+03:00', approx: true, commit: 'abc', changes: [{ task: null, zone: 'прочее', type: 'новое', section: null, text: 'Первая версия' }] }) });
+  });
+});
+
+describe('название и список изменений', () => {
+  const FILE = [
+    '# Changelog',
+    '',
+    '> вступление',
+    '',
+    '## v1.1.0 — 2026-11-19 — Оплата в окне',
+    '',
+    '### Тарифы',
+    '- **Цена видна до оплаты.** Раньше её показывали',
+    '  только на последнем шаге | в окне.',
+    '- Второй пункт',
+    '',
+    '### Под капотом',
+    'Абзац без маркера.',
+    '',
+    '## v1.0.0 — 2026-10-01',
+    '- Первая версия',
+    '',
+    '## Архив',
+    '- не версия',
+  ].join('\r\n');
+
+  it('версия → название и пункты по разделам; продолжение строки — в тот же пункт, «|» заменён', () => {
+    const entries = parseChangelog(FILE);
+    expect([...entries.keys()]).toEqual(['v1.1.0', 'v1.0.0']);
+    expect(entries.get('v1.1.0')).toEqual({
+      title: 'Оплата в окне',
+      items: [
+        { section: 'Тарифы', text: '**Цена видна до оплаты.** Раньше её показывали только на последнем шаге / в окне.' },
+        { section: 'Тарифы', text: 'Второй пункт' },
+        { section: 'Под капотом', text: 'Абзац без маркера.' },
+      ],
+    });
+    expect(entries.get('v1.0.0')).toEqual({ title: '', items: [{ section: null, text: 'Первая версия' }] });
+  });
+
+  it('название обязательно и без «|»', () => {
+    expect(titleProblem('Оплата в окне')).toBeNull();
+    expect(titleProblem('  ')).toContain('--title');
+    expect(titleProblem('а | б')).toContain('нельзя');
   });
 });
 

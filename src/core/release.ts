@@ -26,7 +26,9 @@ import { logStamp } from './task-ops.js';
 export const RELEASE_EVENTS = ['релиз', 'откат'] as const;
 export type ReleaseEvent = (typeof RELEASE_EVENTS)[number];
 
-export const COLUMNS = ['Время (МСК)', 'Поверхность', 'Версия', 'Событие', 'Зона', 'Тип', 'Задача', 'Что изменилось'] as const;
+export const COLUMNS = ['Время (МСК)', 'Поверхность', 'Версия', 'Название', 'Событие', 'Зона', 'Раздел', 'Тип', 'Задача', 'Что изменилось'] as const;
+/** Шапка первой версии журнала — без названия выкатки и раздела: такие страницы читаются и переписываются в новом виде. */
+const COLUMNS_V1 = ['Время (МСК)', 'Поверхность', 'Версия', 'Событие', 'Зона', 'Тип', 'Задача', 'Что изменилось'] as const;
 
 /** Первая строка страницы. По её началу страница узнаётся как журнал. */
 export const NOTICE =
@@ -62,12 +64,16 @@ export interface ReleaseChange {
   task: string | null;
   zone: string;
   type: string;
+  /** Раздел списка изменений, в котором стоит правка: «Время рождения». `null` — правка вне разделов. */
+  section: string | null;
   text: string;
 }
 
 export interface ReleaseRecord {
   surface: string;
   version: string;
+  /** Название выкатки для людей: «Анкета и время рождения». */
+  title: string;
   event: ReleaseEvent;
   /** `2026-11-10T18:42+03:00` — по Москве, до минуты. */
   at: string;
@@ -99,17 +105,19 @@ export interface ReleaseRow {
   at: string;
   surface: string;
   version: string;
+  title: string;
   event: ReleaseEvent;
   zone: string;
+  section: string;
   type: string;
   task: string;
   text: string;
 }
 
 export function rowsOf(record: ReleaseRecord): ReleaseRow[] {
-  const base = { at: `${record.approx ? APPROX : ''}${record.at}`, surface: record.surface, version: record.version, event: record.event };
-  if (record.event === 'откат') return [{ ...base, zone: NONE, type: NONE, task: NONE, text: record.reason ?? '' }];
-  return record.changes.map((c) => ({ ...base, zone: c.zone, type: c.type, task: c.task ?? NONE, text: c.text }));
+  const base = { at: `${record.approx ? APPROX : ''}${record.at}`, surface: record.surface, version: record.version, title: record.title || NONE, event: record.event };
+  if (record.event === 'откат') return [{ ...base, zone: NONE, section: NONE, type: NONE, task: NONE, text: record.reason ?? '' }];
+  return record.changes.map((c) => ({ ...base, zone: c.zone, section: c.section ?? NONE, type: c.type, task: c.task ?? NONE, text: c.text }));
 }
 
 /** Строки одной записи идут подряд: по этому ключу они собираются обратно. Откатов одной версии может быть несколько — их различает время. */
@@ -145,7 +153,7 @@ const cell = (type: 'table_header' | 'table_cell', value: string): PMNode => ({ 
 /** Содержимое страницы журнала целиком. */
 export function pageNodes(rows: readonly ReleaseRow[]): PMNode[] {
   const header: PMNode = { type: 'table_row', content: COLUMNS.map((name) => cell('table_header', name)) };
-  const body = rows.map((r): PMNode => ({ type: 'table_row', content: [r.at, r.surface, r.version, r.event, r.zone, r.type, r.task, r.text].map((value) => cell('table_cell', value)) }));
+  const body = rows.map((r): PMNode => ({ type: 'table_row', content: [r.at, r.surface, r.version, r.title, r.event, r.zone, r.section, r.type, r.task, r.text].map((value) => cell('table_cell', value)) }));
   return [plainParagraph(NOTICE), { type: 'table', content: [header, ...body] }];
 }
 
@@ -157,13 +165,15 @@ function plain(nodes: PMNode[] | undefined): string {
     .trim();
 }
 
-function rowOf(cells: readonly string[]): ReleaseRow | null {
-  if (cells.length !== COLUMNS.length) return null;
-  const [at, surface, version, event, zone, type, task, text] = cells;
+function rowOf(cells: readonly string[], legacy: boolean): ReleaseRow | null {
+  if (cells.length !== (legacy ? COLUMNS_V1 : COLUMNS).length) return null;
+  const [at, surface, version, title, event, zone, section, type, task, text] = legacy ? [cells[0], cells[1], cells[2], NONE, cells[3], cells[4], NONE, cells[5], cells[6], cells[7]] : cells;
   if (!TIME_RE.test(at.replace(APPROX, '')) || !surface || !version || !text) return null;
   if (!(RELEASE_EVENTS as readonly string[]).includes(event)) return null;
-  return { at, surface, version, event: event as ReleaseEvent, zone: zone || NONE, type: type || NONE, task: task || NONE, text };
+  return { at, surface, version, title: title || NONE, event: event as ReleaseEvent, zone: zone || NONE, section: section || NONE, type: type || NONE, task: task || NONE, text };
 }
+
+const sameHeader = (names: readonly string[], columns: readonly string[]): boolean => names.length === columns.length && names.every((name, i) => name === columns[i]);
 
 export type PageState =
   /** На странице ничего нет: журнал ещё не начат. */
@@ -189,9 +199,10 @@ export function readPage(nodes: readonly PMNode[]): PageState {
   for (const table of tables) {
     const [header, ...body] = table.content ?? [];
     const names = (header?.content ?? []).map((c) => plain(c.content));
-    if (names.length !== COLUMNS.length || names.some((name, i) => name !== COLUMNS[i])) badHeader = true;
+    const legacy = sameHeader(names, COLUMNS_V1);
+    if (!legacy && !sameHeader(names, COLUMNS)) badHeader = true;
     for (const row of body) {
-      const parsed = rowOf((row.content ?? []).map((c) => plain(c.content)));
+      const parsed = rowOf((row.content ?? []).map((c) => plain(c.content)), legacy);
       if (!parsed) {
         badRows++;
         continue;
@@ -231,7 +242,7 @@ export interface ParsedChanges {
 const fromDictionary = (value: string, allowed: readonly string[]): string | undefined => allowed.find((a) => a.toLowerCase() === value.toLowerCase());
 
 /**
- * Строки изменений: `<задача или -> | <зона> | <тип> | <что изменилось>`.
+ * Строки изменений: `<задача или -> | <зона> | <тип> | <раздел или -> | <что изменилось>`.
  * Пустые строки и строки с `#` пропускаются. Все замечания — разом: агент
  * исправляет ввод одним заходом.
  */
@@ -244,11 +255,12 @@ export function parseChanges(input: string, dict: Dictionaries, resolveTask: Tas
     if (!line || line.startsWith('#')) continue;
     const where = `строка ${i + 1}`;
     const parts = line.split('|').map((p) => p.trim());
-    if (parts.length !== 4) {
-      problems.push(`${where}: нужно четыре части через «|» — задача | зона | тип | что изменилось (в тексте «|» нельзя)`);
+    if (parts.length !== 5) {
+      problems.push(`${where}: нужно пять частей через «|» — задача | зона | тип | раздел | что изменилось (в тексте «|» нельзя; нет задачи или раздела — «-»)`);
       continue;
     }
-    const [taskRef, zoneRaw, typeRaw, text] = parts;
+    const [taskRef, zoneRaw, typeRaw, sectionRaw, text] = parts;
+    const section = !sectionRaw || sectionRaw === '-' || sectionRaw === NONE ? null : sectionRaw;
     const zone = fromDictionary(zoneRaw, dict.zones);
     const type = fromDictionary(typeRaw, dict.types);
     let task: string | null = null;
@@ -261,7 +273,7 @@ export function parseChanges(input: string, dict: Dictionaries, resolveTask: Tas
     if (!zone) problems.push(`${where}: нет зоны «${zoneRaw}». Можно: ${dict.zones.join(', ')}`);
     if (!type) problems.push(`${where}: нет типа «${typeRaw}». Можно: ${dict.types.join(', ')}`);
     if (!text) problems.push(`${where}: не сказано, что изменилось`);
-    if (zone && type && text) changes.push({ task, zone, type, text });
+    if (zone && type && text) changes.push({ task, zone, type, section, text });
   }
   if (changes.length === 0 && problems.length === 0) problems.push('нет ни одной строки изменений');
   return { changes, problems };
@@ -278,21 +290,23 @@ export function uncoveredTasks(changes: readonly ReleaseChange[], expected: read
 const RECORD_MARK = 'kaiten-release: ';
 
 const RecordSchema = z.object({
-  v: z.literal(1),
+  /** 1 — без названия выкатки и разделов; читается как запись с пустым названием. */
+  v: z.union([z.literal(1), z.literal(2)]),
   surface: z.string().min(1),
   version: z.string().min(1),
+  title: z.string().default(''),
   event: z.enum(RELEASE_EVENTS),
   at: z.string().regex(TIME_RE),
   approx: z.boolean().default(false),
   commit: z.string().min(1),
-  changes: z.array(z.object({ task: z.string().nullable(), zone: z.string(), type: z.string(), text: z.string() })).default([]),
+  changes: z.array(z.object({ task: z.string().nullable(), zone: z.string(), type: z.string(), section: z.string().nullable().default(null), text: z.string() })).default([]),
   reason: z.string().optional(),
 });
 
 /** Текст аннотации тега: строка для людей и запись целиком одной строкой JSON. */
 export function recordMessage(record: ReleaseRecord): string {
-  const title = `${record.event === 'откат' ? 'Откат' : 'Релиз'} ${record.version} — ${record.surface}`;
-  return `${title}\n\n${RECORD_MARK}${JSON.stringify({ v: 1, ...record })}\n`;
+  const subject = `${record.event === 'откат' ? 'Откат' : 'Релиз'} ${record.version} — ${record.surface}${record.title ? `: ${record.title}` : ''}`;
+  return `${subject}\n\n${RECORD_MARK}${JSON.stringify({ v: 2, ...record })}\n`;
 }
 
 /** Запись из аннотации тега; `null` — в теге её нет или она не читается. */
@@ -317,6 +331,55 @@ export function recordTagName(record: Pick<ReleaseRecord, 'version' | 'event'>, 
   const base = `${RECORD_TAG_PREFIX}${record.version}-rollback`;
   if (!taken.has(base)) return base;
   for (let n = 2; ; n++) if (!taken.has(`${base}-${n}`)) return `${base}-${n}`;
+}
+
+// ── название и список изменений проекта ──────────────────────────────────
+
+export function titleProblem(title: string): string | null {
+  if (!title.trim()) return 'у выкатки нет названия — добавьте --title "<коротко, что вышло>"';
+  if (/[|\n]/.test(title)) return 'в названии выкатки нельзя «|» и перенос строки';
+  return null;
+}
+
+export interface ChangelogEntry {
+  title: string;
+  /** Пункты по разделам, в порядке файла; `section: null` — пункт вне разделов. */
+  items: Array<{ section: string | null; text: string }>;
+}
+
+/**
+ * Список изменений проекта для пользователей: `## v1.2.3 — 2026-11-09 — Название`,
+ * разделы `### …`, пункты `- …` с продолжением на следующих строках. Версия →
+ * название и пункты. «|» в тексте заменяется: он делит ячейки ввода.
+ */
+export function parseChangelog(text: string): Map<string, ChangelogEntry> {
+  const out = new Map<string, ChangelogEntry>();
+  let entry: ChangelogEntry | null = null;
+  let section: string | null = null;
+  const clean = (value: string): string => value.replace(/\s+/g, ' ').replaceAll('|', '/').trim();
+  for (const line of text.replace(/\r\n/g, '\n').split('\n')) {
+    const head = /^## \[?(v?\d[\w.-]*)\]?(?:\s+—\s+\d{4}-\d{2}-\d{2})?(?:\s+—\s+(.+))?$/.exec(line);
+    if (head) {
+      entry = { title: clean(head[2] ?? ''), items: [] };
+      section = null;
+      out.set(head[1], entry);
+      continue;
+    }
+    if (!entry) continue;
+    if (line.startsWith('## ')) {
+      entry = null;
+      continue;
+    }
+    if (line.startsWith('### ')) section = clean(line.slice(4)) || null;
+    else if (/^[-*] /.test(line)) entry.items.push({ section, text: clean(line.slice(2)) });
+    else if (line.trim() && !line.startsWith('#') && !line.startsWith('>')) {
+      const last = entry.items.at(-1);
+      // Продолжение пункта — с отступом; абзац без отступа под разделом — отдельная правка.
+      if (last && last.section === section && /^\s/.test(line)) last.text = clean(`${last.text} ${line}`);
+      else entry.items.push({ section, text: clean(line) });
+    }
+  }
+  return out;
 }
 
 // ── версии ───────────────────────────────────────────────────────────────

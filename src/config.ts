@@ -107,6 +107,11 @@ const RepoReleaseSchema = z
     versions: z.enum(['tags', 'calendar']),
     /** Начало тегов версий при `versions: tags`: `v` — теги `v1.2.3`. */
     tagPrefix: z.string().default('v'),
+    /**
+     * Список изменений для пользователей в этом репозитории (`docs/CHANGELOG.md`):
+     * из раздела версии берутся название выкатки и пункты по разделам.
+     */
+    changelog: z.string().trim().min(1).optional(),
   })
   .strict();
 export type RepoRelease = z.infer<typeof RepoReleaseSchema>;
@@ -130,6 +135,11 @@ const ReleasesSchema = z
     page: z.string().trim().min(1, 'пустой uid страницы'),
     zones: dictionary('zones'),
     types: dictionary('types'),
+    /**
+     * Строковое поле карточки «Релиз» — id поля Kaiten: запись выкатки ставит в него
+     * поверхность и версию каждой задаче выкатки. Нет — карточки не трогаются.
+     */
+    cardProperty: z.number().int().positive().optional(),
   })
   .strict();
 
@@ -368,14 +378,14 @@ export function reviewGates(project: Pick<ProjectConfig, 'review' | 'repos'>, re
 export type ReleaseSetting =
   | { state: 'off' }
   | { state: 'other-repo'; surfaces: string[] }
-  | { state: 'on'; page: string; zones: readonly string[]; types: readonly string[]; repo: RepoRelease };
+  | { state: 'on'; page: string; zones: readonly string[]; types: readonly string[]; cardProperty?: number; repo: RepoRelease };
 
 export function releaseSetting(project: Pick<ProjectConfig, 'releases' | 'repos'>, repoName: string): ReleaseSetting {
   const releases = project.releases;
   if (!releases) return { state: 'off' };
   const repo = project.repos.find((r) => r.name === repoName)?.release;
   if (!repo) return { state: 'other-repo', surfaces: project.repos.flatMap((r) => (r.release ? [`${r.release.surface} — ${r.name}`] : [])) };
-  return { state: 'on', page: releases.page, zones: releases.zones, types: releases.types, repo };
+  return { state: 'on', page: releases.page, zones: releases.zones, types: releases.types, ...(releases.cardProperty !== undefined ? { cardProperty: releases.cardProperty } : {}), repo };
 }
 
 /** Обязателен ли раздел «Как проверить» в постановке story. */
