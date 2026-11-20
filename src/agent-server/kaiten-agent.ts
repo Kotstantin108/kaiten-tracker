@@ -7,7 +7,7 @@
 
 import { z } from 'zod';
 
-import { type Card, type CardType, CardTypeSchema, type CustomProperty, DocumentSchema, KaitenApiError, KaitenClient, type KaitenDocument, mimeOf, type SelectValue, type Space, type SpaceUser } from '../kaiten-client.js';
+import { type Card, type CardType, CardTypeSchema, type CustomProperty, KaitenApiError, KaitenClient, mimeOf, type SelectValue, type Space, type SpaceUser } from '../kaiten-client.js';
 import { type BoardRules, coverageProblems, normalizeTitle, type ParsedDescription, parseBoardDescription, typeRule } from './board-rules.js';
 import { applicable, demandedProperties, parseRestrictions, type Restriction } from './restrictions.js';
 
@@ -54,7 +54,16 @@ export class AgentKaiten extends KaitenClient {
     return this.request('POST', `/cards/${cardId}/checklists`, { body: { name }, schema: z.object({ id: z.number() }).passthrough() });
   }
 
-  // ── документы (docs/kaiten-api.md, «Документы»): чтение и запись — в общем клиенте ──
+  // ── документы (docs/kaiten-api.md, «Документы») ──
+
+  async getDocument(uid: string): Promise<KaitenDocument> {
+    return this.request('GET', `/documents/${encodeURIComponent(uid)}`, { schema: DocumentSchema });
+  }
+
+  /** Содержимое — только целиком; `POST` его молча выбрасывает, поэтому текст — отдельным `PATCH`. */
+  async updateDocument(uid: string, patch: { data?: unknown; title?: string }): Promise<unknown> {
+    return this.request('PATCH', `/documents/${encodeURIComponent(uid)}`, { body: patch, schema: z.unknown() });
+  }
 
   async createDocument(body: { title: string; parent_entity_uid: string; sort_order: number }): Promise<KaitenDocument> {
     return this.request('POST', '/documents', { body, schema: DocumentSchema });
@@ -87,7 +96,18 @@ export class AgentKaiten extends KaitenClient {
   }
 }
 
-export type { KaitenDocument };
+const DocumentSchema = z
+  .object({
+    uid: z.string(),
+    title: z.string().default(''),
+    parent_entity_uid: z.string().nullable().optional(),
+    updated: z.string().optional(),
+    data: z.unknown().optional(),
+    archived: z.boolean().optional(),
+    author: z.object({ full_name: z.string().nullable().optional() }).passthrough().nullable().optional(),
+  })
+  .passthrough();
+export type KaitenDocument = z.infer<typeof DocumentSchema>;
 
 const DOC_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 

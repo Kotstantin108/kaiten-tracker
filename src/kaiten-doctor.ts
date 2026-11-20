@@ -24,11 +24,8 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { claudeAvailable } from './claude-agent.js';
-import { parseDocData } from './agent-server/prosemirror.js';
-import { foundSetting, juniorSetting, releaseSetting, visualSetting, projectFromTasksRepo, storeNameOf, TASKS_REPO_CONFIG, type LoadedProject, type People } from './config.js';
+import { foundSetting, juniorSetting, visualSetting, projectFromTasksRepo, storeNameOf, TASKS_REPO_CONFIG, type LoadedProject, type People } from './config.js';
 import { isFindingPath, listFindings } from './core/found.js';
-import { journalStart, readPage } from './core/release.js';
-import { recordsMissingOnPage, releaseProblem, releaseState } from './kaiten-release.js';
 import { unknownHost, type RepoWhere } from './core/hosting.js';
 import { rulesState, SKILL_PATH, skillState } from './core/repo-connect.js';
 import { belongsToProject, buildIndex } from './core/tasks-index.js';
@@ -240,50 +237,6 @@ function storeChecks(facts: NonNullable<RepoFacts['project']>, settings: KaitenS
   return checks;
 }
 
-/**
- * Журнал выкаток (`docs/releases.md`): записаны ли выкатки этого репозитория и
- * цела ли страница журнала. Проект журнал не ведёт или выкатки этого
- * репозитория в него не попадают — проверять нечего.
- */
-export async function releaseChecks(workDir: string, facts: NonNullable<RepoFacts['project']>, settings: KaitenSettings | null, offline: boolean, now = new Date()): Promise<Check[]> {
-  if (!existsSync(facts.store) || !isStore(facts.store)) return [];
-  const loaded = storeConfig(facts.store, facts.tasksUrl);
-  if (typeof loaded === 'string') return [];
-  const setting = releaseSetting(loaded.project, facts.repo);
-  if (setting.state !== 'on') return [];
-  const checks: Check[] = [];
-  const state = releaseState(workDir, loaded.project, facts.repo, offline ? 'no' : 'try', now);
-  if (!state) return [];
-  if ('error' in state) return [{ level: 'warn', what: `журнал выкаток не проверен: ${state.error}` }];
-  const problem = releaseProblem(state);
-  const start = journalStart(state.facts.recorded);
-  const last = [...state.facts.recorded].sort((a, b) => b.taggedAt.getTime() - a.taggedAt.getTime())[0];
-  // Свежая выкатка работу ещё не держит: её сейчас записывает тот, кто выкатывал.
-  const fresh = start ? state.facts.pending.filter((p) => p.time.getTime() > start.getTime()) : [];
-  if (problem) checks.push({ level: 'fail', ...problem });
-  else if (!start) checks.push({ level: 'warn', what: 'журнал выкаток этого репозитория ещё пуст', fix: 'Первая запись — после ближайшей выкатки: kaiten release.' });
-  else if (fresh.length > 0) checks.push({ level: 'warn', what: 'последняя выкатка ещё не записана в журнал выкаток', fix: 'kaiten release — когда прод обновился.' });
-  else checks.push({ level: 'ok', what: `выкатки записаны в журнал: последняя запись — ${last?.record?.version ?? '?'}` });
-
-  if (offline || !settings?.sync.kaiten || !settings.kaiten) return checks;
-  try {
-    const doc = await new KaitenClient({ ...settings.kaiten, maxRetries: 1 }).getDocument(setting.page);
-    const page = readPage(parseDocData(doc.data));
-    if (page.state === 'broken') checks.push({ level: 'fail', what: `страница журнала выкаток повреждена: ${page.problem}`, fix: 'Закройте её в редакторе Kaiten и восстановите: kaiten release --rebuild, затем с --apply.' });
-    else {
-      // Целая страница ещё не значит полная: открытый редактор мог вернуть ей старое состояние.
-      const lost = recordsMissingOnPage(setting.repo.surface, state.facts.recorded, page.state === 'ok' ? page.rows : []);
-      if (lost.length > 0) checks.push({ level: 'fail', what: `на странице журнала выкаток нет записей этого репозитория: ${lost.slice(0, 5).join(', ')}${lost.length > 5 ? ` и ещё ${lost.length - 5}` : ''}`, fix: 'kaiten release --rebuild, затем с --apply.' });
-      else checks.push({ level: 'ok', what: page.state === 'empty' ? 'страница журнала выкаток доступна, записей на ней ещё нет' : `страница журнала выкаток цела: строк ${page.rows.length}` });
-    }
-  } catch (error) {
-    const status = error instanceof KaitenApiError ? error.status : -1;
-    if (status === 404 || status === 401 || status === 403) checks.push({ level: 'fail', what: status === 404 ? 'страница журнала выкаток в Kaiten не найдена' : 'нет доступа к странице журнала выкаток в Kaiten', fix: 'Вопрос к владельцу проекта.' });
-    else checks.push({ level: 'warn', what: 'страница журнала выкаток не проверена: Kaiten не ответил' });
-  }
-  return checks;
-}
-
 /** Свежесть самого kaiten: устарел для задач проекта — карточки не обновляются; есть новая версия — подсказка. */
 function toolChecks(store: string | null, offline: boolean): Check[] {
   const fix = 'git pull в папке kaiten (там, откуда его ставили).';
@@ -314,10 +267,7 @@ export async function doctor(args: string[]): Promise<void> {
 
   const repo = repoChecks(workDir);
   checks.push(...repo.checks);
-  if (repo.project && git[0].level === 'ok') {
-    checks.push(...storeChecks(repo.project, settings, email, offline));
-    checks.push(...(await releaseChecks(workDir, repo.project, settings, offline)));
-  }
+  if (repo.project && git[0].level === 'ok') checks.push(...storeChecks(repo.project, settings, email, offline));
   checks.push(...toolChecks(repo.project?.store ?? null, offline));
 
   console.log(formatChecks(checks).join('\n'));

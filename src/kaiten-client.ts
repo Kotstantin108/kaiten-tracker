@@ -171,20 +171,6 @@ export type Group = z.infer<typeof GroupSchema>;
 export const GroupEntitySchema = z.object({ uid: z.string(), entity_type: z.string().optional() }).passthrough();
 export type GroupEntity = z.infer<typeof GroupEntitySchema>;
 
-/** Документ Kaiten: `data` — содержимое (ProseMirror JSON), приходит строкой. */
-export const DocumentSchema = z
-  .object({
-    uid: z.string(),
-    title: z.string().default(''),
-    parent_entity_uid: z.string().nullable().optional(),
-    updated: z.string().optional(),
-    data: z.unknown().optional(),
-    archived: z.boolean().optional(),
-    author: z.object({ full_name: z.string().nullable().optional() }).passthrough().nullable().optional(),
-  })
-  .passthrough();
-export type KaitenDocument = z.infer<typeof DocumentSchema>;
-
 export const BoardSchema = z
   .object({
     id: z.number(),
@@ -608,17 +594,6 @@ export class KaitenClient {
   /** Владелец токена (живьём: `GET /users/current` отдаёт id, имя, почту). */
   async currentUser(): Promise<CurrentUser> {
     return this.request('GET', '/users/current', { schema: CurrentUserSchema });
-  }
-
-  // ── документы (docs/kaiten-api.md, «Документы») ──
-
-  async getDocument(uid: string): Promise<KaitenDocument> {
-    return this.request('GET', `/documents/${encodeURIComponent(uid)}`, { schema: DocumentSchema });
-  }
-
-  /** Содержимое — только целиком; `POST` его молча выбрасывает, поэтому текст — отдельным `PATCH`. */
-  async updateDocument(uid: string, patch: { data?: unknown; title?: string }): Promise<unknown> {
-    return this.request('PATCH', `/documents/${encodeURIComponent(uid)}`, { body: patch, schema: z.unknown() });
   }
 
   /** `parentUid` — сразу внутри пространства-«папки» (живьём 07.10). */
