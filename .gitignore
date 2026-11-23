@@ -1,4 +1,6 @@
 node_modules/
+# зависимости ставит pnpm (pnpm-lock.yaml); lock-файл npm появляется только от npm install по привычке
+package-lock.json
 tmp/
 .env
 .env.*
