@@ -4,8 +4,10 @@
 
 FROM node:24.14-alpine AS build
 WORKDIR /src
-COPY package.json package-lock.json ./
-RUN npm ci --ignore-scripts --no-audit --no-fund
+COPY package.json pnpm-lock.yaml ./
+# pnpm — той версии, что в packageManager package.json. Скрипты установки не запускаем, как и раньше:
+# двоичный файл esbuild приходит отдельным пакетом под платформу.
+RUN corepack enable && pnpm install --frozen-lockfile --ignore-scripts
 COPY tsconfig.json ./
 COPY scripts/build-agent-server.mjs scripts/
 COPY src ./src

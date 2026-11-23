@@ -336,7 +336,7 @@ async function main(): Promise<void> {
     mkdirSync(dirname(join(out, a.to)), { recursive: true });
     copyFileSync(join(repoPaths.get(a.repoName) as string, a.from), join(out, a.to));
   }
-  writeFileSync(join(out, MARKER), 'Дерево создано конвертером kaiten-tracker (npm run convert). Повторный прогон перезаписывает файлы.\n');
+  writeFileSync(join(out, MARKER), 'Дерево создано конвертером kaiten-tracker (pnpm run convert). Повторный прогон перезаписывает файлы.\n');
   console.log(`Записано в ${out}`);
 }
 

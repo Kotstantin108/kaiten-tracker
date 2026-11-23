@@ -58,11 +58,11 @@ export interface Context {
 }
 
 /**
- * Откуда запустили команду. `npm run kaiten` переводит процесс в папку
+ * Откуда запустили команду. `pnpm run kaiten` переводит процесс в папку
  * инструмента, а исходную кладёт в `INIT_CWD` — без неё `.kaiten` не найти.
  */
 export function invocationDir(): string {
-  // INIT_CWD ставит любой `npm run`/`npx`. Верим ему только при запуске через `npm run kaiten`
+  // INIT_CWD ставят и pnpm, и npm при запуске скрипта. Верим ему только при запуске через `pnpm run kaiten`
   // самого инструмента: иначе kaiten, вызванный из скрипта другого проекта, искал бы `.kaiten` не там.
   const viaOwnScript = process.env.npm_package_name === 'kaiten-tracker' && process.env.npm_lifecycle_event === 'kaiten';
   return viaOwnScript && process.env.INIT_CWD ? process.env.INIT_CWD : process.cwd();
@@ -290,7 +290,7 @@ export function blobReader(store: string): (sha: string) => Uint8Array {
 
 /**
  * Шаг Kaiten после отправки в git (решение 16): только при включённом
- * `sync.kaiten`. Тот же план, что показывает `npm run kaiten-sync`, без
+ * `sync.kaiten`. Тот же план, что показывает `pnpm run kaiten-sync`, без
  * первой заливки. Ключи карточек и «доставлено» возвращаются в задачи
  * операциями `synced` через журнал и уходят общим тем же проходом. Ошибки —
  * в журнал: о них скажет следующая команда. `client` подменяется в тестах.

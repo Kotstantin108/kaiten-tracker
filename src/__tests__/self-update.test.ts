@@ -103,7 +103,7 @@ describe('обновление папки kaiten', { timeout: 30_000 }, () => {
     const { tool, dev } = toolRepos();
     const before = git(tool, 'rev-parse', 'HEAD');
     release(dev, 'package.json', '{ "name": "kaiten-tracker", "dependencies": { "left-pad": "1.3.0" } }\n');
-    expect(updateTool(tool)).toMatchObject({ ok: false, reason: expect.stringContaining('npm install') });
+    expect(updateTool(tool)).toMatchObject({ ok: false, reason: expect.stringContaining('pnpm install') });
     expect(git(tool, 'rev-parse', 'HEAD')).toBe(before);
   });
 

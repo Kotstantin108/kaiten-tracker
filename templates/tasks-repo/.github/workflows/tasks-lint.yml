@@ -46,16 +46,19 @@ jobs:
           token: ${{ secrets.KAITEN_TRACKER_TOKEN || github.token }}
           path: kaiten-tracker
 
+      - uses: pnpm/action-setup@v4
+        with:
+          package_json_file: kaiten-tracker/package.json
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-          cache: npm
-          cache-dependency-path: kaiten-tracker/package-lock.json
+          cache: pnpm
+          cache-dependency-path: kaiten-tracker/pnpm-lock.yaml
 
       - name: Зависимости
         working-directory: kaiten-tracker
-        run: npm ci --no-audit --no-fund
+        run: pnpm install --frozen-lockfile
 
       - name: Проверка формата
         working-directory: kaiten-tracker
-        run: npm run --silent tasks:lint -- "$GITHUB_WORKSPACE/tasks"
+        run: pnpm run --silent tasks:lint "$GITHUB_WORKSPACE/tasks"

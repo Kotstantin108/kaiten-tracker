@@ -2,8 +2,8 @@
  * Скрипт владельца: исследование находок (`core/found.ts`), до которых не
  * дошла фоновая проверка `kaiten found`.
  *
- *   npm run found -- --tasks <адрес> --code acme-app=<папка>
- *   npm run found -- --tasks <адрес> --apply <файл результатов>
+ *   pnpm run found --tasks <адрес> --code acme-app=<папка>
+ *   pnpm run found --tasks <адрес> --apply <файл результатов>
  *
  * Без `--apply` — только исследование и отчёт: ни в задачи, ни в Kaiten ничего
  * не пишется. `--apply` модель не запускает, а применяет ровно переданный
@@ -244,7 +244,7 @@ async function apply(argv: string[], path: string): Promise<void> {
   const { key, project } = owner.loaded;
   if (owner.source.kind !== 'store') fail('--apply пишет в задачи — только из хранилища задач: --tasks <адрес репозитория задач>');
   const store = owner.source.store;
-  if (foundSetting(project).state !== 'on') fail('Колонки «Находки» в Kaiten нет — сначала kaiten.found в kaiten.json и npm run setup (план → --apply).');
+  if (foundSetting(project).state !== 'on') fail('Колонки «Находки» в Kaiten нет — сначала kaiten.found в kaiten.json и pnpm run setup (план → --apply).');
 
   let file: ResultsFile;
   try {
@@ -288,8 +288,8 @@ async function apply(argv: string[], path: string): Promise<void> {
 async function main(): Promise<void> {
   const argv = process.argv.slice(2);
   if (argv.includes('--help') || argv.includes('-h')) {
-    console.log('npm run found -- --tasks <адрес> --code <репо>=<папка> [--only <id>] [--limit N] [--model M] [--out <папка>]');
-    console.log('npm run found -- --tasks <адрес> --apply <файл результатов>');
+    console.log('pnpm run found --tasks <адрес> --code <репо>=<папка> [--only <id>] [--limit N] [--model M] [--out <папка>]');
+    console.log('pnpm run found --tasks <адрес> --apply <файл результатов>');
     return;
   }
   // Раньше всего остального: разбора задач нет ни с какими флагами.

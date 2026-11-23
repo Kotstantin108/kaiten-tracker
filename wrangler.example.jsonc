@@ -1,5 +1,5 @@
 // Скопируйте в wrangler.jsonc (он в .gitignore) и подставьте id своего KV.
-// Секреты задаются не здесь, а командой `npx wrangler secret put <ИМЯ>`:
+// Секреты задаются не здесь, а командой `pnpm dlx wrangler@4.145.0 secret put <ИМЯ>`:
 //   SERVER_SECRET — случайная строка от 32 символов;
 //   KAITEN_DOMAIN — домен компании в Kaiten (например, acme.kaiten.ru);
 //   PUBLIC_URL    — адрес сервера, например https://kaiten-agent.<поддомен>.workers.dev

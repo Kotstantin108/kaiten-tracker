@@ -58,7 +58,7 @@ MCP-сервер для не-разработчиков — `docs/agent-server.m
 ## Проверки перед коммитом
 
 ```bash
-npm run typecheck && npm test
+pnpm run typecheck && pnpm test
 ```
 
 Многострочные правки на Windows — через редактор или node-скрипт, записанный

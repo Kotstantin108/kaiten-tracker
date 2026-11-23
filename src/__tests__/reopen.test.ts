@@ -162,7 +162,7 @@ describe('отменённое пачкой', () => {
   });
 });
 
-describe('скрипт владельца npm run reopen', { timeout: 60_000 }, () => {
+describe('скрипт владельца pnpm run reopen', { timeout: 60_000 }, () => {
   const tmp = mkdtempSync(join(tmpdir(), 'kaiten-reopen-test-'));
   afterAll(() => rmSync(tmp, { recursive: true, force: true }));
 

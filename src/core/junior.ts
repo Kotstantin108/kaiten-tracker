@@ -57,7 +57,7 @@ export const JUNIOR_TYPES: readonly TaskType[] = ['story', 'tech', 'bug'];
  * разделах было бы его же свидетельством о собственной находке (владелец 12.11.2026).
  */
 export const JUNIOR_STATUSES: readonly TaskStatus[] = ['backlog', 'ready'];
-/** Что оценивает `npm run assess`: и неразобранное — «похоже, сделана» полезно знать до разбора. */
+/** Что оценивает `pnpm run assess`: и неразобранное — «похоже, сделана» полезно знать до разбора. */
 export const ASSESS_STATUSES: readonly TaskStatus[] = ['inbox', 'backlog', 'ready'];
 
 /** `null` — признак к задаче не применим (тип или статус); иначе — годится ли и чего не хватает. */

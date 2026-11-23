@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Точка входа `kaiten` для npm link / npx: подключает tsx и запускает src/kaiten.ts.
+// Точка входа `kaiten` для npm link (так её кладёт в PATH scripts/install.mjs): подключает tsx и запускает src/kaiten.ts.
 import { register } from 'tsx/esm/api';
 
 register();

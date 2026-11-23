@@ -42,7 +42,7 @@ export type Priority = (typeof PRIORITIES)[number];
 
 export const CREATED_VIA = ['agent', 'human'] as const;
 
-/** «Оценка» задачи (`npm run assess`): актуальна, похоже, сделана, похоже, устарела. */
+/** «Оценка» задачи (`pnpm run assess`): актуальна, похоже, сделана, похоже, устарела. */
 export const ASSESS_VERDICTS = ['actual', 'done', 'obsolete'] as const;
 export type AssessVerdict = (typeof ASSESS_VERDICTS)[number];
 
@@ -147,7 +147,7 @@ export const FIELDS = {
   // «Оценка» карточки — зеркало Kaiten: скрипт оценки ставит её в карточку, человек
   // поправляет там же. Нет поля — задачу не оценивали.
   assessment: { owner: 'kaiten', required: false, schema: z.enum(ASSESS_VERDICTS) },
-  // Какую оценку поставил скрипт и когда — пишет только `npm run assess -- --apply`.
+  // Какую оценку поставил скрипт и когда — пишет только `pnpm run assess --apply`.
   // Совпадает с `assessment` — оценка скрипта; расходится — её поправил человек.
   assessed: { owner: 'cli', required: false, schema: z.object({ verdict: z.enum(ASSESS_VERDICTS), date }).strict() },
   // «Было / Стало» — ставят `kaiten review` и `kaiten done` по вложениям или по `--no-visual`.

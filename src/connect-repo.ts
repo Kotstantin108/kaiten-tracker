@@ -9,7 +9,7 @@
  *
  * БЕЗ `--apply` — только план.
  *
- *   npm run connect-repo -- <папка репозитория> --tasks <репозиторий задач> --repo <имя> [--push none|branch|pr] [--hosting github|gitlab] [--rules <файл>] [--apply]
+ *   pnpm run connect-repo <папка репозитория> --tasks <репозиторий задач> --repo <имя> [--push none|branch|pr] [--hosting github|gitlab] [--rules <файл>] [--apply]
  *
  *   --tasks     рабочая копия репозитория задач (с kaiten.json) или его адрес (хранилище на этой машине)
  *   --repo      репозиторий кода проекта (поле `repo` задач)
@@ -65,7 +65,7 @@ function main(): void {
     options: { tasks: { type: 'string' }, repo: { type: 'string' }, push: { type: 'string' }, hosting: { type: 'string' }, rules: { type: 'string' }, apply: { type: 'boolean' } },
     allowPositionals: true,
   });
-  const dir = positionals[0] ? resolve(process.env.INIT_CWD ?? process.cwd(), positionals[0]) : fail('Укажите папку репозитория кода: npm run connect-repo -- <папка> --tasks <репозиторий задач> --repo <имя>');
+  const dir = positionals[0] ? resolve(process.env.INIT_CWD ?? process.cwd(), positionals[0]) : fail('Укажите папку репозитория кода: pnpm run connect-repo <папка> --tasks <репозиторий задач> --repo <имя>');
   if (!existsSync(dir) || !statSync(dir).isDirectory()) fail(`Нет папки ${dir}`);
   if (!existsSync(join(dir, '.git'))) fail(`${dir} — не корень репозитория git`);
 

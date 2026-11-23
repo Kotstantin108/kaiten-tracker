@@ -19,7 +19,7 @@
  *   --config <путь>    kaiten.json не из репозитория задач (пробные прогоны)
  *   --apply            создать недостающее и записать маппинг в kaiten.json
  *
- * ENV: `KAITEN_DOMAIN`, `KAITEN_TOKEN`. Запуск: `npm run setup` / `npm run setup -- --apply`.
+ * ENV: `KAITEN_DOMAIN`, `KAITEN_TOKEN`. Запуск: `pnpm run setup` / `pnpm run setup --apply`.
  *
  * Коды выхода: 0 — ок; 2 — нет токена; 6 — ошибка запроса.
  */
@@ -313,7 +313,7 @@ async function main(): Promise<void> {
   if (doApply && plan.actions.length > 0) await apply(client, plan.actions, desired);
 
   if (!doApply) {
-    console.log(plan.actions.length === 0 ? 'План пуст: структура заведена. `--apply` запишет маппинг в конфиг.' : 'Чтобы создать: `npm run setup -- --apply`.');
+    console.log(plan.actions.length === 0 ? 'План пуст: структура заведена. `--apply` запишет маппинг в конфиг.' : 'Чтобы создать: `pnpm run setup --apply`.');
     console.log(`Запросов: ${client.requestCount}`);
     if (plan.actions.length > 0) return;
   }

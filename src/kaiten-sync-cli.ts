@@ -78,7 +78,7 @@ async function main(): Promise<void> {
   }
   const { project, config, people } = owner.loaded;
   const mapping = project.mapping;
-  if (!mapping) fail(`У проекта ${project.title} нет доски в kaiten.json — сначала npm run setup -- --tasks <рабочая копия> --apply`);
+  if (!mapping) fail(`У проекта ${project.title} нет доски в kaiten.json — сначала pnpm run setup --tasks <рабочая копия> --apply`);
   if (owner.source.kind !== 'store' && apply) fail('--apply пишет ключи карточек в задачи — только из хранилища задач: --tasks <адрес репозитория задач>');
   const store = owner.source.kind === 'store' ? owner.source.store : '';
   // Карточки этой копией переписались бы по-старому, а копии новее вернули бы их обратно.
@@ -141,8 +141,8 @@ async function main(): Promise<void> {
   const resendNote = input.resend ? ', описание, чек-листы и файлы — заново' : '';
   console.log(`Проект ${project.title}, задач ${index.tasks.length}${loadNote}${resendNote}${onlyRef ? `, только ${onlyRef}` : ''}`);
   if (!project.tasksRepo?.url) console.log('Адреса репозитория задач нет — ссылки в описаниях будут просто текстом.');
-  if (juniorSetting(project).state === 'needs-setup') console.log('Признак «Можно младшему» включён, а полей в Kaiten нет — они не пишутся: npm run setup.');
-  if (visualSetting(project).state === 'needs-setup') console.log('«Было / Стало» включено, а поля в Kaiten нет — не спрашивается и не пишется: npm run setup.');
+  if (juniorSetting(project).state === 'needs-setup') console.log('Признак «Можно младшему» включён, а полей в Kaiten нет — они не пишутся: pnpm run setup.');
+  if (visualSetting(project).state === 'needs-setup') console.log('«Было / Стало» включено, а поля в Kaiten нет — не спрашивается и не пишется: pnpm run setup.');
   for (const line of formatPlan(run)) console.log(line);
   if (unpublished) console.log('Версия синхронизации в задачи не записана: kaiten-tracker запущен не с выпущенной main. Копии kaiten на других машинах о новой версии не узнают.');
   if (!apply) {

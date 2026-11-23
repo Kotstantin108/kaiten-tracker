@@ -112,8 +112,9 @@ export function updateTool(dir: string | null = toolDir()): UpdateResult {
       if (!head || !target) return { ok: false, reason: 'папка kaiten не похожа на копию его репозитория' };
       if (head === target) return { ok: true, changed: false };
       if (!isAncestor(dir, head, target)) return { ok: false, reason: 'в папке kaiten свои коммиты' };
-      const deps = tryGit(dir, ['diff', '--name-only', head, target, '--', 'package.json', 'package-lock.json']);
-      if (deps === null || deps !== '') return { ok: false, reason: 'новой версии нужны другие зависимости — git pull и npm install в папке kaiten' };
+      // package-lock.json — в списке ради перехода с npm на pnpm: копия на npm, догоняющая версию на pnpm, тоже остановится.
+      const deps = tryGit(dir, ['diff', '--name-only', head, target, '--', 'package.json', 'pnpm-lock.yaml', 'package-lock.json']);
+      if (deps === null || deps !== '') return { ok: false, reason: 'новой версии нужны другие зависимости — git pull и pnpm install в папке kaiten' };
       if (tryGit(dir, ['merge', '--ff-only', '--quiet', upstream]) === null) return { ok: false, reason: 'git не смог обновить папку kaiten' };
       return { ok: true, changed: true };
     });

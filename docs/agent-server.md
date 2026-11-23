@@ -298,11 +298,11 @@ blocks:                    # необязательно; нет ключа — �
 KAITEN_DOMAIN, PUBLIC_URL. Домен компании, идентификаторы аккаунта и адрес
 сервера в репозиторий не попадают.
 
-**Cloudflare:** секреты — `wrangler secret put`, деплой — `npm run
+**Cloudflare:** секреты — `wrangler secret put`, деплой — `pnpm run
 agent:deploy`.
 
 **Свой хост** (`deploy/agent-server/`): образ Node 24 с одним собранным
-файлом (`npm run agent:build` — то же без Docker), данные — SQLite в томе
+файлом (`pnpm run agent:build` — то же без Docker), данные — SQLite в томе
 `/data`, HTTPS — Caddy из `compose.yaml` (или свой прокси перед портом 8787).
 
 ```bash

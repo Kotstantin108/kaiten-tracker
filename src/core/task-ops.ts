@@ -78,7 +78,7 @@ export type Op =
    */
   | { kind: 'adopt'; items: AdoptItem[] }
   /**
-   * Скрипт оценки (`npm run assess -- --apply`) поставил «Оценку» в карточку:
+   * Скрипт оценки (`pnpm run assess --apply`) поставил «Оценку» в карточку:
    * в файл — и зеркало (`assessment`), и что поставил скрипт (`assessed`), с
    * датой операции. Как `synced`, не трогает `updated`.
    */

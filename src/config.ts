@@ -41,7 +41,7 @@ export const MappingSchema = z.object({
   juniorProperty: SelectMappingSchema.optional(),
   /** Строка «Младшему не хватает». */
   juniorMissingProperty: z.object({ id: z.number() }).optional(),
-  /** Выбор «Оценка»: варианты `actual`/`done`/`obsolete` (`npm run assess`). */
+  /** Выбор «Оценка»: варианты `actual`/`done`/`obsolete` (`pnpm run assess`). */
   assessProperty: SelectMappingSchema.optional(),
   /** Выбор «Было / Стало»: варианты `yes`/`no` (`kaiten.visual`). */
   visualProperty: SelectMappingSchema.optional(),
@@ -110,7 +110,7 @@ export const RepoSchema = z.object({
   /** `numbered` — школа globex (NNNN-slug.md), читается временным ридером пилота. */
   layout: z.enum(['folders', 'numbered']).default('folders'),
   /**
-   * Общий репозиторий: агент оценки (`npm run assess`) видит его у каждой
+   * Общий репозиторий: агент оценки (`pnpm run assess`) видит его у каждой
    * задачи, а не только у задач с этим `repo`, — например, сценарии n8n.
    */
   shared: z.boolean().default(false),

@@ -32,7 +32,7 @@
  *   --report <path>                        куда писать JSON-отчёт
  *
  * ENV: `KAITEN_DOMAIN` (например `acme.kaiten.ru`) и `KAITEN_TOKEN`.
- * Запуск: `npm run import -- --scope pilot --epic reports`
+ * Запуск: `pnpm run import --scope pilot --epic reports`
  *
  * Коды выхода: 0 — ок; 2 — аргументы или нет токена при `--apply`;
  * 3 — маппинг не заполнен при `--apply`; 6 — ошибка выполнения.
@@ -393,7 +393,7 @@ async function main(): Promise<void> {
 
   const { repos, mapping, unmapped } = loadConfig(args.config, args.project, args.repos);
   if (args.apply && unmapped) {
-    fail('--apply требует заполненный блок kaiten в конфиге: сначала `npm run inspect`, затем id доски и колонок', 3);
+    fail('--apply требует заполненный блок kaiten в конфиге: сначала `pnpm run inspect`, затем id доски и колонок', 3);
   }
 
   const allTasks: TaskFile[] = [];

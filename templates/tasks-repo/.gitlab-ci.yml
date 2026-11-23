@@ -33,8 +33,8 @@ tasks-lint:
     - if: '$CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
     - if: '$CI_PIPELINE_SOURCE == "web"'
   cache:
-    key: kaiten-tracker-npm
-    paths: [.npm/]
+    key: kaiten-tracker-pnpm
+    paths: [.pnpm-store/]
   script:
     # Токен — заголовком, а не в адресе: адрес git печатает в журнал.
     - |
@@ -45,5 +45,7 @@ tasks-lint:
         git clone --quiet --depth 1 "$KAITEN_TRACKER_REPO" /tmp/kaiten-tracker
       fi
     - cd /tmp/kaiten-tracker
-    - npm ci --no-audit --no-fund --cache "$CI_PROJECT_DIR/.npm"
-    - npm run --silent tasks:lint -- "$CI_PROJECT_DIR"
+    - corepack enable
+    - pnpm config set store-dir "$CI_PROJECT_DIR/.pnpm-store"
+    - pnpm install --frozen-lockfile
+    - pnpm run --silent tasks:lint "$CI_PROJECT_DIR"

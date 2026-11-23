@@ -36,7 +36,7 @@
  *   --no-comments       в --download не качать комментарии
  *
  * ENV: `YONOTE_DOMAIN` (домен команды, например `acme.yonote.ru`) и
- * `YONOTE_TOKEN`. Запуск: `npm run yonote` или `npm run yonote -- --download`.
+ * `YONOTE_TOKEN`. Запуск: `pnpm run yonote` или `pnpm run yonote --download`.
  *
  * Коды выхода: 0 — ок; 2 — нет адреса или токена; 6 — ошибка выполнения.
  */

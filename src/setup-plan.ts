@@ -102,7 +102,7 @@ export const VISUAL_FIELD: VisualField = { name: 'Было / Стало', yes: '
 
 /**
  * Выбор «Можно младшему», строка «Младшему не хватает» и выбор «Оценка»
- * (`npm run assess`) — в типах story, tech, bug, необязательные.
+ * (`pnpm run assess`) — в типах story, tech, bug, необязательные.
  */
 export interface JuniorFields {
   select: { name: string; yes: string; no: string };

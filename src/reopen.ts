@@ -2,10 +2,10 @@
  * Скрипт владельца: увидеть задачи, отменённые одной пачкой, и вернуть их во
  * «Входящие» (`core/reopen.ts`).
  *
- *   npm run reopen -- --tasks <адрес> --log "<текст причины отмены>"            # список
- *   npm run reopen -- --tasks <адрес> --log "<текст>" --since 2026-11-12         # за день и позже
- *   npm run reopen -- --tasks <адрес> --only <задача>                            # одна задача
- *   npm run reopen -- --tasks <адрес> --log "<текст>" --apply --reason "<почему>"  # вернуть
+ *   pnpm run reopen --tasks <адрес> --log "<текст причины отмены>"            # список
+ *   pnpm run reopen --tasks <адрес> --log "<текст>" --since 2026-11-12         # за день и позже
+ *   pnpm run reopen --tasks <адрес> --only <задача>                            # одна задача
+ *   pnpm run reopen --tasks <адрес> --log "<текст>" --apply --reason "<почему>"  # вернуть
  *
  * Без `--apply` — только список: ни в задачи, ни в Kaiten ничего не пишется.
  * `--apply` возвращает ровно то, что показал список с теми же флагами: сначала
@@ -119,8 +119,8 @@ function printList(title: string, picked: readonly Cancellation[]): void {
 async function main(): Promise<void> {
   const argv = process.argv.slice(2);
   if (argv.includes('--help') || argv.includes('-h')) {
-    console.log('npm run reopen -- --tasks <адрес> --log "<текст причины отмены>" [--since YYYY-MM-DD] [--until YYYY-MM-DD] [--only <задача>] [--except <задача>]');
-    console.log('npm run reopen -- --tasks <адрес> … --apply --reason "<почему возвращаем>"');
+    console.log('pnpm run reopen --tasks <адрес> --log "<текст причины отмены>" [--since YYYY-MM-DD] [--until YYYY-MM-DD] [--only <задача>] [--except <задача>]');
+    console.log('pnpm run reopen --tasks <адрес> … --apply --reason "<почему возвращаем>"');
     return;
   }
   const owner = loadOwnerProject(argv);

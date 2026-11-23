@@ -4,8 +4,8 @@
  * n8n и выносит вердикт «Актуальна» / «Похоже, сделана» / «Похоже, устарела»;
  * у актуальной — дописывает недостающие разделы для младшего.
  *
- *   npm run assess -- --tasks <адрес> --code acme-app=<папка> --code acme-n8n=<папка>
- *   npm run assess -- --tasks <адрес> --apply <файл результатов>
+ *   pnpm run assess --tasks <адрес> --code acme-app=<папка> --code acme-n8n=<папка>
+ *   pnpm run assess --tasks <адрес> --apply <файл результатов>
  *
  * Без `--apply` — только агент и отчёт: markdown для чтения и файл
  * результатов (JSON); ни в задачи, ни в Kaiten ничего не пишется. `--apply`
@@ -155,7 +155,7 @@ async function assess(argv: string[]): Promise<void> {
   const { key, project } = owner.loaded;
   const junior = juniorSetting(project);
   if (junior.state === 'off') fail(`У проекта ${project.title} признак «Можно младшему» не включён (kaiten.junior в kaiten.json) — оценивать не для чего.`);
-  if (!assessField(project)) fail('Поля «Оценка» в Kaiten нет — сначала npm run setup (план → --apply), id полей — в kaiten.json.');
+  if (!assessField(project)) fail('Поля «Оценка» в Kaiten нет — сначала pnpm run setup (план → --apply), id полей — в kaiten.json.');
 
   const model = argValue(argv, '--model') ?? DEFAULT_MODEL;
   const badModel = modelProblem(model);
@@ -243,7 +243,7 @@ async function apply(argv: string[], file: string): Promise<void> {
   const { key, project } = owner.loaded;
   if (owner.source.kind !== 'store') fail('--apply пишет в задачи — только из хранилища задач: --tasks <адрес репозитория задач>');
   const store = owner.source.store;
-  const field = assessField(project) ?? fail('Поля «Оценка» в Kaiten нет — сначала npm run setup.');
+  const field = assessField(project) ?? fail('Поля «Оценка» в Kaiten нет — сначала pnpm run setup.');
 
   let results: ResultsFile;
   try {
@@ -317,8 +317,8 @@ async function apply(argv: string[], file: string): Promise<void> {
 async function main(): Promise<void> {
   const argv = process.argv.slice(2);
   if (argv.includes('--help') || argv.includes('-h')) {
-    console.log('npm run assess -- --tasks <адрес> --code <репо>=<папка> [--only <задача> [--force]] [--limit N] [--parallel N] [--model M] [--out <папка>]');
-    console.log('npm run assess -- --tasks <адрес> --apply <файл результатов>');
+    console.log('pnpm run assess --tasks <адрес> --code <репо>=<папка> [--only <задача> [--force]] [--limit N] [--parallel N] [--model M] [--out <папка>]');
+    console.log('pnpm run assess --tasks <адрес> --apply <файл результатов>');
     return;
   }
   if (argv.includes('--apply')) {

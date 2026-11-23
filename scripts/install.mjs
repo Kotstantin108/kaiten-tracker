@@ -3,15 +3,15 @@
 //
 //   node scripts/install.mjs [--domain <домен Kaiten>] [--person <кто вы>] [--no-kaiten] [--check]
 //
-// Делает по порядку: проверяет Node.js и git → ставит зависимости → кладёт команду `kaiten` в PATH
-// (`npm link`) → создаёт `kaiten.settings.json` с вашим личным входом в Kaiten → проверяет, что
+// Делает по порядку: проверяет Node.js и git → ставит зависимости (`pnpm install`) → кладёт команду
+// `kaiten` в PATH (`npm link`: он идёт с Node.js и зависимости в папке не трогает) → создаёт `kaiten.settings.json` с вашим личным входом в Kaiten → проверяет, что
 // команда отвечает. Повторный запуск безопасен: готовые шаги пропускаются, настройки не
 // перезаписываются. `--check` — только показать, что уже сделано.
 //
 // Токен Kaiten: из переменной окружения KAITEN_TOKEN или вопросом без показа ввода. Он пишется
 // только в kaiten.settings.json (файл в .gitignore) и не печатается никогда.
 //
-// Обычный node без зависимостей: до `npm install` в папке нет ни tsx, ни zod.
+// Обычный node без зависимостей: до `pnpm install` в папке нет ни tsx, ни zod.
 
 import { execFileSync, spawnSync } from 'node:child_process';
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
@@ -38,7 +38,7 @@ function fail(text, fix) {
 }
 
 function run(cmd, args, options = {}) {
-  // npm на Windows — это npm.cmd: без оболочки его не запустить.
+  // npm и pnpm на Windows — это .cmd: без оболочки их не запустить.
   // Аргументы здесь — только наши константы без пробелов, поэтому на Windows склеиваем их в строку.
   return isWin
     ? spawnSync([cmd, ...args].join(' '), { cwd: ROOT, encoding: 'utf8', shell: true, windowsHide: true, ...options })
@@ -120,12 +120,20 @@ if (gitName && gitEmail) ok(`имя для истории изменений: ${
 else fail('не задано имя или почта git', 'git config --global user.name "Имя Фамилия" и git config --global user.email "почта"');
 
 // ── 2. Зависимости ───────────────────────────────────────────────────────
+/** Как запустить pnpm: свой или через corepack (идёт с Node.js по 24-ю версию включительно и берёт версию из package.json). */
+function pnpm() {
+  if (run('pnpm', ['--version']).status === 0) return ['pnpm'];
+  const env = { ...process.env, COREPACK_ENABLE_DOWNLOAD_PROMPT: '0' };
+  if (run('corepack', ['pnpm', '--version'], { env }).status === 0) return ['corepack', 'pnpm'];
+  return null;
+}
 if (existsSync(join(ROOT, 'node_modules', 'tsx')) && existsSync(join(ROOT, 'node_modules', 'zod'))) ok('зависимости установлены');
-else if (checkOnly) todo('зависимости не установлены (npm install)');
+else if (checkOnly) todo('зависимости не установлены (pnpm install)');
 else {
-  console.log('… ставлю зависимости (npm install)');
-  const r = run('npm', ['install', '--no-audit', '--no-fund']);
-  if (r.status !== 0) fail('npm install не прошёл', (r.stderr || r.stdout || '').trim().split('\n').slice(-3).join(' '));
+  const cmd = pnpm() ?? fail('pnpm не найден', 'Установите pnpm: npm install -g pnpm@10 — и запустите установку снова.');
+  console.log('… ставлю зависимости (pnpm install)');
+  const r = run(cmd[0], [...cmd.slice(1), 'install', '--frozen-lockfile'], { env: { ...process.env, COREPACK_ENABLE_DOWNLOAD_PROMPT: '0' } });
+  if (r.status !== 0) fail('pnpm install не прошёл', (r.stderr || r.stdout || '').trim().split('\n').slice(-3).join(' '));
   ok('зависимости установлены');
 }
 
@@ -218,4 +226,4 @@ console.log(`
 ${checkOnly ? 'Проверка закончена.' : 'Установка закончена.'} Дальше — в репозитории кода проекта:
   kaiten doctor    проверит репозиторий, доступ к задачам и скажет, чего не хватает
   kaiten pull      загрузит задачи проекта (нужен доступ к репозиторию задач на GitHub или GitLab)
-Обновлять инструмент: git pull в ${ROOT} (и npm install, если изменился package.json).`);
+Обновлять инструмент: git pull в ${ROOT} (и pnpm install, если изменился package.json).`);

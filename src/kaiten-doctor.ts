@@ -68,7 +68,7 @@ export function formatChecks(checks: readonly Check[]): string[] {
 }
 
 const TOOL_SKILL = fileURLToPath(new URL('../skills/kaiten/SKILL.md', import.meta.url));
-const OWNER = 'Это делает владелец проекта: npm run connect-repo в kaiten-tracker.';
+const OWNER = 'Это делает владелец проекта: pnpm run connect-repo в kaiten-tracker.';
 
 function gitChecks(dir: string): Check[] {
   let version: string;
@@ -150,7 +150,7 @@ function repoChecks(workDir: string): RepoFacts {
   const checks: Check[] = [{ level: 'ok', what: `репозиторий подключён: продукт ${parsed.file.repo}` }];
 
   const root = dirname(path);
-  const refresh = `Это делает владелец проекта, из папки kaiten-tracker: npm run connect-repo -- "${root}" --tasks ${parsed.file.tasks} --repo ${parsed.file.repo} --apply`;
+  const refresh = `Это делает владелец проекта, из папки kaiten-tracker: pnpm run connect-repo "${root}" --tasks ${parsed.file.tasks} --repo ${parsed.file.repo} --apply`;
   const skill = skillState(readFileSync(TOOL_SKILL, 'utf8'), readOrNull(join(root, SKILL_PATH)));
   if (skill === 'fresh') checks.push({ level: 'ok', what: 'скилл kaiten в репозитории — свежий' });
   else checks.push({ level: 'warn', what: skill === 'missing' ? 'скилла kaiten в репозитории нет: агент не знает, как вести задачи' : 'скилл kaiten в репозитории устарел', fix: refresh });
@@ -209,7 +209,7 @@ function storeChecks(facts: NonNullable<RepoFacts['project']>, settings: KaitenS
       entries.map((e) => e.sha),
     );
     const waiting = listFindings(entries.map((e) => ({ path: e.path, text: blobs.get(e.sha)?.toString('utf8') ?? '' }))).filter((f) => f.fm.state === 'pending').length;
-    if (waiting > 0) checks.push({ level: 'warn', what: `находок не проверено: ${waiting}`, fix: 'Свежая проверяется прямо сейчас; давние проверяет владелец проекта: npm run found в kaiten-tracker.' });
+    if (waiting > 0) checks.push({ level: 'warn', what: `находок не проверено: ${waiting}`, fix: 'Свежая проверяется прямо сейчас; давние проверяет владелец проекта: pnpm run found в kaiten-tracker.' });
   }
 
   const tree = readStoreTree(project.store, listEntries(project.store));

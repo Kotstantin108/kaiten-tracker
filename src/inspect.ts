@@ -8,7 +8,7 @@
  * `tracker.config.json`: id доски, id колонок под статусы, id типов карточек,
  * id свойства приоритета.
  *
- * Запуск: `npm run inspect -- --space <id> --board <id>`
+ * Запуск: `pnpm run inspect --space <id> --board <id>`
  * ENV: `KAITEN_DOMAIN`, `KAITEN_TOKEN`. Ничего не изменяет, только читает.
  *
  * Коды выхода: 0 — ок; 2 — нет токена; 6 — ошибка запроса.
