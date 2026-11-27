@@ -1,6 +1,6 @@
 /**
  * Команды записи CLI `kaiten`: `new`, `check`, `log`, `attach`, `detach`, `block`, `cancel`,
- * `review`, `done`, `edit` (`start` — в `kaiten-start.ts`). Каждая: проверить задачу → записать операцию локально (журнал +
+ * `review`, `rework`, `done`, `edit` (`start` — в `kaiten-start.ts`). Каждая: проверить задачу → записать операцию локально (журнал +
  * коммит, `store-write.ts`) → обновить копию для чтения → отправить общим в
  * фоне. Агент не ждёт сеть; что не применилось при отправке, скажет
  * следующая команда.
@@ -228,6 +228,29 @@ ${TASK_REF_HELP}
   kaiten review PRJ-123 --note "PR #45"
   kaiten review PRJ-124 --no-visual "только сценарий n8n"
   kaiten review PRJ-125 --no-ingest "правка опечатки в тексте кнопки"
+`,
+  rework: `kaiten rework <задача> --reason "<замечания>" — вернуть задачу с ревью на доработку.
+
+Из «Ревью» в «В работе», замечания — в журнал задачи. Команда меняет только
+задачу: ветку и файлы репозитория не трогает, поэтому запускается из любого
+репозитория проекта и при незакоммиченных изменениях. Так возвращает работу
+тот, кто её смотрел. Дорабатывать берётся исполнитель: kaiten start <задача>
+переключит его на ветку задачи. Перед новой сдачей в журнале нужна запись о
+доработке (kaiten log).
+${TASK_REF_HELP}
+
+Флаги:
+  --reason <текст>    замечания: что доработать
+  --stdin             замечания — из стандартного ввода (вместо --reason);
+                      первая строка — заголовок записи
+
+Примеры:
+  kaiten rework PRJ-123 --reason "проверка шла на устаревшей ветке: обновить и перепроверить"
+  kaiten rework PRJ-123 --stdin <<'EOF'
+  три замечания ревью
+  - таймаут не покрыт тестом
+  - ...
+  EOF
 `,
   done: `kaiten done <задача> — задача сделана (влито в прод).
 
@@ -548,6 +571,40 @@ async function withReason(command: 'block' | 'cancel', args: string[]): Promise<
   cardNotMovedNote(card);
 }
 
+/** Начало записи журнала о возврате с ревью — и у `rework`, и у `start` на задаче из «Ревью». */
+export const REWORK_NOTE = 'возвращена на доработку';
+
+/**
+ * `kaiten rework` — вернуть задачу с ревью на доработку, не трогая репозиторий
+ * кода. Тот же переход, что у `kaiten start` на задаче из «Ревью», но без ветки:
+ * ревьюер стоит в чужой ветке или в папке с незакоммиченным, и переключать её
+ * ради статуса нельзя (иначе команду запускают во временной копии репозитория).
+ * Репозиторий задачи поэтому не сверяется. Запись — «в работе: возвращена на
+ * доработку: …»: с неё, как с любого взятия в работу, `review` ждёт новую запись
+ * о работе.
+ */
+async function rework(args: string[]): Promise<void> {
+  const { values, positionals } = parse('rework', args, { reason: { type: 'string' }, stdin: { type: 'boolean' } }, 1);
+  const ref = taskArg(positionals, 'rework');
+  if (values.stdin && stringFlag(values, 'reason') !== undefined) throw new UsageError('Замечания — либо --reason, либо --stdin, не оба.');
+  const reason = (values.stdin ? readStdin() : stringFlag(values, 'reason'))?.trim();
+  if (!reason) throw new UsageError('--reason: что доработать — замечания прочтёт исполнитель в журнале задачи.');
+  const ctx = begin();
+  // Кто вы — до карточки: запись журнала без автора не делается.
+  currentPerson(ctx.loaded.people);
+  const task = findTask(loadTasks(ctx).index, ref);
+  // Проверить у себя до карточки: карточку не двигаем, если задачу всё равно не записать.
+  if (task.fm.type === 'epic') throw new UsageError(`Не записано: ${refOf(task)} — эпик: на доработку возвращают его задачи.`, 1);
+  if (task.fm.status === 'in-progress') {
+    throw new UsageError(`Не записано: задача ${refOf(task)} уже в работе. Замечания запишите в журнал: kaiten log ${refOf(task)} "<замечания>".`, 1);
+  }
+  if (task.fm.status !== 'review') throw new UsageError(`Не записано: задача ${refOf(task)} в статусе ${task.fm.status}: на доработку возвращают только из «Ревью».`, 1);
+  const queue: MoveStep[] = [];
+  const card = await moveCardFirst(ctx, task, 'in-progress', undefined, undefined, queue);
+  await commit(ctx, { kind: 'move', id: task.fm.id, status: 'in-progress', note: `${REWORK_NOTE}: ${reason}`, ...queuedOf(queue, card) }, `возврат на доработку ${refOf(task)}`);
+  cardNotMovedNote(card);
+}
+
 async function move(command: 'review' | 'done', args: string[]): Promise<void> {
   const { values, positionals } = parse(
     command,
@@ -712,6 +769,7 @@ export const WRITE_COMMANDS: Record<string, (args: string[]) => Promise<void>> =
   block: (args) => withReason('block', args),
   cancel: (args) => withReason('cancel', args),
   review: (args) => move('review', args),
+  rework,
   done: (args) => move('done', args),
   edit,
 };

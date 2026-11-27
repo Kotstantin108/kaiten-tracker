@@ -21,7 +21,7 @@ import { ASSIGNABLE, assignedPriority } from './core/task-ops.js';
 import { refOf, type TaskRecord } from './core/tasks-index.js';
 import { visualApplies } from './core/visual.js';
 import { cardNotMovedNote, currentPerson, findTask, loadTasks, moveCardFirst, parse, printNotices, queuedOf, resolveContext, TASK_REF_HELP, UsageError, type MoveStep } from './kaiten-cli.js';
-import { commit } from './kaiten-write.js';
+import { commit, REWORK_NOTE } from './kaiten-write.js';
 
 export const START_HELP = `kaiten start <задача> — взять задачу в работу.
 
@@ -31,7 +31,8 @@ export const START_HELP = `kaiten start <задача> — взять задач
 kaiten review — работа готова, kaiten done — влито в прод.
 
 В работу берут задачу из «Готово к работе», «Заблокировано» или «Ревью»
-(вернули на доработку); задачу в работе — продолжают. Задачу из «Входящих»
+(берётесь её дорабатывать; вернуть с ревью, не переключая ветку, —
+kaiten rework); задачу в работе — продолжают. Задачу из «Входящих»
 или «Бэклога» берут, только если человек прямо поручил именно её — в том
 числе «заведи задачу и приступай». Задача без приоритета получает высший (p0).
 ${TASK_REF_HELP}
@@ -117,7 +118,7 @@ async function start(args: string[]): Promise<void> {
     if (error instanceof UsageError) throw new UsageError(`${error.message}\nВетка ${result.branch} заведена, задача осталась в прежнем статусе.`, error.code);
     throw error;
   }
-  await commit(ctx, { kind: 'move', id: task.fm.id, status: 'in-progress', branch: result.branch, ...(assigned ? { assigned: true } : {}), ...queuedOf(queue, card) }, `в работу ${refOf(task)}`);
+  await commit(ctx, { kind: 'move', id: task.fm.id, status: 'in-progress', branch: result.branch, ...(task.fm.status === 'review' ? { note: REWORK_NOTE } : {}), ...(assigned ? { assigned: true } : {}), ...queuedOf(queue, card) }, `в работу ${refOf(task)}`);
   cardNotMovedNote(card);
   // Обязательный ответ спросит kaiten review; здесь — только удобный момент снять «было».
   if (visualFields(ctx.loaded.project) && visualApplies(task.fm.type)) {
